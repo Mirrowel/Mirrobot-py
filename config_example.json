@@ -1,0 +1,8 @@
+{
+    "token": "YA_TOKEN",
+    "command_prefix": "!",
+    "ownerID": "YOUR_DISCORD_USER_ID",
+    "ocr_read_channels": [],
+    "ocr_respond_channels": []
+    
+}
