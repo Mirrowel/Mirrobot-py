@@ -183,7 +183,7 @@ command_permissions = config.get('command_permissions', {})
 server_prefixes = config.get('server_prefixes', {})
 
 # Add at the top of the file with other global variables
-SYSTEM_COMMANDS = ['shutdown']  # Commands that only the owner can use
+SYSTEM_COMMANDS = ['shutdown', 'reload_patterns']  # Commands that only the owner can use
 
 # Function to get the prefix for a server
 def get_prefix(bot, message):
@@ -323,64 +323,198 @@ def command_category(category):
 # Remove default help command before bot setup
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
-patterns = [
-    {"name": "1087", "pattern": re.compile(".*invalid.parameter.handler.*1087|.*1087.*invalid.parameter",re.DOTALL), "response": "!1087"},
-    {"name": "152", "pattern": re.compile(".*on.game.start.*callback.add.*",re.DOTALL), "response": "!152"},
-    {"name": "k98", "pattern": re.compile(".ead(.|..)amage(.|..)20"), "response": "!k98"},
-    {"name": "omod", "pattern": re.compile(".*OMODFramework|(.*fail.*load.*omod.dll)",re.DOTALL | re.IGNORECASE), "response": "!omod"},
-    {"name": "EOF", "pattern": re.compile(".*while reading sideband packet.*",re.DOTALL), "response": "!v6fix"},
-    {"name": "unblock", "pattern": re.compile(".*dll’ file is blocked.*",re.DOTALL), "response": "!unblock"},
-    {"name": "fullSave", "pattern": re.compile(r".*Unspecified error.*appdata\\savedgames.*",re.DOTALL), "response": "!full"},
-    {"name": "strexplode", "pattern": re.compile(".*str.explode",re.DOTALL), "response": "!strexplode"},
-    {"name": "dest", "pattern": re.compile(".*Dest string less.*",re.DOTALL), "response": "!dest"},
-    {"name": "resolution", "pattern": re.compile("u[i|l]_options\.script:\s?1649",re.DOTALL), "response": "!resolution"},
-    {"name": "ini1", "pattern": re.compile(r"(Cannot open instance Portable|ModOrganizer\.ini|game managed by)"), "response": "!ini"},
-    {"name": "atmos", "pattern": re.compile("ssfx_rain_mcm\.script:\s?10",re.DOTALL), "response": "!atmos"},
-    {"name": "monster", "pattern": re.compile(".*base_monster.*1050.*",re.DOTALL), "response": "Update your modded exes"},
-    {"name": "toolong", "pattern": re.compile(".ilename.too..ong"), "response": "!ini"},
-    {"name": "opyat", "pattern": re.compile(".*take.item..nim.*compare", re.DOTALL), "response": "!опять or !disabled"},
-    {"name": "adminAND", "pattern": re.compile("(.*Set-ItemProperty.*PermissionDenied.*)",re.DOTALL), "response": "!admin"},
-    #{"name": "adminOR", "pattern": re.compile(r"(Set-ItemProperty|PermissionDenied)",re.DOTALL), "response": "!admin"},
-    {"name": "ownershipGIT", "pattern": re.compile("(.*detect(.*dubious|.*ownership))",re.DOTALL), "response": "!ownership"},
-    {"name": "win1873", "pattern": re.compile("(.*find model file.*wpn_win.873_world.*)"), "response": "!manual https://www.moddb.com/addons/start/259315"},
-    {"name": "GetDeviceRemovedReason", "pattern": re.compile("(GetDeviceRemove.Rea.on)",re.IGNORECASE), "response": "!dx9 or !dx8. But first reboot your PC"},
-    {"name": "bizonfix", "pattern": re.compile("(.*find model file.*wpn_bizon_lazer_hud.*)",re.DOTALL), "response": "!v6fix if the launcher version is up to date. !bas is the easiest solution"},
-    {"name": "v6fixACC", "pattern": re.compile(r"(fatal: unable to access|SSL/TLS connection failed)",re.DOTALL), "response": "!v6fix"},
-    {"name": "v6fixGIT", "pattern": re.compile("(.*fatal(.*not|.*git).*repo)",re.DOTALL | re.IGNORECASE), "response": "!v6fix"},
-    {"name": "hostsJAM", "pattern": re.compile(".*jam.animations.*get.jammed",re.DOTALL), "response": "!hosts"},
-    {"name": "verify", "pattern": re.compile(".*AnomalyDX.*AnomalyDX(.|..)AVX.*", re.DOTALL | re.IGNORECASE), "response": "!verify"},
-    #{"name": "ace", "pattern": re.compile(".*up.*g.*ace.*", re.DOTALL), "response": "!update or !full"},
-    {"name": "dedsave", "pattern": re.compile("ui.st.invalid.saved.game"), "response": "Save game is invalid. Your saves are probably dead: if they dont load as well - start new game."},
-    {"name": "ini2", "pattern": re.compile(".*Cannot start.*AnomalyLauncher.*",re.DOTALL), "response": "!ini"},
-    {"name": "BarArena", "pattern": re.compile(".*.hrase.*arena.manager.*",re.DOTALL), "response": "Dont fight mutants in the bar arena and then stalkers in the bar. It's bugged. Reload to an older save."},
-    {"name": "OpenALCreate", "pattern": re.compile(".*OpenAL.*create.*",re.DOTALL | re.IGNORECASE), "response": "!openal"},
-    {"name": "dick", "pattern": re.compile(".*model.*day.*trader.*",re.DOTALL), "response": "!dick, unless you got HD models"},
-    #{"name": "65k", "pattern": re.compile(".*100(.*not.*|.*ID.*)",re.DOTALL), "response": "!65k"},
-    {"name": "aborting", "pattern": re.compile(".*aborting.*",re.IGNORECASE), "response": "!aborting"},
-    {"name": "surge", "pattern": re.compile(".*262.*surge.*rush.*", re.DOTALL), "response": "!surgecrash / !surgefix if first didnt help"},
-    {"name": "pkpsiber", "pattern": re.compile(".*266.*pkp.*", re.DOTALL), "response": "!realv6"},
-    {"name": "ishCamp", "pattern": re.compile(".*ish.*fire.*", re.DOTALL), "response": "!yacs - incorrectly disabled yacs"},
-    {"name": "sksv6", "pattern": re.compile(".*sks.*pu*(.|..)ud.*", re.DOTALL), "response": "!v6fix"},
-    {"name": "virtualCall", "pattern": re.compile(".*035.*irtua.*", re.DOTALL), "response": "!surgefix but first - !backup in #bot-commands"},
-    {"name": "amb", "pattern": re.compile(".*find.*amb17.*", re.DOTALL), "response": "!realv6"},
-    {"name": "solving", "pattern": re.compile(".*instr.*olvin.*", re.DOTALL), "response": "!solving"},
-    {"name": "pdaboard", "pattern": re.compile(".*270.*pda.*", re.DOTALL), "response": "!hosts/!full if launcher is updated"},
-    {"name": "newsBounty", "pattern": re.compile(".*news.*lura.*", re.DOTALL), "response": "!bounty"},
-    {"name": "smrloot", "pattern": re.compile(".*smr..oot.*se(.|..)tem", re.DOTALL), "response": "!smrloot"},
-    {"name": "taskFunctor", "pattern": re.compile(".*task(.|..)unct", re.DOTALL), "response": "!semenov"},
-    {"name": "ui_mcm", "pattern": re.compile(".*LUA.*ui.m.m", re.DOTALL |re.IGNORECASE), "response": "!update"},
-    {"name": "arith", "pattern": re.compile(".*ui(.|..)options.*rith", re.DOTALL), "response": "!arith"},
-    {"name": "hiddenThreat", "pattern": re.compile(".*idde.*hrea", re.DOTALL), "response": "!full if your launcher version is up to date"},
-    {"name": "vicShitFix", "pattern": re.compile(".*zaz|.*veh", re.DOTALL), "response": "!veh"},
-    {"name": "shortcut", "pattern": re.compile(".*Unable to save shortcut", re.DOTALL | re.IGNORECASE), "response": "!shortcut"},
-    {"name": "stealth", "pattern": re.compile(".*isual.*tealt", re.DOTALL), "response": "!stealth"},
-    {"name": "nightMutants", "pattern": re.compile(".*night.*mutant", re.DOTALL), "response": "!mutants"},
-    {"name": "livingLegend", "pattern": re.compile(".*living.*legend", re.DOTALL), "response": "!livinglegend"},
-    {"name": "mortalSin", "pattern": re.compile(".*mortal.*sin", re.DOTALL), "response": "!mortalsin"},
-    {"name": "assert", "pattern": re.compile(".*10.*assert", re.DOTALL), "response": "!dx9 / complete the task and revert back to dx11"},
-    {"name": "adar", "pattern": re.compile(".*adar2", re.DOTALL), "response": "!v6"},
+# Map of regex flag strings to their actual values
+REGEX_FLAGS = {
+    "IGNORECASE": re.IGNORECASE,
+    "DOTALL": re.DOTALL,
+    "MULTILINE": re.MULTILINE,
+    "ASCII": re.ASCII,
+    "VERBOSE": re.VERBOSE,
+    "UNICODE": re.UNICODE
+}
+
+# Global dictionary to store compiled responses with their patterns for each server
+server_patterns = {}
+
+def load_patterns():
+    """Load patterns from the patterns.json file"""
+    try:
+        with open('patterns.json', 'r', encoding='utf-8') as f:
+            pattern_data = json.load(f)
+        
+        # Compile regex patterns for each server
+        for server_id, responses_list in pattern_data.items():
+            server_patterns[server_id] = []
+            for response_info in responses_list:
+                response_id = response_info.get("response_id", 0)
+                response_text = response_info.get("response", "")
+                name = response_info.get("name", "")  # Add name field
+                note = response_info.get("note", "")
+                
+                # Create a response object with compiled patterns
+                response_obj = {
+                    "response_id": response_id,
+                    "response": response_text,
+                    "name": name,  # Include name in response object
+                    "note": note,
+                    "patterns": []
+                }
+                
+                # Compile each pattern for this response
+                for pattern_info in response_info.get("patterns", []):
+                    pattern_id = pattern_info.get("id", 0)
+                    pattern_name = pattern_info.get("name", f"pattern_{pattern_id}")
+                    pattern_str = pattern_info.get("pattern", "")
+                    flags_str = pattern_info.get("flags", "")
+                    url = pattern_info.get("url", "")
+                    
+                    # Parse and combine regex flags
+                    flag_value = 0
+                    if flags_str:
+                        for flag in flags_str.split('|'):
+                            if flag in REGEX_FLAGS:
+                                flag_value |= REGEX_FLAGS[flag]
+                    
+                    # Compile the pattern
+                    try:
+                        compiled_pattern = re.compile(pattern_str, flag_value)
+                        
+                        # Add the compiled pattern to the response's patterns list
+                        response_obj["patterns"].append({
+                            "id": pattern_id,
+                            "name": pattern_name,
+                            "pattern": compiled_pattern,
+                            "url": url
+                        })
+                    except re.error as e:
+                        logger.error(f"Error compiling pattern {pattern_name} for response {response_id}: {e}")
+                        
+                # Only add responses that have at least one valid pattern
+                if response_obj["patterns"]:
+                    server_patterns[server_id].append(response_obj)
+        
+        logger.info(f"Successfully loaded patterns for {len(pattern_data)} servers")
+        return True
+    except Exception as e:
+        logger.error(f"Error loading patterns: {e}")
+        # If there's an error, initialize with empty patterns
+        server_patterns.clear()
+        return False
+
+def save_patterns():
+    """Save patterns back to the patterns.json file"""
+    try:
+        # Convert compiled patterns back to serializable format
+        serializable_patterns = {}
+        for server_id, responses_list in server_patterns.items():
+            serializable_patterns[server_id] = []
+            for response_info in responses_list:
+                # Create a serializable response object
+                serializable_response = {
+                    "response_id": response_info["response_id"],
+                    "response": response_info["response"],
+                    "name": response_info.get("name", ""),  # Include name when saving
+                    "note": response_info.get("note", ""),
+                    "patterns": []
+                }
+                
+                # Convert each pattern to serializable format
+                for pattern_info in response_info["patterns"]:
+                    # Get the pattern string and flags from the compiled regex
+                    pattern_obj = pattern_info["pattern"]
+                    pattern_str = pattern_obj.pattern
+                    
+                    # Determine flags
+                    flags = []
+                    if pattern_obj.flags & re.IGNORECASE:
+                        flags.append("IGNORECASE")
+                    if pattern_obj.flags & re.DOTALL:
+                        flags.append("DOTALL")
+                    if pattern_obj.flags & re.MULTILINE:
+                        flags.append("MULTILINE")
+                    if pattern_obj.flags & re.ASCII:
+                        flags.append("ASCII")
+                    if pattern_obj.flags & re.VERBOSE:
+                        flags.append("VERBOSE")
+                    if pattern_obj.flags & re.UNICODE:
+                        flags.append("UNICODE")
+                    
+                    serializable_response["patterns"].append({
+                        "id": pattern_info["id"],
+                        "name": pattern_info["name"],
+                        "pattern": pattern_str,
+                        "flags": "|".join(flags),
+                        "url": pattern_info.get("url", "")
+                    })
+                
+                serializable_patterns[server_id].append(serializable_response)
+        
+        with open('patterns.json', 'w', encoding='utf-8') as f:
+            json.dump(serializable_patterns, f, indent=2)
+        
+        logger.info(f"Successfully saved patterns for {len(serializable_patterns)} servers")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving patterns: {e}")
+        return False
+
+# Add helper function to find a response by ID or name
+def find_response(server_id, response_id_or_name):
+    """Find a response by ID or name in a server's patterns"""
+    if server_id not in server_patterns:
+        return None
     
-    ]
+    # Try to interpret as an integer (ID)
+    try:
+        response_id = int(response_id_or_name)
+        # Search by ID
+        for r in server_patterns[server_id]:
+            if r["response_id"] == response_id:
+                return r
+    except ValueError:
+        pass  # Not an integer, continue to name search
+    
+    # Search by name (case insensitive)
+    for r in server_patterns[server_id]:
+        if r.get("name", "").lower() == str(response_id_or_name).lower():
+            return r
+    
+    return None
+
+def get_server_patterns(server_id):
+    """Get responses with patterns for a specific server with fallback to default patterns"""
+    server_id_str = str(server_id)
+    
+    # If server has specific patterns, use those
+    if server_id_str in server_patterns:
+        return server_patterns[server_id_str]
+    
+    # Otherwise use default patterns
+    if "default" in server_patterns:
+        return server_patterns["default"]
+    
+    # If no patterns are found, return an empty list
+    return []
+
+def get_next_response_id(server_id):
+    """Get the next available response ID for a server"""
+    patterns = get_server_patterns(server_id)
+    if not patterns:
+        return 1
+    
+    # Find the highest response_id and add 1
+    return max(response.get("response_id", 0) for response in patterns) + 1
+
+def get_next_pattern_id(response):
+    """Get the next available pattern ID within a response"""
+    if not response.get("patterns"):
+        return 1
+    
+    # Find the highest pattern ID and add 1
+    return max(pattern.get("id", 0) for pattern in response["patterns"]) + 1
+
+# Load patterns when the bot starts
+load_patterns()
 
 @bot.event
 async def on_ready():
@@ -524,25 +658,34 @@ async def pytess(message, attachment, start_time):
                 logger.info(f"Transcription took {time.time() - start_time} seconds.")
                 await analyze_and_respond(message, text,start_time)
 
-async def analyze_and_respond(message, text,start_time):
+async def analyze_and_respond(message, text, start_time):
     logger.info(f'Analyzing text')
     pattern_found = False
-    #logger.debug(f'Text: {text}')
-    for pattern in patterns:
-        #logger.debug(f'Checking pattern: {str(pattern["pattern"].pattern)}')
-        if pattern["pattern"].search(text):
-            pattern_found = True
-            logger.info(f'Pattern found: {pattern["name"]}')
-            response = pattern["response"]
-            with open('succ.log', 'a', encoding='utf-8') as log:
-                log.write(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - {message.author.name} - {pattern["name"]}\n')
-                log.write(f'{text}\n')
-                log.close()
-            await respond_to_ocr(message, response)
-            break
+    
+    # Get responses with patterns for this server
+    responses = get_server_patterns(message.guild.id)
+    
+    # For each response, check all its patterns
+    for response in responses:
+        for pattern in response["patterns"]:
+            if pattern["pattern"].search(text):
+                pattern_found = True
+                logger.info(f'Pattern found: {pattern["name"]} (Response ID: {response["response_id"]})')
+                
+                # Log the match
+                with open('succ.log', 'a', encoding='utf-8') as log:
+                    log.write(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} - {message.author.name} - {response.get("response_id", "unknown")}-{pattern.get("name", "unnamed")}\n')
+                    log.write(f'Response: {response["response"]}\n')
+                    log.write(f'{text}\n')
+                    log.close()
+                
+                # Send the response
+                await respond_to_ocr(message, response["response"])
+                logger.info(f"Total time taken: {time.time() - start_time} seconds.")
+                return
+    
     if not pattern_found:
         logger.info(f'No pattern found')
-        #await respond_to_ocr(message, 'No known issues found.')
         await respond_to_ocr(message, text)
     logger.info(f"Total time taken: {time.time() - start_time} seconds.")
 
@@ -1470,6 +1613,473 @@ async def help_command(ctx, command_name=None):
         footer_text=footer_text,
         footer_icon_url="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
     )
+    
+@bot.command(name='reload_patterns', help='Reload pattern configurations from the patterns.json file.\nNo arguments required.\nExample: !reload_patterns')
+@commands.is_owner()  # Only the bot owner can use this command
+@command_category("System")
+async def reload_patterns(ctx):
+    """Reload patterns from the patterns.json file"""
+    if load_patterns():
+        await ctx.reply("Successfully reloaded pattern configurations.")
+    else:
+        await ctx.reply("Error loading pattern configurations. Check the log for details.")
+
+@bot.command(name='list_patterns', help='List all pattern responses for this server.\nArguments: [detailed] (optional) - Show detailed pattern info\nExample: !list_patterns or !list_patterns detailed')
+@has_command_permission()
+@command_category("OCR Configuration")
+async def list_patterns(ctx, option=None):
+    """List all patterns for this server"""
+    server_id = str(ctx.guild.id)
+    
+    server_specific = []
+    default = []
+    
+    # Get server-specific patterns
+    if server_id in server_patterns:
+        server_specific = server_patterns[server_id]
+    
+    # Get default patterns
+    if "default" in server_patterns:
+        default = server_patterns["default"]
+    
+    if not server_specific and not default:
+        await ctx.reply("No patterns found.")
+        return
+    
+    # Determine if detailed view is requested
+    detailed = option and option.lower() == "detailed"
+    
+    # Build fields for the embed response
+    all_fields = []
+    
+    # Add server-specific patterns section
+    if server_specific:
+        # For keeping track of continuation fields
+        server_patterns_continuation = 0
+        server_patterns_value = ""
+        
+        for resp in server_specific:
+            # Build response line
+            resp_line = f"• ID {resp['response_id']}"
+            if resp.get("name"):
+                resp_line += f" [`{resp['name']}`]"
+            resp_line += f": `{resp['response']}`"
+            if resp.get("note"):
+                resp_line += f" - {resp['note']}"
+            resp_line += f" ({len(resp['patterns'])} patterns)\n"
+            
+            # Check if adding this line would exceed field value limit
+            if len(server_patterns_value) + len(resp_line) > 1000:
+                # Create field name based on whether this is the first field or a continuation
+                field_name = "🔹 Server-specific responses"
+                if server_patterns_continuation > 0:
+                    field_name += f" (continued {server_patterns_continuation})"
+                
+                all_fields.append({"name": field_name, "value": server_patterns_value, "inline": False})
+                server_patterns_continuation += 1
+                server_patterns_value = resp_line
+            else:
+                server_patterns_value += resp_line
+            
+            # Add pattern details if detailed view is requested
+            if detailed:
+                pattern_details = ""
+                for pattern in resp['patterns']:
+                    pattern_str = pattern['pattern'].pattern
+                    # Truncate pattern if too long
+                    if len(pattern_str) > 40:
+                        pattern_str = pattern_str[:37] + "..."
+                    
+                    pattern_line = f"  ↪ Pattern {pattern['id']}: `{pattern_str}`\n"
+                    
+                    if len(server_patterns_value + pattern_details + pattern_line) > 1000:
+                        # Save current details and start a new field
+                        if pattern_details:  # Add accumulated pattern details
+                            server_patterns_value += pattern_details
+                        
+                        # Create field name with continuation indicator if needed
+                        field_name = "🔹 Server-specific responses"
+                        if server_patterns_continuation > 0:
+                            field_name += f" (continued {server_patterns_continuation})"
+                            
+                        all_fields.append({"name": field_name, "value": server_patterns_value, "inline": False})
+                        server_patterns_continuation += 1
+                        server_patterns_value = ""
+                        pattern_details = pattern_line
+                    else:
+                        pattern_details += pattern_line
+                
+                if pattern_details:
+                    if len(server_patterns_value + pattern_details) > 1000:
+                        # Create field name with continuation indicator if needed
+                        field_name = "🔹 Server-specific responses"
+                        if server_patterns_continuation > 0:
+                            field_name += f" (continued {server_patterns_continuation})"
+                            
+                        all_fields.append({"name": field_name, "value": server_patterns_value, "inline": False})
+                        server_patterns_continuation += 1
+                        server_patterns_value = pattern_details
+                    else:
+                        server_patterns_value += pattern_details
+        
+        # Add remaining server patterns
+        if server_patterns_value:
+            # Create field name with continuation indicator if needed
+            field_name = "🔹 Server-specific responses"
+            if server_patterns_continuation > 0:
+                field_name += f" (continued {server_patterns_continuation})"
+                
+            all_fields.append({"name": field_name, "value": server_patterns_value, "inline": False})
+    
+    # Add default patterns section
+    if default:
+        if detailed:
+            # For keeping track of continuation fields
+            default_patterns_continuation = 0
+            default_patterns_value = ""
+            
+            for resp in default:
+                # Build response line
+                resp_line = f"• ID {resp['response_id']}"
+                if resp.get("name"):
+                    resp_line += f" [`{resp['name']}`]"
+                resp_line += f": `{resp['response']}`"
+                if resp.get("note"):
+                    resp_line += f" - {resp['note']}"
+                resp_line += f" ({len(resp['patterns'])} patterns)\n"
+                
+                # Check if adding this line would exceed field value limit
+                if len(default_patterns_value) + len(resp_line) > 1000:
+                    # Create field name based on whether this is the first field or a continuation
+                    field_name = "🔸 Default responses"
+                    if default_patterns_continuation > 0:
+                        field_name += f" (continued {default_patterns_continuation})"
+                    
+                    all_fields.append({"name": field_name, "value": default_patterns_value, "inline": False})
+                    default_patterns_continuation += 1
+                    default_patterns_value = resp_line
+                else:
+                    default_patterns_value += resp_line
+            
+            # Add remaining default patterns
+            if default_patterns_value:
+                # Create field name with continuation indicator if needed
+                field_name = "🔸 Default responses"
+                if default_patterns_continuation > 0:
+                    field_name += f" (continued {default_patterns_continuation})"
+                    
+                all_fields.append({"name": field_name, "value": default_patterns_value, "inline": False})
+        else:
+            # Just show the summary count for default patterns
+            all_fields.append({
+                "name": "🔸 Default responses", 
+                "value": f"*{len(default)} responses available* - Use `detailed` option to see more", 
+                "inline": False
+            })
+    
+    # Split into multiple embeds if we have too many fields
+    # Each embed can have a maximum of 25 fields
+    embeds_to_send = []
+    current_fields = []
+    
+    for field in all_fields:
+        if len(current_fields) >= 25:  # Max fields per embed
+            embeds_to_send.append(current_fields.copy())
+            current_fields = [field]
+        else:
+            current_fields.append(field)
+    
+    if current_fields:  # Add any remaining fields
+        embeds_to_send.append(current_fields)
+    
+    # Description for the embeds
+    description = f"Pattern responses available for this server"
+    if detailed:
+        description += " (detailed view)"
+    
+    # Send the embeds
+    total_parts = len(embeds_to_send)
+    
+    for i, fields in enumerate(embeds_to_send, 1):
+        # Only add part numbers if multiple parts
+        footer_text = None
+        if total_parts > 1:
+            footer_text = f"Page {i} of {total_parts}"
+        
+        await create_embed_response(
+            ctx=ctx,
+            title="Pattern Responses",
+            description=description,
+            fields=fields,
+            footer_text=footer_text
+        )
+
+@bot.command(name='add_response', help='Add a new response with optional name and note.\nArguments: response (str) - The response text\n           [name] (str) - Optional friendly name for the response\n           [note] (str) - Optional description or explanation\nExample: !add_response "!v6fix" "v6fix_command" "Common v6 connection issues"')
+@has_command_permission()
+@command_category("OCR Configuration")
+async def add_response(ctx, response: str, name: str = "", *, note: str = ""):
+    """Add a new response to the server configuration with optional name and note"""
+    server_id = str(ctx.guild.id)
+    
+    # Initialize server responses list if needed
+    if server_id not in server_patterns:
+        server_patterns[server_id] = []
+    
+    # Check if name already exists if a name is provided
+    if name:
+        for existing_response in server_patterns[server_id]:
+            if existing_response.get("name", "").lower() == name.lower():
+                await ctx.reply(f"A response with name '{name}' already exists. Please choose a different name.")
+                return
+    
+    # Get the next available response ID
+    response_id = get_next_response_id(server_id)
+    
+    # Create the new response object
+    new_response = {
+        "response_id": response_id,
+        "response": response,
+        "name": name,
+        "note": note,
+        "patterns": []
+    }
+    
+    # Add the new response
+    server_patterns[server_id].append(new_response)
+    
+    # Save patterns to file
+    if save_patterns():
+        name_info = f" (Named: '{name}')" if name else ""
+        await ctx.reply(f"Successfully added response ID {response_id}{name_info}: `{response}`\nUse `!add_pattern_to_response {response_id if not name else name} \"your_pattern_here\"` to add patterns to this response.")
+    else:
+        await ctx.reply("Response added to memory but could not be saved to file. Check logs for details.")
+
+@bot.command(name='remove_response', help='Remove a response and all its patterns.\nArguments: response_id_or_name - ID number or name of the response\nExample: !remove_response 5 or !remove_response v6fix_command')
+@has_command_permission()
+@command_category("OCR Configuration")
+async def remove_response(ctx, response_id_or_name: str):
+    """Remove a response from the server configuration"""
+    server_id = str(ctx.guild.id)
+    
+    if server_id not in server_patterns:
+        await ctx.reply("This server has no custom responses.")
+        return
+    
+    # Find the response to remove
+    for i, response in enumerate(server_patterns[server_id]):
+        if (str(response["response_id"]) == response_id_or_name or 
+            response.get("name", "").lower() == response_id_or_name.lower()):
+            removed_response = server_patterns[server_id].pop(i)
+            
+            # Save patterns to file
+            if save_patterns():
+                name_info = f" [{removed_response.get('name')}]" if removed_response.get("name") else ""
+                await ctx.reply(f"Successfully removed response ID {removed_response['response_id']}{name_info}: `{removed_response['response']}` and all {len(removed_response['patterns'])} patterns.")
+            else:
+                await ctx.reply("Response removed from memory but could not update the file. Check logs for details.")
+            return
+    
+    await ctx.reply(f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
+
+@bot.command(name='add_pattern_to_response', help='Add a pattern to an existing response.\nArguments: response_id_or_name - ID number or name of the response\n           pattern (str) - Regex pattern to match\n           [flags] (str) - Optional regex flags (e.g., "DOTALL|IGNORECASE")\n           [name] (str) - Optional friendly name for the pattern\n           [url] (str) - Optional screenshot URL\nExample: !add_pattern_to_response 5 ".*error.*message" "DOTALL" "error_pattern"\nExample: !add_pattern_to_response v6fix_command ".*error.*" "DOTALL"')
+@has_command_permission()
+@command_category("OCR Configuration")
+async def add_pattern_to_response(ctx, response_id_or_name: str, pattern: str, flags: str = "", name: str = "", url: str = ""):
+    """Add a pattern to an existing response"""
+    server_id = str(ctx.guild.id)
+    
+    if server_id not in server_patterns:
+        await ctx.reply("This server has no custom responses.")
+        return
+    
+    # Find the response
+    response = find_response(server_id, response_id_or_name)
+            
+    if not response:
+        await ctx.reply(f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
+        return
+    
+    try:
+        # Parse and combine regex flags
+        flag_value = 0
+        if flags:
+            for flag in flags.split('|'):
+                if flag in REGEX_FLAGS:
+                    flag_value |= REGEX_FLAGS[flag]
+                else:
+                    await ctx.reply(f"Invalid flag: {flag}. Valid flags are: {', '.join(REGEX_FLAGS.keys())}")
+                    return
+        
+        # Compile the pattern
+        compiled_pattern = re.compile(pattern, flag_value)
+        
+        # Get the next pattern ID
+        pattern_id = get_next_pattern_id(response)
+        
+        # Use a default name if none provided
+        if not name:
+            name = f"pattern_{pattern_id}"
+        
+        # Add the new pattern
+        response["patterns"].append({
+            "id": pattern_id,
+            "name": name,
+            "pattern": compiled_pattern,
+            "url": url
+        })
+        
+        # Save patterns to file
+        if save_patterns():
+            response_identifier = f"response ID {response['response_id']}"
+            if response.get("name"):
+                response_identifier += f" [{response['name']}]"
+            await ctx.reply(f"Successfully added pattern {pattern_id} to {response_identifier}.")
+        else:
+            await ctx.reply("Pattern added to memory but could not be saved to file. Check logs for details.")
+    
+    except re.error as e:
+        await ctx.reply(f"Error compiling regex pattern: {e}")
+    except Exception as e:
+        logger.error(f"Error adding pattern: {e}")
+        await ctx.reply(f"Error adding pattern: {e}")
+
+@bot.command(name='remove_pattern_from_response', help='Remove a pattern from a response.\nArguments: response_id_or_name - ID number or name of the response\n           pattern_id (int) - ID number of the pattern to remove\nExample: !remove_pattern_from_response 5 2\nExample: !remove_pattern_from_response v6fix_command 2')
+@has_command_permission()
+@command_category("OCR Configuration")
+async def remove_pattern_from_response(ctx, response_id_or_name: str, pattern_id: int):
+    """Remove a pattern from a response"""
+    server_id = str(ctx.guild.id)
+    
+    if server_id not in server_patterns:
+        await ctx.reply("This server has no custom responses.")
+        return
+    
+    # Find the response
+    response = find_response(server_id, response_id_or_name)
+            
+    if not response:
+        await ctx.reply(f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
+        return
+    
+    # Find and remove the pattern
+    pattern_found = False
+    for i, pattern in enumerate(response["patterns"]):
+        if pattern["id"] == pattern_id:
+            del response["patterns"][i]
+            pattern_found = True
+            break
+    
+    if not pattern_found:
+        await ctx.reply(f"No pattern found with ID {pattern_id} in response {response_id_or_name}.")
+        return
+        
+    # Remove the response if no patterns left
+    if not response["patterns"]:
+        for i, r in enumerate(server_patterns[server_id]):
+            if r["response_id"] == response["response_id"]:
+                del server_patterns[server_id][i]
+                response_identifier = f"response {response['response_id']}"
+                if response.get("name"):
+                    response_identifier += f" [{response['name']}]"
+                await ctx.reply(f"Removed pattern {pattern_id} and also removed {response_identifier} as it no longer has any patterns.")
+                break
+    else:
+        response_identifier = f"response {response['response_id']}"
+        if response.get("name"):
+            response_identifier += f" [{response.get('name')}]"
+        await ctx.reply(f"Successfully removed pattern {pattern_id} from {response_identifier}.")
+    
+    # Save patterns to file
+    if not save_patterns():
+        await ctx.reply("Warning: Changes made in memory but could not be saved to file. Check logs for details.")
+
+@bot.command(name='view_response', help='View details of a specific response.\nArguments: response_id_or_name - ID number or name of the response\nExample: !view_response 5\nExample: !view_response v6fix_command')
+@has_command_permission()
+@command_category("OCR Configuration")
+async def view_response(ctx, response_id_or_name: str):
+    """View details of a specific response"""
+    server_id = str(ctx.guild.id)
+    
+    # Try server-specific patterns first
+    response = None
+    source = None
+    
+    # Check server-specific patterns
+    if server_id in server_patterns:
+        response = find_response(server_id, response_id_or_name)
+        if response:
+            source = "server"
+                
+    # If not found, check default patterns
+    if not response and "default" in server_patterns:
+        # Try to interpret as an integer (ID)
+        try:
+            response_id = int(response_id_or_name)
+            # Search by ID
+            for r in server_patterns["default"]:
+                if r["response_id"] == response_id:
+                    response = r
+                    source = "default"
+                    break
+        except ValueError:
+            # Search by name
+            for r in server_patterns["default"]:
+                if r.get("name", "").lower() == response_id_or_name.lower():
+                    response = r
+                    source = "default"
+                    break
+    
+    if not response:
+        await ctx.reply(f"No response found with ID or name '{response_id_or_name}'.")
+        return
+    
+    # Build detailed response info
+    response_text = f"**Response ID {response['response_id']}** ({source})"
+    if response.get("name"):
+        response_text += f" [{response['name']}]"
+    response_text += f"\nText: `{response['response']}`\n"
+    
+    if response.get("note"):
+        response_text += f"Note: {response['note']}\n"
+    
+    response_text += f"\n**Patterns ({len(response['patterns'])}):**\n"
+    
+    for pattern in response["patterns"]:
+        response_text += f"- ID {pattern['id']}: "
+        if pattern.get("name"):
+            response_text += f"`{pattern['name']}` "
+        
+        # Get pattern string and flags
+        pattern_str = pattern['pattern'].pattern
+        flags = []
+        if pattern['pattern'].flags & re.IGNORECASE:
+            flags.append("IGNORECASE")
+        if pattern['pattern'].flags & re.DOTALL:
+            flags.append("DOTALL")
+        if pattern['pattern'].flags & re.MULTILINE:
+            flags.append("MULTILINE")
+        
+        # Truncate pattern if needed
+        if len(pattern_str) > 50:
+            pattern_str = pattern_str[:47] + "..."
+        
+        response_text += f"`{pattern_str}`"
+        
+        if flags:
+            response_text += f" Flags: {', '.join(flags)}"
+            
+        if pattern.get("url"):
+            response_text += f" [Screenshot]({pattern['url']})"
+            
+        response_text += "\n"
+    
+    # Split into chunks if needed
+    if len(response_text) > 2000:
+        chunks = [response_text[i:i+1990] for i in range(0, len(response_text), 1990)]
+        for i, chunk in enumerate(chunks):
+            await ctx.reply(f"{chunk}\n*Part {i+1}/{len(chunks)}*")
+    else:
+        await ctx.reply(response_text)
 
 # Assuming your bot instance is named 'bot' and is an instance of commands.Bot or commands.AutoShardedBot
 @bot.event
