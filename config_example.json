@@ -1,8 +1,19 @@
 {
-    "token": "YA_TOKEN",
-    "command_prefix": "!",
-    "ownerID": "YOUR_DISCORD_USER_ID",
-    "ocr_read_channels": [],
-    "ocr_respond_channels": []
-    
+  "token": "your_discord_bot_token_here",
+  "command_prefix": "!",
+  
+  "ocr_read_channels": {
+  },
+  
+  "ocr_response_channels": {
+  },
+  
+  "ocr_response_fallback": {
+  },
+  
+  "server_prefixes": {
+  },
+  
+  "command_permissions": {
+  }
 }

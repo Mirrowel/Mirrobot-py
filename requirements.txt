@@ -1,0 +1,13 @@
+# Discord API wrapper
+discord.py>=2.0.0
+
+# OCR dependencies
+pytesseract>=0.3.8
+Pillow>=9.0.0
+
+# HTTP and async libraries
+aiohttp>=3.8.0
+requests>=2.27.0
+
+# Logging and formatting
+colorlog>=6.6.0
