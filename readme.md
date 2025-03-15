@@ -1,4 +1,4 @@
-# 🤖 Mirrobot Discord Bot
+# 🤖 Mirrobot Discord Bot [![License](https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png)](https://creativecommons.org/licenses/by-nc-sa/4.0/) [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C0C0UZS4P)
 
 Mirrobot is an OCR (Optical Character Recognition) bot that scans images for text patterns and provides automatic responses to common issues. The bot is designed to help server administrators manage technical support channels by automatically analyzing screenshots.
 
@@ -12,22 +12,20 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
 
 ## 🛠️ Installation
 
-1. Clone the repository
-2. Install required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Install Tesseract OCR on your system:
+1. Install Python 3.8 or higher
+2. Install Tesseract OCR:
    - Windows: Download from [GitHub](https://github.com/tesseract-ocr/tesseract)
    - Linux: `sudo apt install tesseract-ocr`
-   - macOS: `brew install tesseract`
+   - Mac: `brew install tesseract`
+3. Install dependencies: `pip install -r requirements.txt`
 4. Download appropriate tessdata language files:
    - Tesseract comes with "fast" data by default (fastest but least accurate)
    - For better results, download either:
      - **Regular**: Good balance between speed and accuracy
      - **Best**: Highest accuracy, but 2x slower than regular with only small accuracy gains
    - Get additional language data from [tessdata repository](https://github.com/tesseract-ocr/tessdata)
-5. Copy `config_example.json` to `config.json` and update it with your bot token
+5. Configure `config.json` with your Discord bot token
+6. Run the bot: `python main.py`
 
 ## 📚 Dependencies
 
@@ -58,19 +56,11 @@ The bot relies on the following libraries:
 
 ## ⚙️ Configuration
 
-The bot is configured through `config.json`:
-
-```json
-{
-    "token": "YOUR_BOT_TOKEN_HERE",
-    "command_prefix": "!",
-    "ocr_read_channels": {},
-    "ocr_response_channels": {},
-    "ocr_response_fallback": {},
-    "server_prefixes": {},
-    "command_permissions": {}
-}
-```
+The bot uses a `config.json` file to store:
+- Discord bot token
+- Command prefix (default: `!`)
+- Designated channels for OCR reading and responses
+- Command permissions
 
 ## 📝 Available Commands
 
