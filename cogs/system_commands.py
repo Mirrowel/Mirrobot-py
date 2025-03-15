@@ -1,10 +1,12 @@
 import discord
 from discord.ext import commands
 import platform
-import socket
 import psutil
 import os
+import time  # Added for ping command
+import socket
 import cpuinfo
+import asyncio  # Add this import
 from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from core.pattern_manager import load_patterns
@@ -225,7 +227,7 @@ class SystemCommandsCog(commands.Cog):
         # Prepare system information
         system_info = {
             "System": uname.system,
-            "Node Name": hostname,
+            #"Node Name": hostname,
             #"Release": uname.release,
             #"Version": uname.version,
             #"Machine": uname.machine,
@@ -273,3 +275,92 @@ class SystemCommandsCog(commands.Cog):
             fields=fields,
             footer_text=f"{BOT_NAME} v{BOT_VERSION}"
         )
+
+    @commands.command(name='ping', help='Check the bot\'s current latency.\nNo arguments required.\nExample: !ping')
+    @commands.cooldown(1, 3, commands.BucketType.user)  # Prevent spam
+    @command_category("System")
+    async def ping(self, ctx):
+        """Ping command to check bot latency"""
+        # Initial message and timing for message response
+        start_response = time.time()
+        message = await ctx.send("Measuring ping over multiple tries...")
+        end_response = time.time()
+        response_time = round((end_response - start_response) * 1000)
+        
+        # Discord API latency
+        api_latency = round(self.bot.latency * 1000)
+        
+        # Perform multiple ping measurements
+        num_pings = 3
+        ping_results = []
+        
+        for i in range(num_pings):
+            start_time = time.time()
+            # Use ctx.typing() which is the correct context manager for typing indicator
+            async with ctx.typing():
+                # Just measuring the time it takes to send a typing indicator
+                pass
+            end_time = time.time()
+            ping_ms = round((end_time - start_time) * 1000)
+            ping_results.append(ping_ms)
+            await asyncio.sleep(0.5)  # Small delay between measurements
+        
+        # Calculate average ping
+        avg_ping = round(sum(ping_results) / len(ping_results))
+        
+        # Create embed with results
+        embed = discord.Embed(title="🏓 Pong!", color=discord.Color.green())
+        embed.add_field(name="Discord API Latency", value=f"{api_latency}ms", inline=True)
+        embed.add_field(name="Message Response Time", value=f"{response_time}ms", inline=True)
+        
+        # Add individual ping results
+        ping_values = "\n".join([f"Ping #{i+1}: **{ping}ms**" for i, ping in enumerate(ping_results)])
+        embed.add_field(name="Typing Indicator Roundtrips", value=f"{ping_values}\n\n**Average**: {avg_ping}ms", inline=False)
+        
+        await message.edit(content=None, embed=embed)
+
+    @commands.command(name='uptime', help='Display how long the bot has been running.\nNo arguments required.\nExample: !uptime')
+    @commands.cooldown(1, 3, commands.BucketType.user)  # Prevent spam
+    @command_category("System")
+    @has_command_permission()  # Check if user has permission to use this command
+    async def uptime(self, ctx):
+        """Display the current uptime of the bot"""
+        from utils.constants import get_uptime
+        
+        uptime_str = get_uptime()
+        embed = discord.Embed(
+            title="⏱️ Bot Uptime",
+            description=f"Bot has been running for: **{uptime_str}**",
+            color=discord.Color.blue()
+        )
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name='invite', help='Get an invite link to add this bot to other servers.\nNo arguments required.\nExample: !invite')
+    @commands.cooldown(1, 3, commands.BucketType.user)  # Prevent spam
+    @commands.is_owner()  # Only the bot owner can use this command
+    @command_category("System")
+    async def invite(self, ctx):
+        """Generate an invite link for the bot"""
+        # Calculate necessary permissions for the bot's functionality
+        permissions = discord.Permissions(
+            send_messages=True, 
+            embed_links=True,
+            attach_files=True,
+            read_messages=True,
+            read_message_history=True,
+            manage_messages=False,
+            add_reactions=True
+        )
+        
+        # Generate the OAuth2 URL with proper permissions
+        invite_url = discord.utils.oauth_url(str(self.bot.user.id), permissions=permissions)
+        
+        embed = discord.Embed(
+            title="🔗 Invite Me to Your Server",
+            description=f"Click the link below to add me to your Discord server:\n[Invite Link]({invite_url})",
+            color=discord.Color.purple()
+        )
+        embed.set_footer(text="Note: You need 'Manage Server' permission to add bots")
+        
+        await ctx.send(embed=embed)

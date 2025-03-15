@@ -1,5 +1,5 @@
 import requests
-from core.ocr import msg_reply
+from core.ocr import check_image_dimensions, msg_reply
 import discord
 from discord.ext import commands
 from utils.logging_setup import get_logger
@@ -508,7 +508,7 @@ class PatternCommandsCog(commands.Cog):
     async def extract_text(self, ctx, url: str = None):
         """Extract text from an image attachment or URL without applying patterns"""
         start_time = time.time()
-        await ctx.channel.trigger_typing()
+        await ctx.typing()
         
         if url:
             # Process URL provided as an argument
