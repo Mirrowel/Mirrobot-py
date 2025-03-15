@@ -190,6 +190,25 @@ def get_prefix(bot, message):
     # Default prefix is '!'
     default_prefix = config.get('command_prefix', '!')
     
+    # Create list of prefixes - always include the bot mention as a universal prefix
+    # This will allow users to use @Mirrobot command in any server
+    prefixes = [f'<@{bot.user.id}> ', f'<@!{bot.user.id}> ']  # Bot mentions with space after
+    
+    # If in a DM or no guild, use the default prefix
+    if message.guild is None:
+        return default_prefix
+    
+    # Get server-specific prefix if it exists
+    guild_id = str(message.guild.id)
+    server_prefix = server_prefixes.get(guild_id, default_prefix)
+    prefixes.append(server_prefix)
+    
+    return prefixes
+
+def get_server_prefix(bot, message):
+    # Default prefix is '!'
+    default_prefix = config.get('command_prefix', '!')
+    
     # If in a DM or no guild, use the default prefix
     if message.guild is None:
         return default_prefix
@@ -533,7 +552,7 @@ def check_image_dimensions(image_path):
         return width, height
 
 # Add this utility function before the commands
-async def create_embed_response(ctx, title, description, fields, footer_text=None, thumbnail_url=None):
+async def create_embed_response(ctx, title, description, fields, footer_text=None, thumbnail_url=None, footer_icon_url=None, url=None, author_name=None, author_icon_url=None, author_url=None):
     """
     Create a standardized embed response with proper formatting.
     
@@ -544,12 +563,20 @@ async def create_embed_response(ctx, title, description, fields, footer_text=Non
         fields: List of dictionaries with 'name', 'value', and 'inline' keys
         footer_text: Optional text for the footer
         thumbnail_url: Optional URL for the thumbnail
+        footer_icon_url: Optional URL for the footer icon
+        url: Optional URL for the embed title hyperlink
+        author_name: Optional custom author name for the embed
+        author_icon_url: Optional custom author icon URL for the embed
+        author_url: Optional custom author URL for the embed
     """
     embed_color = discord.Color.blue()
     
     # Create the embed with title and description
-    embed = discord.Embed(title=title, description=description, color=embed_color)
+    embed = discord.Embed(title=title, url=url, description=description, color=embed_color)
     
+    if author_name:
+        embed.set_author(name=author_name, icon_url=author_icon_url, url=author_url)
+
     # Add thumbnail if provided
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
@@ -594,7 +621,7 @@ async def create_embed_response(ctx, title, description, fields, footer_text=Non
     
     # Add footer if provided
     if footer_text:
-        embed.set_footer(text=footer_text)
+        embed.set_footer(text=footer_text, icon_url=footer_icon_url)
         
     await ctx.send(embed=embed)
 
@@ -820,7 +847,7 @@ async def set_prefix(ctx, prefix: str):
         return
     
     guild_id = str(ctx.guild.id)
-    old_prefix = server_prefixes.get(guild_id, get_prefix(bot, ctx.message))
+    old_prefix = server_prefixes.get(guild_id, get_server_prefix(bot, ctx.message))
     server_prefixes[guild_id] = prefix
     
     # Save the updated configuration
@@ -1289,12 +1316,12 @@ async def server_info(ctx):
         thumbnail_url=thumbnail_url
     )
 
-@bot.command(name='help', help='Show help for bot commands.\nArguments: [command] (optional) - Get detailed help on a specific command\nExample: !help or !help server_info')
+@bot.command(name='help', aliases=['info'], help='Show info about the bot and its features.\nArguments: [command] (optional) - Get detailed help on a specific command\nExample: !help, !info or !help server_info')
 @commands.cooldown(1, 3, commands.BucketType.user)  # Prevent spam
 @command_category("System")
 async def help_command(ctx, command_name=None):
     """Display help information about the bot and its commands"""
-    prefix = get_prefix(bot, ctx.message)
+    prefix = get_server_prefix(bot, ctx.message)
     
     # If a specific command is requested, show detailed help for that command
     if command_name:
@@ -1342,9 +1369,9 @@ async def help_command(ctx, command_name=None):
             return
 
     # Create main description
-    description = f"Use `{prefix}help <command>` for detailed information on a command.\n\n" \
-                  f"**Current prefix:** `{prefix}`\n\n" \
-                  f"**Note:** You only see commands you have permission to use."
+    description = f"Use `{prefix}help <command>` for detailed information on a command.\n" \
+                  f"**Note:** You only see commands you have permission to use.\n\n" \
+                  f"**Current prefix:** `{prefix}`"
     
     # Define fields
     fields = []
@@ -1352,11 +1379,11 @@ async def help_command(ctx, command_name=None):
     # Add bot info section
     fields.append({
         "name": "📝 About", 
-        "value": "Mirrobot is an OCR (Optical Character Recognition) bot that scans images for text " \
-                 "patterns and provides automatic responses to common issues.",
+        "value": "Mirrobot is an open-source bot developed by @Mirrowel.\n" \
+                 "It uses OCR (Optical Character Recognition) to scan images for text patterns and provide automatic responses to common issues.\n",
         "inline": False
     })
-    
+
     # Dynamically organize commands by their categories
     categories = {}
     for cmd in bot.commands:
@@ -1428,15 +1455,20 @@ async def help_command(ctx, command_name=None):
                 })
                 
     # Add footer text
-    footer_text = f"Mirrobot v0.1 | Type {prefix}help <command> for more info"
+    footer_text = f"Mirrobot v0.15 | Type {prefix}help <command> for more info"
     
     # Send the response
     await create_embed_response(
         ctx=ctx,
-        title="Mirrobot Help",
+        title="Mirrobot",
+        url="https://github.com/Mirrowel/Mirrobot-py",  # clickable title
+        author_name="Mirrowel",
+        author_url="https://github.com/Mirrowel",
+        author_icon_url="https://avatars.githubusercontent.com/u/28632877",
         description=description,
         fields=fields,
-        footer_text=footer_text
+        footer_text=footer_text,
+        footer_icon_url="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
     )
 
 # Assuming your bot instance is named 'bot' and is an instance of commands.Bot or commands.AutoShardedBot
