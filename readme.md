@@ -18,10 +18,16 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
    pip install -r requirements.txt
    ```
 3. Install Tesseract OCR on your system:
-   - Windows: Download from [GitHub](https://github.com/UB-Mannheim/tesseract/wiki)
+   - Windows: Download from [GitHub](https://github.com/tesseract-ocr/tesseract)
    - Linux: `sudo apt install tesseract-ocr`
    - macOS: `brew install tesseract`
-4. Copy `config_example.json` to `config.json` and update it with your bot token
+4. Download appropriate tessdata language files:
+   - Tesseract comes with "fast" data by default (fastest but least accurate)
+   - For better results, download either:
+     - **Regular**: Good balance between speed and accuracy
+     - **Best**: Highest accuracy, but 2x slower than regular with only small accuracy gains
+   - Get additional language data from [tessdata repository](https://github.com/tesseract-ocr/tessdata)
+5. Copy `config_example.json` to `config.json` and update it with your bot token
 
 ## 📚 Dependencies
 
@@ -100,7 +106,7 @@ The bot is configured through `config.json`:
 
 | Command | Description | Usage | Permissions |
 |---------|-------------|-------|------------|
-| **help** | Show help for bot commands | `!help [command]` | Everyone |
+| **help or info** | Show info about the bot and its features. | `!info or !help [command]` | Everyone |
 | **shutdown** | Shut down the bot completely | `!shutdown` | Bot Owner Only |
 
 ## 🔐 Permission System
