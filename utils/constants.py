@@ -4,7 +4,7 @@ Constants and utilities for the Mirrobot application
 import datetime
 
 # Bot information
-BOT_VERSION = "0.2"
+BOT_VERSION = "0.25"
 BOT_NAME = "Mirrobot"
 
 # Author information 
@@ -17,13 +17,13 @@ REPO_URL = "https://github.com/Mirrowel/Mirrobot-py"
 GITHUB_ICON_URL = "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
 
 # Uptime tracking
-BOT_START_TIME = datetime.datetime.utcnow()
+BOT_START_TIME = datetime.datetime.now(datetime.timezone.utc)
 
 def get_uptime():
     """
     Get the bot's current uptime as a formatted string.
     """
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
     delta = now - BOT_START_TIME
     
     days = delta.days

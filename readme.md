@@ -17,15 +17,18 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
    - Windows: Download from [GitHub](https://github.com/tesseract-ocr/tesseract)
    - Linux: `sudo apt install tesseract-ocr`
    - Mac: `brew install tesseract`
-3. Install dependencies: `pip install -r requirements.txt`
-4. Download appropriate tessdata language files:
+3. Clone the repository: `git clone https://github.com/Mirrowel/Mirrobot-py.git`
+4. Install dependencies: `pip install -r requirements.txt`
+5. Create a config file:
+   - Rename `config_example.json` to `config.json`
+   - Add your Discord bot token and configure settings
+6. Download appropriate tessdata language files:
    - Tesseract comes with "fast" data by default (fastest but least accurate)
    - For better results, download either:
      - **Regular**: Good balance between speed and accuracy
      - **Best**: Highest accuracy, but 2x slower than regular with only small accuracy gains
    - Get additional language data from [tessdata repository](https://github.com/tesseract-ocr/tessdata)
-5. Configure `config.json` with your Discord bot token
-6. Run the bot: `python main.py`
+7. Run the bot: `python main.py`
 
 ## 📚 Dependencies
 
@@ -38,6 +41,8 @@ The bot relies on the following libraries:
 - **aiohttp**: Asynchronous HTTP client/server framework
 - **colorlog**: Log formatting with colors for console output
 - **requests**: Simple HTTP library for API requests
+- **psutil**: Cross-platform process and system monitoring
+- **py-cpuinfo**: CPU information retrieval library
 
 ### Standard Libraries
 - **json**: JSON data encoding/decoding
@@ -53,6 +58,9 @@ The bot relies on the following libraries:
 - **datetime**: Basic date and time types
 - **platform**: Access to underlying platform's identifying data
 - **functools**: Higher-order functions and operations on callable objects
+- **socket**: Low-level networking interface
+- **collections**: Container datatypes
+- **threading**: Thread-based parallelism
 
 ## ⚙️ Configuration
 
@@ -61,6 +69,19 @@ The bot uses a `config.json` file to store:
 - Command prefix (default: `!`)
 - Designated channels for OCR reading and responses
 - Command permissions
+
+Example configuration:
+```json
+{
+  "token": "your_discord_bot_token_here",
+  "command_prefix": "!",
+  "ocr_read_channels": {},
+  "ocr_response_channels": {},
+  "ocr_response_fallback": {},
+  "server_prefixes": {},
+  "command_permissions": {}
+}
+```
 
 ## 📝 Available Commands
 
@@ -92,11 +113,30 @@ The bot uses a `config.json` file to store:
 | **remove_command_role** | Remove a role or user's permission to use a specific command | `!remove_command_role @role command_name` | Admin, Manager |
 | **remove_bot_manager** | Remove a role or user from bot managers | `!remove_bot_manager @role` | Admin, Manager |
 
+### Pattern Management Commands
+
+The bot can be configured to recognize specific text patterns and respond with appropriate solutions:
+
+| Command | Description | Usage | Permissions |
+|---------|-------------|-------|------------|
+| **list_patterns** | List all configured patterns | `!list_patterns [verbosity]` | Admin, Manager |
+| **add_response** | Add a new response template | `!add_response "solution text" [name] [note]` | Admin, Manager |
+| **remove_response** | Remove an existing response | `!remove_response response_id_or_name` | Admin, Manager |
+| **add_pattern_to_response** | Add a pattern to an existing response | `!add_pattern_to_response response_id_or_name "pattern" [flags] [name] [url]` | Admin, Manager |
+| **remove_pattern_from_response** | Remove a pattern from a response | `!remove_pattern_from_response response_id_or_name pattern_id` | Admin, Manager |
+| **view_response** | View details of a specific response | `!view_response response_id_or_name` | Admin, Manager |
+| **extract_text** | Extract text from an image for testing | `!extract_text [url]` | Admin, Manager |
+
 ### System Commands
 
 | Command | Description | Usage | Permissions |
 |---------|-------------|-------|------------|
-| **help or info** | Show info about the bot and its features. | `!info or !help [command]` | Everyone |
+| **help** | Show info about the bot and its features | `!help [command]` | Everyone |
+| **ping** | Check the bot's response time | `!ping` | Everyone |
+| **uptime** | Show how long the bot has been running | `!uptime` | Everyone |
+| **invite** | Get the bot's invite link | `!invite` | Everyone |
+| **host** | Display system information about the host | `!host` | Admin, Manager |
+| **reload_patterns** | Reload the pattern database | `!reload_patterns` | Admin, Manager |
 | **shutdown** | Shut down the bot completely | `!shutdown` | Bot Owner Only |
 
 ## 🔐 Permission System
@@ -117,12 +157,20 @@ Mirrobot automatically processes images posted in designated OCR read channels:
 3. If a pattern is matched, the bot provides an appropriate response
 4. Responses are posted either in the same channel or in designated response channels
 
+## 📊 Stats and Monitoring
+
+The bot tracks various statistics:
+- Number of images processed
+- Success/failure rate of OCR operations
+- Pattern match frequency
+- Command usage statistics
+
 ## 🔧 Troubleshooting
 
 - **Bot doesn't respond to commands**: Check if the prefix has been changed. Use `@Mirrobot help` to check.
 - **OCR isn't working properly**: Make sure Tesseract is installed correctly and the path is set in environment variables.
 - **Permission errors**: Check server_info to verify permissions are set correctly.
-- **Log files**: Check the bot_YYYY-MM-DD.log files for detailed error information.
+- **Log files**: Check the bot_YYYY-MM-DD.log files in the logs directory for detailed error information.
 
 ## ⚠️ Error Handling
 
@@ -136,3 +184,12 @@ The bot includes robust error handling to maintain stability:
 - Images must be less than 500KB and at least 300x200 pixels for OCR processing
 - The bot can also process images from URLs in messages
 - Custom pattern recognition can be extended in the source code
+
+## 🔄 Updates and Version History
+
+- **v0.25** - Current version with core OCR functionality and pattern matching
+- For latest updates, visit the [GitHub repository](https://github.com/Mirrowel/Mirrobot-py)
+
+## 📜 License
+
+This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. See the [LICENSE.MD](LICENSE.MD) file for details.
