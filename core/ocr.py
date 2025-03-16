@@ -1,3 +1,11 @@
+"""
+OCR processing module for Mirrobot.
+
+This module contains the core OCR (Optical Character Recognition) functionality
+for processing images in Discord messages, extracting text, and matching patterns
+to provide automated responses.
+"""
+
 import discord
 import pytesseract
 from PIL import Image
@@ -13,7 +21,19 @@ from utils.stats_tracker import OCRTimingContext, get_ocr_stats
 logger = get_logger()
 
 async def process_pics(bot, message):
-    """Process images in a message for OCR"""
+    """
+    Process all images in a Discord message for OCR analysis.
+    
+    This function is the main entry point for processing images attached to messages.
+    It extracts text from each image and analyzes it using pattern matching.
+    
+    Args:
+        bot (discord.Bot): The Discord bot instance
+        message (discord.Message): The Discord message containing attachments
+        
+    Returns:
+        bool: True if any images were processed, False otherwise
+    """
     with OCRTimingContext() as timing:
         successful = False
         
@@ -21,54 +41,56 @@ async def process_pics(bot, message):
         lang = get_ocr_language(bot, message.guild.id, message.channel.id)
         logger.debug(f"Using OCR language: {lang} for channel {message.channel.id}")
         
+        # Process the message that has already been validated in process_message
         if message.attachments:
+            # Process the first valid attachment
             attachment = message.attachments[0]
-            logger.debug(f"Received a help request:\nServer: {message.guild.name}:{message.guild.id}, Channel: {message.channel.name}:{message.channel.id}," + (f" Parent:{message.channel.parent}" if message.channel.type == 'public_thread' or message.channel.type == 'private_thread' else ""))
-            logger.debug(f'Received an attachment of size: {attachment.size}')
-            if attachment.size < 500000 and attachment.content_type.startswith('image/'):
-                if (attachment.width > 300 and attachment.height > 200):
-                    logger.debug(f'URL: {attachment.url}')
-                    await pytess(bot, message, attachment)
-                    successful = True
-                else:
-                    await respond_to_ocr(bot, message, 'Images must be at least 300x200 pixels.')
-            else:
-                await respond_to_ocr(bot, message, 'Please attach or link an image(no GIFs) with a size less than 500KB.')
+            await pytess(bot, message, attachment, lang)
+            successful = True
         else:
-            # Extract first URL from the message if no attachments are found
+            # Extract URL from the message which was already validated
             import re
             urls = re.findall(r'(https?://\S+)', message.content)
             if urls:
-                # Assume the first URL is the image link
-                logger.debug(f'Grabbing first URL: {urls[0]}')
-                response = requests.head(urls[0])
-                content_type = response.headers.get('content-type')
-                content_length = int(response.headers.get('content-length', 0))
-                if content_type is not None and content_type.startswith('image/') and content_length < 500000:
-                    image_response = requests.get(urls[0])
-                    width, height = check_image_dimensions(io.BytesIO(image_response.content))
-                    if width > 300 and height > 200:
-                        logger.debug("Content type is image")
-                        attachment = type('FakeAttachment', (object,), {'url': urls[0], 'size': content_length, 'content_type': content_type})  # Fake attachment object
-                        await pytess(bot, message, attachment)
-                        successful = True
-                    else:
-                        await respond_to_ocr(bot, message, 'Images must be at least 300x200 pixels.')
-                else:
-                    await respond_to_ocr(bot, message, 'Please attach or link an image(no GIFs) with a size less than 500KB.')
-            #else:
-            #await respond_to_ocr(bot, message, 'Please attach or link an image')
+                # The URL was already validated in process_message
+                url = urls[0]
+                content_type = None
+                content_length = 0
+                
+                try:
+                    response = requests.head(url)
+                    content_type = response.headers.get('content-type')
+                    content_length = int(response.headers.get('content-length', 0))
+                except:
+                    pass
+                    
+                # Create a fake attachment object with the URL
+                attachment = type('FakeAttachment', (object,), {'url': url, 'size': content_length, 'content_type': content_type})
+                await pytess(bot, message, attachment, lang)
+                successful = True
+                
         if successful:
             timing.mark_successful()
 
     # Log processing time after completion
-    status_msg = "successfully" if timing.success else "with no results"
+    status_msg = "successfully" if timing.successful else "with no results"
     
     stats = get_ocr_stats()
     logger.info(f"OCR processing completed {status_msg} in {timing.elapsed:.2f} seconds (avg: {stats['avg_time']:.2f}s over {stats['total_processed']} successful operations)")
 
 def get_ocr_language(bot, guild_id, channel_id):
-    """Get the OCR language setting for a channel"""
+    """
+    Get the OCR language setting for a specific channel.
+    
+    Args:
+        bot (discord.Bot): The Discord bot instance
+        guild_id (int): The Discord server (guild) ID
+        channel_id (int): The Discord channel ID
+        
+    Returns:
+        str: Language code (e.g., 'eng', 'rus') to use for OCR,
+             defaults to 'eng' if not specified
+    """
     config = bot.config
     
     # Default to English if no configuration is found
@@ -88,7 +110,18 @@ def get_ocr_language(bot, guild_id, channel_id):
     return channel_config.get('lang', 'eng')
 
 async def pytess(bot, message, attachment, lang="eng"):
-    """Process image with pytesseract OCR using specified language"""
+    """
+    Extract text from an image using Tesseract OCR.
+    
+    Args:
+        bot (discord.Bot): The Discord bot instance
+        message (discord.Message): The Discord message containing the attachment
+        attachment (discord.Attachment): The image attachment to process
+        lang (str, optional): Language code for OCR. Defaults to "eng".
+        
+    Returns:
+        str: Extracted text from the image, or empty string if processing failed
+    """
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(attachment.url) as resp:
@@ -110,7 +143,17 @@ async def pytess(bot, message, attachment, lang="eng"):
         logger.error(f"Error processing image with OCR: {e}")
 
 async def analyze_and_respond(bot, message, text):
-    """Analyze OCR text and respond with appropriate patterns"""
+    """
+    Analyze extracted text from an image and respond if patterns match.
+    
+    Args:
+        bot (discord.Bot): The Discord bot instance
+        message (discord.Message): The Discord message containing the image
+        text (str): Extracted text from the image
+        
+    Returns:
+        bool: True if a response was sent, False otherwise
+    """
     logger.info(f'Analyzing text')
     
     # Try to match patterns
@@ -132,13 +175,31 @@ async def analyze_and_respond(bot, message, text):
         await respond_to_ocr(bot, message, text)
 
 def check_image_dimensions(image_path):
-    """Check dimensions of an image"""
+    """
+    Check if an image's dimensions are within acceptable limits.
+    
+    Args:
+        image_path (str): Path to the image file
+        
+    Returns:
+        bool: True if dimensions are acceptable, False otherwise
+    """
     with Image.open(image_path) as img:
         width, height = img.size
         return width, height
 
 async def respond_to_ocr(bot, message, response):
-    """Route the OCR response to the appropriate channel"""
+    """
+    Send a response to a message based on OCR results.
+    
+    Args:
+        bot (discord.Bot): The Discord bot instance
+        message (discord.Message): The original message to respond to
+        response (dict): Response data containing the text to send
+        
+    Returns:
+        bool: True if response was sent successfully, False otherwise
+    """
     if not response:
         logger.error('No response message found')
         return
@@ -204,7 +265,16 @@ async def respond_to_ocr(bot, message, response):
                 return
 
 async def msg_reply(message, text):
-    """Reply to a message with text, handling text that's too long"""
+    """
+    Reply directly to a Discord message.
+    
+    Args:
+        message (discord.Message): The Discord message to reply to
+        text (str): The text content to send in the reply
+        
+    Returns:
+        discord.Message: The sent message object
+    """
     if len(text) == 0:
         logger.error('No text found to reply')
         return

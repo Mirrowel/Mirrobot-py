@@ -1,3 +1,10 @@
+"""
+Logging setup module for Mirrobot.
+
+This module configures the logging system used throughout the bot, providing
+consistent and well-formatted log output to files and the console.
+"""
+
 import logging
 import sys
 import colorlog
@@ -5,13 +12,26 @@ from datetime import datetime
 
 class DiscordReconnectFilter(logging.Filter):
     """
-    Filter to remove Discord's reconnection error messages and tracebacks from logs
+    Filter to remove excessive reconnection messages from discord.py.
+    
+    This filter helps keep logs cleaner by filtering out common, repetitive
+    reconnection messages that aren't critical for troubleshooting.
     """
     def __init__(self):
+        """Initialize the reconnect filter."""
         super().__init__()
         self.is_in_traceback = False
         
     def filter(self, record):
+        """
+        Filter out common discord.py reconnection messages.
+        
+        Args:
+            record (logging.LogRecord): The log record to check
+            
+        Returns:
+            bool: False if the message should be filtered out, True otherwise
+        """
         # Skip reconnection messages from discord.client
         if record.name == 'discord.client' and 'Attempting a reconnect in' in record.getMessage():
             return False
@@ -61,14 +81,35 @@ class DiscordReconnectFilter(logging.Filter):
 
 class StreamToLogger:
     """
-    Fake file-like stream object that redirects writes to a logger instance.
+    File-like object that redirects writes to a logger.
+    
+    This class allows redirecting stdout/stderr to the logging system,
+    ensuring that all output is properly captured in log files.
+    
+    Attributes:
+        logger (logging.Logger): The logger to write to
+        log_level (int): The logging level to use
+        buffer (str): Buffer for accumulating text before logging
     """
     def __init__(self, logger, log_level=logging.INFO):
+        """
+        Initialize the stream to logger redirector.
+        
+        Args:
+            logger (logging.Logger): The logger instance to write to
+            log_level (int, optional): The logging level to use. Defaults to INFO.
+        """
         self.logger = logger
         self.log_level = log_level
         self.linebuf = ''
         
     def write(self, buf):
+        """
+        Write text to the logger.
+        
+        Args:
+            buf (str): Text to write
+        """
         for line in buf.rstrip().splitlines():
             # Skip lines that appear to be already formatted discord log messages
             if 'discord.' in line and ('[INFO' in line or '[ERROR' in line or '[DEBUG' in line or '[WARNING' in line):
@@ -83,10 +124,19 @@ class StreamToLogger:
                 self.logger.log(self.log_level, line.rstrip())
 
     def flush(self):
+        """Flush the stream (no-op for logging)."""
         pass
 
 def setup_logging():
-    """Set up the logging system and return the logger"""
+    """
+    Set up the logging system for the bot.
+    
+    This function configures log formatting, file handlers, and console output.
+    It should be called once during bot initialization.
+    
+    Returns:
+        logging.Logger: The configured logger instance
+    """
     # Create a custom logger
     logger = logging.getLogger('mirrobot')
     logger.setLevel(logging.DEBUG)  # Set the logging level
@@ -143,5 +193,12 @@ def setup_logging():
     return logger
 
 def get_logger():
-    """Get the application logger"""
+    """
+    Get the logger instance for the bot.
+    
+    If the logging system hasn't been set up yet, this will set it up.
+    
+    Returns:
+        logging.Logger: The configured logger instance
+    """
     return logging.getLogger('mirrobot')

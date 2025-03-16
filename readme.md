@@ -6,10 +6,13 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
 
 - **Advanced OCR Processing**: Analyzes images posted in designated channels
 - **Parallel Processing**: Configurable multi-worker system for handling OCR tasks simultaneously
+- **Smart Queue Management**: Efficient handling of incoming images with backpressure control
 - **Pattern Recognition**: Identifies common issues from error messages
 - **Automatic Responses**: Provides helpful solutions for recognized problems
 - **Flexible Configuration**: Customize command prefix and permissions
 - **Role-based Permissions**: Grant specific access to commands by role or user
+- **Comprehensive Statistics**: Monitor OCR performance and queue metrics
+- **Environment Variable Support**: Secure configuration through environment variables
 
 ## 🛠️ Installation
 
@@ -23,6 +26,7 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
 5. Create a config file:
    - Rename `config_example.json` to `config.json`
    - Add your Discord bot token and configure settings
+   - Alternatively, use environment variables by copying `.env.example` to `.env`
 6. Download appropriate tessdata language files:
    - Tesseract comes with "fast" data by default (fastest but least accurate)
    - For better results, download either:
@@ -44,6 +48,7 @@ The bot relies on the following libraries:
 - **requests**: Simple HTTP library for API requests
 - **psutil**: Cross-platform process and system monitoring
 - **py-cpuinfo**: CPU information retrieval library
+- **python-dotenv**: Loading environment variables from .env files
 
 ### Standard Libraries
 - **json**: JSON data encoding/decoding
@@ -65,11 +70,15 @@ The bot relies on the following libraries:
 
 ## ⚙️ Configuration
 
+The bot can be configured in two ways:
+
+### 1. Configuration File
 The bot uses a `config.json` file to store:
 - Discord bot token
 - Command prefix (default: `!`)
 - Designated channels for OCR reading and responses
 - OCR worker count (default: 2)
+- OCR queue size (default: 100)
 - Command permissions
 
 Example configuration:
@@ -77,14 +86,22 @@ Example configuration:
 {
   "token": "your_discord_bot_token_here",
   "command_prefix": "!",
+  "ocr_worker_count": 2,
+  "ocr_max_queue_size": 100,
   "ocr_read_channels": {},
   "ocr_response_channels": {},
   "ocr_response_fallback": {},
   "server_prefixes": {},
-  "command_permissions": {},
-  "ocr_worker_count": 2
+  "command_permissions": {}
 }
 ```
+
+### 2. Environment Variables
+For improved security, you can use environment variables:
+1. Create a `.env` file based on `.env.example`
+2. Add your Discord bot token: `DISCORD_BOT_TOKEN=your_token_here`
+
+Environment variables take precedence over the config file settings.
 
 ## 📝 Available Commands
 
@@ -135,8 +152,10 @@ The bot can be configured to recognize specific text patterns and respond with a
 | Command | Description | Usage | Permissions |
 |---------|-------------|-------|------------|
 | **help** | Show info about the bot and its features | `!help [command]` | Everyone |
+| **helpmenu** | Interactive help menu with categories | `!helpmenu` | Everyone |
 | **ping** | Check the bot's response time | `!ping` | Everyone |
 | **uptime** | Show how long the bot has been running | `!uptime` | Everyone |
+| **status** | Display bot status, queue, and statistics | `!status` | Everyone |
 | **invite** | Get the bot's invite link | `!invite` | Everyone |
 | **host** | Display system information about the host | `!host` | Bot Owner Only |
 | **reload_patterns** | Reload the pattern database | `!reload_patterns` | Bot Owner Only |
@@ -155,19 +174,23 @@ Mirrobot uses a tiered permission system:
 
 Mirrobot automatically processes images posted in designated OCR read channels:
 
-1. When an image is posted, it's queued for processing by available OCR workers
-2. Multiple OCR workers process the queue in parallel for better performance
-3. The text is extracted using Tesseract OCR and analyzed for known patterns
-4. If a pattern is matched, the bot provides an appropriate response
-5. Responses are posted either in the same channel or in designated response channels
+1. When an image is posted, it's validated for format and size requirements
+2. Valid images are queued for processing with smart backpressure handling
+3. Multiple OCR workers process the queue in parallel for better performance
+4. The text is extracted using Tesseract OCR and analyzed for known patterns
+5. If a pattern is matched, the bot provides an appropriate response
+6. Responses are posted either in the same channel or in designated response channels
 
 ## 📊 Stats and Monitoring
 
 The bot tracks various statistics:
 - Number of images processed
 - Success/failure rate of OCR operations
+- Queue statistics (current size, total enqueued, rejected, high watermark)
 - Pattern match frequency
-- Command usage statistics
+- Processing times and averages
+
+View statistics with the `!status` command.
 
 ## 🔧 Troubleshooting
 
@@ -175,12 +198,15 @@ The bot tracks various statistics:
 - **OCR isn't working properly**: Make sure Tesseract is installed correctly and the path is set in environment variables.
 - **Permission errors**: Check server_info to verify permissions are set correctly.
 - **OCR processing is slow**: Consider increasing the `ocr_worker_count` in the config file for better performance.
+- **Queue filling up**: If the `!status` command shows the queue is frequently near capacity, increase the `ocr_max_queue_size`.
 - **Log files**: Check the bot_YYYY-MM-DD.log files in the logs directory for detailed error information.
 
 ## ⚠️ Error Handling
 
 The bot includes robust error handling to maintain stability:
 - Connection issues are automatically retried
+- Queue backpressure prevents memory overload
+- Config validation ensures proper setup
 - Error logs are maintained in daily log files
 - Critical errors are reported to the console
 
@@ -189,10 +215,12 @@ The bot includes robust error handling to maintain stability:
 - Images must be less than 500KB and at least 300x200 pixels for OCR processing
 - The bot can also process images from URLs in messages
 - Custom pattern recognition can be extended in the source code
+- Comprehensive documentation is available in the `/docs` directory
 
 ## 🔄 Updates and Version History
 
-- **v0.30** - Current version with parallel OCR processing using multiple workers.
+- **v0.35** - Current version with improved queue management, environment variable support, comprehensive documentation, configuration validation, enhanced embedding, and status command.
+- **v0.30** - Parallel OCR processing using multiple workers.
 - **v0.25** - First modular structure release. A lot of edits and improvements.
 - **v0.20** - Final single-file release.
 - **v0.15** - Initial version with basic features.

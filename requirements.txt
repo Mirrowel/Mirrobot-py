@@ -11,3 +11,6 @@ requests>=2.27.0
 
 # Logging and formatting
 colorlog>=6.6.0
+
+# Environment variables
+python-dotenv>=1.0.0

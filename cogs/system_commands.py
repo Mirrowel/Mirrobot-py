@@ -11,7 +11,7 @@ from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from core.pattern_manager import load_patterns
 from utils.embed_helper import create_embed_response
-from core.bot import get_server_prefix
+from core.bot import get_ocr_queue_stats, get_server_prefix
 from utils.constants import (
     BOT_NAME, BOT_VERSION, AUTHOR_NAME, AUTHOR_URL, 
     AUTHOR_ICON_URL, REPO_URL, GITHUB_ICON_URL, get_uptime
@@ -769,3 +769,66 @@ class SystemCommandsCog(commands.Cog):
         embed.set_footer(text="Note: You need 'Manage Server' permission to add bots")
         
         await ctx.send(embed=embed)
+
+    from core.bot import get_ocr_queue_stats
+
+    @commands.command(name='status', help='Display bot status, uptime, and statistics.\nNo additional arguments required.\nExample: !status')
+    @has_command_permission()
+    @command_category("System")
+    async def status(self, ctx):
+        """Display current bot status and statistics"""
+        # Get OCR stats
+        try:
+            ocr_stats = get_ocr_stats()
+            avg_process_time = f"{ocr_stats.get('avg_time', 0):.2f} seconds"
+            total_images = ocr_stats.get('total_processed', 0)
+            
+            # Get queue stats
+            queue_stats = get_ocr_queue_stats(self.bot)
+            queue_info = (
+                f"**Queue Size:** {queue_stats['current_size']}/{queue_stats['max_size']} "
+                f"({queue_stats['utilization_pct']:.1f}%)\n"
+                f"**Queued Total:** {queue_stats['total_enqueued']}\n"
+                f"**Processed:** {queue_stats['total_processed']}\n"
+                f"**Rejected:** {queue_stats['total_rejected']}\n"
+                f"**High Water Mark:** {queue_stats['high_watermark']}"
+            )
+            
+            ocr_info = f"**Average Processing Time:** {avg_process_time}\n**Total Images Processed:** {total_images}"
+        except Exception as e:
+            logger.error(f"Could not get OCR stats: {str(e)}")
+            ocr_info = "**OCR Stats:** Not available"
+            queue_info = "**Queue Stats:** Not available"
+        
+        fields = []
+        
+        # Add bot uptime information
+        uptime_str = get_uptime()
+        fields.append({"name": "⏱️ Uptime", "value": uptime_str, "inline": False})
+        
+        # Add OCR stats
+        fields.append(
+            {"name": "🔍 OCR Performance", "value": ocr_info, "inline": False}
+        )
+        
+        # Add queue stats
+        fields.append(
+            {"name": "📊 Queue Statistics", "value": queue_info, "inline": False}
+        )
+        
+        # Add server count
+        server_count = len(self.bot.guilds)
+        user_count = sum(guild.member_count for guild in self.bot.guilds)
+        
+        fields.append(
+            {"name": "🌐 Server Stats", "value": f"**Servers:** {server_count}\n**Users:** {user_count}", "inline": False}
+        )
+        
+        # Create and send the embed
+        await create_embed_response(
+            ctx=ctx,
+            title=f"{BOT_NAME} Status",
+            description=f"Current status and statistics for {BOT_NAME} v{BOT_VERSION}",
+            fields=fields,
+            footer_text=f"{BOT_NAME} v{BOT_VERSION}"
+        )

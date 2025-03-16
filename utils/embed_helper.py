@@ -1,37 +1,64 @@
+"""
+Embed helper module for Mirrobot.
+
+This module provides utilities for creating and managing Discord embed messages,
+making it easier to create consistent, well-formatted responses.
+"""
+
 import discord
 
 async def create_embed_response(ctx, title, description, fields, footer_text=None, thumbnail_url=None, footer_icon_url=None, url=None, author_name=None, author_icon_url=None, author_url=None):
     """
-    Create a standardized embed response with proper formatting.
+    Create and send a formatted Discord embed response.
+    
+    This function creates a consistent Discord embed with various optional parameters
+    and sends it to the specified context.
     
     Args:
-        ctx: The command context
-        title: The title of the embed
-        description: The description text
-        fields: List of dictionaries with 'name', 'value', and 'inline' keys
-        footer_text: Optional text for the footer
-        thumbnail_url: Optional URL for the thumbnail
-        footer_icon_url: Optional URL for the footer icon
-        url: Optional URL for the embed title hyperlink
-        author_name: Optional custom author name for the embed
-        author_icon_url: Optional custom author icon URL for the embed
-        author_url: Optional custom author URL for the embed
+        ctx (commands.Context): The Discord context to send the embed to
+        title (str): The title of the embed
+        description (str): The main description text of the embed
+        fields (list): A list of field dictionaries with keys:
+                      - name: Field title (str)
+                      - value: Field content (str)
+                      - inline: Whether to display field inline (bool, optional)
+        footer_text (str, optional): Text to display in the footer
+        thumbnail_url (str, optional): URL of thumbnail image to display
+        footer_icon_url (str, optional): URL of icon to display in the footer
+        url (str, optional): URL to make the title clickable
+        author_name (str, optional): Name to display in the author field
+        author_icon_url (str, optional): URL of icon to display in the author field
+        author_url (str, optional): URL to make the author name clickable
+        
+    Returns:
+        discord.Message: The sent message object containing the embed
+    
+    Example:
+        ```python
+        fields = [
+            {"name": "Field 1", "value": "Value 1", "inline": True},
+            {"name": "Field 2", "value": "Value 2", "inline": False}
+        ]
+        
+        await create_embed_response(
+            ctx=ctx,
+            title="Example Embed",
+            description="This is a sample embed message",
+            fields=fields,
+            footer_text="Footer text here"
+        )
+        ```
     """
-    embed_color = discord.Color.blue()
+    # Create the embed with specified color
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=discord.Color.blue()
+    )
     
-    # Create the embed with title and description
-    embed = discord.Embed(title=title, url=url, description=description, color=embed_color)
-    
-    if author_name:
-        embed.set_author(name=author_name, icon_url=author_icon_url, url=author_url)
-
-    # Add thumbnail if provided
-    if thumbnail_url:
-        embed.set_thumbnail(url=thumbnail_url)
-    elif ctx.guild and ctx.guild.me.avatar:
-        embed.set_thumbnail(url=ctx.guild.me.avatar.url)
-    elif ctx.bot.user.avatar:
-        embed.set_thumbnail(url=ctx.bot.user.avatar.url)
+    # Add URL if provided
+    if url:
+        embed.url = url
         
     # Add all fields
     for field in fields:
@@ -69,6 +96,29 @@ async def create_embed_response(ctx, title, description, fields, footer_text=Non
     
     # Add footer if provided
     if footer_text:
-        embed.set_footer(text=footer_text, icon_url=footer_icon_url)
+        if footer_icon_url:
+            embed.set_footer(text=footer_text, icon_url=footer_icon_url)
+        else:
+            embed.set_footer(text=footer_text)
+            
+    # Add thumbnail if provided
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
+    elif ctx.guild and ctx.guild.me.avatar:
+        embed.set_thumbnail(url=ctx.guild.me.avatar.url)
+    elif ctx.bot.user.avatar:
+        embed.set_thumbnail(url=ctx.bot.user.avatar.url)
         
-    await ctx.send(embed=embed)
+    # Add author if provided
+    if author_name:
+        if author_icon_url and author_url:
+            embed.set_author(name=author_name, icon_url=author_icon_url, url=author_url)
+        elif author_icon_url:
+            embed.set_author(name=author_name, icon_url=author_icon_url)
+        elif author_url:
+            embed.set_author(name=author_name, url=author_url)
+        else:
+            embed.set_author(name=author_name)
+            
+    # Send the embed
+    return await ctx.send(embed=embed)

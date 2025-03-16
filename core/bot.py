@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from core.ocr import respond_to_ocr
 from utils.logging_setup import get_logger
 import sys
 import asyncio
@@ -82,8 +83,17 @@ def create_bot(config):
     # Store config in the bot for easy access
     bot.config = config
     
-    # Create a queue for OCR processing tasks
-    bot.ocr_queue = asyncio.Queue()
+    # Create a queue for OCR processing tasks with max size to prevent memory issues
+    max_queue_size = config.get('ocr_max_queue_size', 100)
+    bot.ocr_queue = asyncio.Queue(maxsize=max_queue_size)
+    
+    # Add OCR queue statistics
+    bot.ocr_queue_stats = {
+        'total_enqueued': 0,
+        'total_processed': 0,
+        'total_rejected': 0,
+        'high_watermark': 0,
+    }
     
     # Set up event handlers
     @bot.event
@@ -132,10 +142,11 @@ def create_bot(config):
 
 async def process_message(bot, message, config):
     """Process an incoming message for OCR if needed"""
-    try :
-        # Check if message should be processed for OCR and queue it
+    try:
+        # Check if message should be processed for OCR
         if message.guild and str(message.guild.id) in config['ocr_read_channels']:
             guild_id = str(message.guild.id)
+            
             if guild_id not in config['ocr_read_channels']:
                 logger.info(f'No read channels found for server {message.guild.name}:{message.guild.id}. CREATING NEW CHANNEL LIST')
                 config['ocr_read_channels'][guild_id] = []
@@ -143,15 +154,106 @@ async def process_message(bot, message, config):
                 save_config(config)
                 
             if message.channel.id in config['ocr_read_channels'][guild_id]:
-                # Queue the message for OCR processing
-                await bot.ocr_queue.put(message)
-                logger.debug(f"Queued message for OCR processing: {message.id}")
+                # Validate if the message contains OCR-processable content before queueing
+                has_valid_image = False
+                
+                # Check for valid attachments
+                if message.attachments:
+                    attachment = message.attachments[0]
+                    logger.debug(f"Received a help request:\nServer: {message.guild.name}:{message.guild.id}, Channel: {message.channel.name}:{message.channel.id}," + (f" Parent:{message.channel.parent}" if hasattr(message.channel, 'type') and message.channel.type in ['public_thread', 'private_thread'] else ""))
+                    logger.debug(f'Received an attachment of size: {attachment.size}')
+                    
+                    # Validate image attachment
+                    if (attachment.size < 500000 and 
+                        attachment.content_type and 
+                        attachment.content_type.startswith('image/') and
+                        hasattr(attachment, 'width') and
+                        hasattr(attachment, 'height') and
+                        attachment.width > 300 and 
+                        attachment.height > 200):
+                        
+                        logger.debug(f'Valid image attachment found: {attachment.url}')
+                        has_valid_image = True
+                    else:
+                        # Invalid image, skip queueing
+                        if attachment.content_type and attachment.content_type.startswith('image/'):
+                            if not (hasattr(attachment, 'width') and hasattr(attachment, 'height') and attachment.width > 300 and attachment.height > 200):
+                                await respond_to_ocr(bot, message, 'Images must be at least 300x200 pixels.')
+                        else:
+                            await respond_to_ocr(bot, message, 'Please attach or link an image (no GIFs) with a size less than 500KB.')
+                else:
+                    # No attachments, check for image URLs
+                    import re
+                    urls = re.findall(r'(https?://\S+)', message.content)
+                    if urls:
+                        # Assume the first URL is the image link
+                        logger.debug(f'Checking URL for valid image: {urls[0]}')
+                        try:
+                            import requests
+                            from PIL import Image
+                            import io
+                            
+                            response = requests.head(urls[0], timeout=5)
+                            content_type = response.headers.get('content-type')
+                            content_length = int(response.headers.get('content-length', 0))
+                            
+                            if content_type and content_type.startswith('image/') and content_length < 500000:
+                                # Download a bit of the image to check dimensions
+                                image_response = requests.get(urls[0], timeout=5)
+                                img_data = io.BytesIO(image_response.content)
+                                img = Image.open(img_data)
+                                width, height = img.size
+                                
+                                if width > 300 and height > 200:
+                                    logger.debug(f"Valid image URL found: {urls[0]}")
+                                    has_valid_image = True
+                                else:
+                                    await respond_to_ocr(bot, message, 'Images must be at least 300x200 pixels.')
+                            else:
+                                # Not a valid image URL
+                                if urls[0].lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                                    await respond_to_ocr(bot, message, 'Please attach or link an image (no GIFs) with a size less than 500KB.')
+                        except Exception as e:
+                            logger.debug(f"Error checking image URL: {e}")
+                
+                # Only queue if we have a valid image
+                if has_valid_image:
+                    # Apply backpressure handling
+                    try:
+                        # Try to add the message to the queue with a timeout
+                        # This prevents the bot from hanging indefinitely if the queue is full
+                        timeout = 5.0  # 5 seconds timeout
+                        
+                        # Check if queue is close to capacity before trying to add
+                        if bot.ocr_queue.qsize() >= bot.ocr_queue.maxsize * 0.9:  # 90% full
+                            logger.warning(f"OCR queue is at {bot.ocr_queue.qsize()}/{bot.ocr_queue.maxsize} capacity - approaching limit")
+                        
+                        await asyncio.wait_for(bot.ocr_queue.put(message), timeout=timeout)
+                        
+                        # Update statistics
+                        bot.ocr_queue_stats['total_enqueued'] += 1
+                        current_size = bot.ocr_queue.qsize()
+                        if current_size > bot.ocr_queue_stats['high_watermark']:
+                            bot.ocr_queue_stats['high_watermark'] = current_size
+                            
+                        logger.debug(f"Queued message for OCR processing: {message.id} (queue size: {bot.ocr_queue.qsize()})")
+                        
+                    except asyncio.TimeoutError:
+                        # Queue is full and we timed out waiting
+                        bot.ocr_queue_stats['total_rejected'] += 1
+                        logger.error(f"OCR queue full - rejecting message {message.id} from {message.guild.name}")
+                        # Optionally notify the user that the system is busy
+                        try:
+                            await message.add_reaction("⏳")  # Hourglass to indicate system busy
+                        except Exception:
+                            pass  # Ignore if we can't add reaction
     except Exception as e:
-        logger.error(f"Error in message processing: {e}")
+        logger.error(f"Error processing message for OCR: {e}")
 
 async def ocr_worker(bot, worker_id=1):
     """Worker to process OCR tasks from the queue"""
     logger.info(f"OCR worker {worker_id} started")
+    
     while True:
         try:
             # Get a message from the queue
@@ -163,14 +265,19 @@ async def ocr_worker(bot, worker_id=1):
                 logger.debug(f"Worker {worker_id} processing message: {message.id}")
                 await process_pics(bot, message)
                 logger.debug(f"Worker {worker_id} completed OCR task for message: {message.id}")
+                
+                # Update statistics
+                bot.ocr_queue_stats['total_processed'] += 1
+                
             except Exception as e:
                 logger.error(f"Worker {worker_id} error processing OCR task: {e}")
             finally:
-                # Mark the task as done
+                # Always mark task as done
                 bot.ocr_queue.task_done()
+                
         except Exception as e:
             logger.error(f"Error in OCR worker {worker_id}: {e}")
-            # Sleep briefly to avoid tight loop in case of repeated errors
+            # Sleep briefly to prevent tight error loops
             await asyncio.sleep(1)
 
 async def load_cogs(bot):
@@ -192,3 +299,11 @@ async def load_cogs(bot):
     
     # Apply command categories after all cogs are loaded
     apply_command_categories(bot)
+
+def get_ocr_queue_stats(bot):
+    """Get statistics about the OCR queue"""
+    stats = bot.ocr_queue_stats.copy()
+    stats['current_size'] = bot.ocr_queue.qsize()
+    stats['max_size'] = bot.ocr_queue.maxsize
+    stats['utilization_pct'] = (stats['current_size'] / stats['max_size'] * 100) if stats['max_size'] > 0 else 0
+    return stats
