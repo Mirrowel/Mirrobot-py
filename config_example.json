@@ -1,7 +1,7 @@
 {
   "token": "your_discord_bot_token_here",
   "command_prefix": "!",
-  
+  "ocr_worker_count": 2,
   "ocr_read_channels": {
   },
   

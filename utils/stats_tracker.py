@@ -48,10 +48,21 @@ def get_ocr_stats():
 class OCRTimingContext:
     """Context manager to time OCR operations"""
     
+    def __init__(self):
+        self.start_time = 0
+        self.elapsed = 0
+        self.success = False
+    
     def __enter__(self):
         self.start_time = time.time()
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        elapsed = time.time() - self.start_time
-        record_ocr_time(elapsed)
+        self.elapsed = time.time() - self.start_time
+        # Only record stats if operation was successful
+        if self.success:
+            record_ocr_time(self.elapsed)
+    
+    def mark_successful(self):
+        """Mark this OCR operation as successful for stats tracking"""
+        self.success = True

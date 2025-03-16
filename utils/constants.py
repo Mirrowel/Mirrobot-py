@@ -4,7 +4,7 @@ Constants and utilities for the Mirrobot application
 import datetime
 
 # Bot information
-BOT_VERSION = "0.25"
+BOT_VERSION = "0.3"
 BOT_NAME = "Mirrobot"
 
 # Author information 

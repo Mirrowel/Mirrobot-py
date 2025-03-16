@@ -502,32 +502,54 @@ class PatternCommandsCog(commands.Cog):
         else:
             await ctx.reply(response_text)
 
-    @commands.command(name='extract_text', help='Extract text from an image without matching patterns.\nArguments: [url] (optional) - URL to an image\nExample: !extract_text https://example.com/image.jpg')
+    @commands.command(name='extract_text', help='Extract text from an image without matching patterns.\nArguments: [url] (optional) - URL to an image\n           [language] (optional) - Language for OCR (default: eng, options: eng, rus)\nExample: !extract_text https://example.com/image.jpg rus')
     @has_command_permission()
     @command_category("OCR Utilities")
-    async def extract_text(self, ctx, url: str = None):
+    async def extract_text(self, ctx, url_or_lang: str = None, language: str = None):
         """Extract text from an image attachment or URL without applying patterns"""
         start_time = time.time()
         await ctx.typing()
         
+        # Determine if the first argument is a URL or language
+        url = None
+        lang = "eng"  # Default language
+        
+        if url_or_lang:
+            if url_or_lang.lower() in ["eng", "rus"]:
+                lang = url_or_lang.lower()
+            else:
+                url = url_or_lang
+                
+        # If second argument is provided, it's the language
+        if language and language.lower() in ["eng", "rus"]:
+            lang = language.lower()
+        
+        # Validate language
+        if lang not in ["eng", "rus"]:
+            await ctx.reply("Invalid language. Supported languages are: eng (English), rus (Russian)")
+            return
+            
+        language_name = "English" if lang == "eng" else "Russian"
+        logger.debug(f"Using language {language_name} for OCR extraction")
+        
         if url:
             # Process URL provided as an argument
             try:
-                logger.info(f'Grabbing the URL: {url}')
+                logger.debug(f'Grabbing the URL: {url}')
                 response = requests.head(url)
                 content_type = response.headers.get('content-type')
                 if content_type is not None and content_type.startswith('image/'):
                     image_response = requests.get(url)
                     width, height = check_image_dimensions(io.BytesIO(image_response.content))
                     if width > 300 and height > 200:
-                        logger.info("Content type is image")
+                        logger.debug("Content type is image")
                         # Create a simulated attachment object with the URL
                         attachment = type('FakeAttachment', (object,), {
                             'url': url,
                             'size': 999999,
                             'content_type': content_type
                         })
-                        await self._extract_and_respond(ctx, attachment, start_time)
+                        await self._extract_and_respond(ctx, attachment, start_time, lang)
             except Exception as e:
                 logger.error(f"Error processing URL: {e}")
                 await ctx.reply(f"Error processing the URL: {e}")
@@ -536,10 +558,10 @@ class PatternCommandsCog(commands.Cog):
             # Process attachment from the message
             attachment = ctx.message.attachments[0]
             logger.debug(f"Received image extraction request from {ctx.author}\nServer: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
-            logger.info(f'Received an attachment of size: {attachment.size}')
+            logger.debug(f'Received an attachment of size: {attachment.size}')
             if attachment.size < 500000 and attachment.content_type.startswith('image/'):
                 if (attachment.width > 300 and attachment.height > 200):
-                    await self._extract_and_respond(ctx, attachment, start_time)
+                    await self._extract_and_respond(ctx, attachment, start_time, lang)
                 else:
                     await ctx.reply('Images must be at least 300x200 pixels.')
             else:
@@ -548,7 +570,7 @@ class PatternCommandsCog(commands.Cog):
         else:
             await ctx.reply("Please provide either a URL or attach an image to extract text from.")
 
-    async def _extract_and_respond(self, ctx, attachment, start_time):
+    async def _extract_and_respond(self, ctx, attachment, start_time, lang="eng"):
         """Extract text from attachment and respond directly to the command"""
         async with aiohttp.ClientSession() as session:
             try:
@@ -556,15 +578,20 @@ class PatternCommandsCog(commands.Cog):
                     if resp.status == 200:
                         data = io.BytesIO(await resp.read())
                         image = Image.open(data)
-                        text = pytesseract.image_to_string(image, 'eng')
                         
-                        logger.info(f"Text extraction took {time.time() - start_time:.2f} seconds.")
+                        # Use the specified language for OCR
+                        text = pytesseract.image_to_string(image, lang)
+                        language_name = "English" if lang == "eng" else "Russian"
+                        
+                        logger.info(f"Text extraction using {language_name} took {time.time() - start_time:.2f} seconds.")
                         
                         if text.strip():
+                            # Add language info to the response
+                            text_with_info = f"**Text extracted using {language_name}:**\n\n{text}"
                             # Split into chunks if needed
-                            await msg_reply(ctx, text)
+                            await msg_reply(ctx, text_with_info)
                         else:
-                            await ctx.reply("No text could be extracted from the image.")
+                            await ctx.reply(f"No text could be extracted from the image using {language_name}.")
                     else:
                         await ctx.reply(f"Failed to fetch the image. Status code: {resp.status}")
             except Exception as e:

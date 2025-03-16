@@ -4,6 +4,7 @@ from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from config.config_manager import save_config
 from utils.embed_helper import create_embed_response
+import asyncio
 
 logger = get_logger()
 
@@ -97,105 +98,159 @@ class BotConfigCog(commands.Cog):
         # Create description with server prefix info
         description = f"Server configuration for **{ctx.guild.name}**\n\n**Current prefix:** `{current_prefix}`"
         
-        # Build the fields
-        fields = []
-        
-        # Get various configurations
+        # Get configurations needed for async fetching
         ocr_read_channels = config.get('ocr_read_channels', {})
         ocr_response_channels = config.get('ocr_response_channels', {})
         ocr_response_fallback = config.get('ocr_response_fallback', {})
         command_permissions = config.get('command_permissions', {})
         
-        # OCR Read Channels field
-        ocr_read_value = ""
-        if guild_id in ocr_read_channels and ocr_read_channels[guild_id]:
-            for channel_id in ocr_read_channels[guild_id]:
-                channel = self.bot.get_channel(channel_id)
-                channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
-                ocr_read_value += f"• {channel_name}\n"
-        else:
-            ocr_read_value = "No OCR read channels configured."
-        fields.append({"name": "📷 OCR Read Channels", "value": ocr_read_value, "inline": False})
+        # Define async fetch functions
+        async def get_ocr_read_channels():
+            result = ""
+            if guild_id in ocr_read_channels and ocr_read_channels[guild_id]:
+                channels = []
+                for channel_id in ocr_read_channels[guild_id]:
+                    channel = self.bot.get_channel(channel_id)
+                    channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
+                    # Get language for this channel
+                    lang = "eng"
+                    if 'ocr_channel_config' in config and guild_id in config['ocr_channel_config'] and str(channel_id) in config['ocr_channel_config'][guild_id]:
+                        lang = config['ocr_channel_config'][guild_id][str(channel_id)].get('lang', 'eng')
+                    lang_display = " (Russian)" if lang == "rus" else ""
+                    channels.append(f"• {channel_name}{lang_display}")
+                result = "\n".join(channels)
+            else:
+                result = "No OCR read channels configured."
+            return {"name": "📷 OCR Read Channels", "value": result, "inline": False}
+            
+        async def get_ocr_response_channels():
+            result = ""
+            if guild_id in ocr_response_channels and ocr_response_channels[guild_id]:
+                channels = []
+                for channel_id in ocr_response_channels[guild_id]:
+                    channel = self.bot.get_channel(channel_id)
+                    channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
+                    # Get language for this channel
+                    lang = "eng"
+                    if 'ocr_channel_config' in config and guild_id in config['ocr_channel_config'] and str(channel_id) in config['ocr_channel_config'][guild_id]:
+                        lang = config['ocr_channel_config'][guild_id][str(channel_id)].get('lang', 'eng')
+                    lang_display = " (Russian)" if lang == "rus" else ""
+                    channels.append(f"• {channel_name}{lang_display}")
+                result = "\n".join(channels)
+            else:
+                result = "No OCR response channels configured."
+            return {"name": "💬 OCR Response Channels", "value": result, "inline": False}
+            
+        async def get_ocr_fallback_channels():
+            result = ""
+            if guild_id in ocr_response_fallback and ocr_response_fallback[guild_id]:
+                channels = []
+                for channel_id in ocr_response_fallback[guild_id]:
+                    channel = self.bot.get_channel(channel_id)
+                    channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
+                    channels.append(f"• {channel_name}")
+                result = "\n".join(channels)
+            else:
+                result = "No OCR fallback channels configured."
+            return {"name": "🔄 OCR Fallback Channels", "value": result, "inline": False}
+            
+        async def get_manager_roles():
+            result = ""
+            if guild_id in command_permissions and "*" in command_permissions[guild_id] and command_permissions[guild_id]["*"]:
+                roles = []
+                for role_id in command_permissions[guild_id]["*"]:
+                    role = ctx.guild.get_role(int(role_id))
+                    role_name = role.mention if role else f"Unknown Role ({role_id})"
+                    roles.append(f"• {role_name}")
+                result = "\n".join(roles)
+            else:
+                result = "No bot manager roles configured."
+            return {"name": "👑 Bot Manager Roles", "value": result, "inline": False}
+            
+        async def get_manager_users():
+            result = ""
+            if (guild_id in command_permissions and 
+                "users" in command_permissions[guild_id] and 
+                "*" in command_permissions[guild_id]["users"] and 
+                command_permissions[guild_id]["users"]["*"]):
+                users = []
+                fetch_tasks = []
+                for user_id in command_permissions[guild_id]["users"]["*"]:
+                    fetch_tasks.append(self.bot.fetch_user(int(user_id)))
+                
+                if fetch_tasks:
+                    fetched_users = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+                    for i, user_or_error in enumerate(fetched_users):
+                        user_id = command_permissions[guild_id]["users"]["*"][i]
+                        if isinstance(user_or_error, Exception):
+                            users.append(f"• Unknown User ({user_id})")
+                        else:
+                            users.append(f"• @{user_or_error.name}")
+                    result = "\n".join(users)
+                
+            if not result:
+                result = "No bot manager users configured."
+            return {"name": "👤 Bot Manager Users", "value": result, "inline": False}
+            
+        async def get_cmd_role_permissions():
+            result = ""
+            if guild_id in command_permissions:
+                sections = []
+                for cmd_name, roles in sorted(command_permissions[guild_id].items()):
+                    if cmd_name not in ["*", "users"] and roles:  # Skip wildcard and users entries
+                        role_lines = [f"**{cmd_name}**"]
+                        for role_id in roles:
+                            role = ctx.guild.get_role(int(role_id))
+                            role_name = role.mention if role else f"Unknown Role ({role_id})"
+                            role_lines.append(f"• {role_name}")
+                        sections.append("\n".join(role_lines))
+                if sections:
+                    result = "\n\n".join(sections)
+            if not result:
+                result = "No command-specific role permissions configured."
+            return {"name": "🔐 Command Role Permissions", "value": result, "inline": False}
+            
+        async def get_cmd_user_permissions():
+            result = ""
+            if guild_id in command_permissions and "users" in command_permissions[guild_id]:
+                sections = []
+                for cmd_name, users in sorted(command_permissions[guild_id]["users"].items()):
+                    if cmd_name != "*" and users:  # Skip the wildcard entry
+                        user_lines = [f"**{cmd_name}**"]
+                        fetch_tasks = []
+                        user_ids = []
+                        for user_id in users:
+                            user_ids.append(user_id)
+                            fetch_tasks.append(self.bot.fetch_user(int(user_id)))
+                        
+                        if fetch_tasks:
+                            fetched_users = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+                            for i, user_or_error in enumerate(fetched_users):
+                                user_id = user_ids[i]
+                                if isinstance(user_or_error, Exception):
+                                    user_lines.append(f"• Unknown User ({user_id})")
+                                else:
+                                    user_lines.append(f"• @{user_or_error.name}")
+                        sections.append("\n".join(user_lines))
+                if sections:
+                    result = "\n\n".join(sections)
+            if not result:
+                result = "No command-specific user permissions configured."
+            return {"name": "👤 Command User Permissions", "value": result, "inline": False}
         
-        # OCR Response Channels field
-        ocr_response_value = ""
-        if guild_id in ocr_response_channels and ocr_response_channels[guild_id]:
-            for channel_id in ocr_response_channels[guild_id]:
-                channel = self.bot.get_channel(channel_id)
-                channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
-                ocr_response_value += f"• {channel_name}\n"
-        else:
-            ocr_response_value = "No OCR response channels configured."
-        fields.append({"name": "💬 OCR Response Channels", "value": ocr_response_value, "inline": False})
+        # Execute all fetch operations concurrently with asyncio.gather
+        fetch_tasks = [
+            get_ocr_read_channels(),
+            get_ocr_response_channels(),
+            get_ocr_fallback_channels(),
+            get_manager_roles(),
+            get_manager_users(),
+            get_cmd_role_permissions(),
+            get_cmd_user_permissions()
+        ]
         
-        # OCR Fallback Channels field
-        ocr_fallback_value = ""
-        if guild_id in ocr_response_fallback and ocr_response_fallback[guild_id]:
-            for channel_id in ocr_response_fallback[guild_id]:
-                channel = self.bot.get_channel(channel_id)
-                channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
-                ocr_fallback_value += f"• {channel_name}\n"
-        else:
-            ocr_fallback_value = "No OCR fallback channels configured."
-        fields.append({"name": "🔄 OCR Fallback Channels", "value": ocr_fallback_value, "inline": False})
-        
-        # Manager Roles field
-        manager_roles_value = ""
-        if guild_id in command_permissions and "*" in command_permissions[guild_id] and command_permissions[guild_id]["*"]:
-            for role_id in command_permissions[guild_id]["*"]:
-                role = ctx.guild.get_role(int(role_id))
-                role_name = role.mention if role else f"Unknown Role ({role_id})"
-                manager_roles_value += f"• {role_name}\n"
-        else:
-            manager_roles_value = "No bot manager roles configured."
-        fields.append({"name": "👑 Bot Manager Roles", "value": manager_roles_value, "inline": False})
-        
-        # Manager Users field
-        manager_users_value = ""
-        if (guild_id in command_permissions and 
-            "users" in command_permissions[guild_id] and 
-            "*" in command_permissions[guild_id]["users"] and 
-            command_permissions[guild_id]["users"]["*"]):
-            for user_id in command_permissions[guild_id]["users"]["*"]:
-                user = await self.bot.fetch_user(int(user_id))
-                user_name = f"@{user.name}" if user else f"Unknown User ({user_id})"
-                manager_users_value += f"• {user_name}\n"
-        if not manager_users_value:
-            manager_users_value = "No bot manager users configured."
-        fields.append({"name": "👤 Bot Manager Users", "value": manager_users_value, "inline": False})
-        
-        # Command-specific permissions fields - Roles
-        cmd_roles_value = ""
-        if guild_id in command_permissions:
-            for cmd_name, roles in sorted(command_permissions[guild_id].items()):
-                if cmd_name not in ["*", "users"] and roles:  # Skip wildcard and users entries
-                    cmd_roles_value += f"**{cmd_name}**\n"
-                    for role_id in roles:
-                        role = ctx.guild.get_role(int(role_id))
-                        role_name = role.mention if role else f"Unknown Role ({role_id})"
-                        cmd_roles_value += f"• {role_name}\n"
-                    cmd_roles_value += "\n"
-        if not cmd_roles_value:
-            cmd_roles_value = "No command-specific role permissions configured."
-        fields.append({"name": "🔐 Command Role Permissions", "value": cmd_roles_value, "inline": False})
-        
-        # Command-specific permissions - Users
-        cmd_users_value = ""
-        if guild_id in command_permissions and "users" in command_permissions[guild_id]:
-            for cmd_name, users in sorted(command_permissions[guild_id]["users"].items()):
-                if cmd_name != "*" and users:  # Skip the wildcard entry
-                    cmd_users_value += f"**{cmd_name}**\n"
-                    for user_id in users:
-                        try:
-                            user = await self.bot.fetch_user(int(user_id))
-                            user_name = f"@{user.name}" if user else f"Unknown User ({user_id})"
-                            cmd_users_value += f"• {user_name}\n"
-                        except:
-                            cmd_users_value += f"• Unknown User ({user_id})\n"
-                    cmd_users_value += "\n"
-        if not cmd_users_value:
-            cmd_users_value = "No command-specific user permissions configured."
-        fields.append({"name": "👤 Command User Permissions", "value": cmd_users_value, "inline": False})
+        # Wait for all tasks to complete
+        fields = await asyncio.gather(*fetch_tasks)
         
         # Add footer
         footer_text = f"{ctx.guild.name} | Server ID: {ctx.guild.id}"

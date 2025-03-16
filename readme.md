@@ -5,6 +5,7 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
 ## ✨ Features
 
 - **Advanced OCR Processing**: Analyzes images posted in designated channels
+- **Parallel Processing**: Configurable multi-worker system for handling OCR tasks simultaneously
 - **Pattern Recognition**: Identifies common issues from error messages
 - **Automatic Responses**: Provides helpful solutions for recognized problems
 - **Flexible Configuration**: Customize command prefix and permissions
@@ -68,6 +69,7 @@ The bot uses a `config.json` file to store:
 - Discord bot token
 - Command prefix (default: `!`)
 - Designated channels for OCR reading and responses
+- OCR worker count (default: 2)
 - Command permissions
 
 Example configuration:
@@ -79,7 +81,8 @@ Example configuration:
   "ocr_response_channels": {},
   "ocr_response_fallback": {},
   "server_prefixes": {},
-  "command_permissions": {}
+  "command_permissions": {},
+  "ocr_worker_count": 2
 }
 ```
 
@@ -135,8 +138,8 @@ The bot can be configured to recognize specific text patterns and respond with a
 | **ping** | Check the bot's response time | `!ping` | Everyone |
 | **uptime** | Show how long the bot has been running | `!uptime` | Everyone |
 | **invite** | Get the bot's invite link | `!invite` | Everyone |
-| **host** | Display system information about the host | `!host` | Admin, Manager |
-| **reload_patterns** | Reload the pattern database | `!reload_patterns` | Admin, Manager |
+| **host** | Display system information about the host | `!host` | Bot Owner Only |
+| **reload_patterns** | Reload the pattern database | `!reload_patterns` | Bot Owner Only |
 | **shutdown** | Shut down the bot completely | `!shutdown` | Bot Owner Only |
 
 ## 🔐 Permission System
@@ -152,10 +155,11 @@ Mirrobot uses a tiered permission system:
 
 Mirrobot automatically processes images posted in designated OCR read channels:
 
-1. When an image is posted, the bot extracts text using Tesseract OCR
-2. The text is analyzed for known patterns of common issues
-3. If a pattern is matched, the bot provides an appropriate response
-4. Responses are posted either in the same channel or in designated response channels
+1. When an image is posted, it's queued for processing by available OCR workers
+2. Multiple OCR workers process the queue in parallel for better performance
+3. The text is extracted using Tesseract OCR and analyzed for known patterns
+4. If a pattern is matched, the bot provides an appropriate response
+5. Responses are posted either in the same channel or in designated response channels
 
 ## 📊 Stats and Monitoring
 
@@ -170,6 +174,7 @@ The bot tracks various statistics:
 - **Bot doesn't respond to commands**: Check if the prefix has been changed. Use `@Mirrobot help` to check.
 - **OCR isn't working properly**: Make sure Tesseract is installed correctly and the path is set in environment variables.
 - **Permission errors**: Check server_info to verify permissions are set correctly.
+- **OCR processing is slow**: Consider increasing the `ocr_worker_count` in the config file for better performance.
 - **Log files**: Check the bot_YYYY-MM-DD.log files in the logs directory for detailed error information.
 
 ## ⚠️ Error Handling
@@ -187,7 +192,10 @@ The bot includes robust error handling to maintain stability:
 
 ## 🔄 Updates and Version History
 
-- **v0.25** - Current version with core OCR functionality and pattern matching
+- **v0.30** - Current version with parallel OCR processing using multiple workers.
+- **v0.25** - First modular structure release. A lot of edits and improvements.
+- **v0.20** - Final single-file release.
+- **v0.15** - Initial version with basic features.
 - For latest updates, visit the [GitHub repository](https://github.com/Mirrowel/Mirrobot-py)
 
 ## 📜 License

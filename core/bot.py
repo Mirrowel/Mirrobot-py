@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from utils.logging_setup import get_logger
 import sys
+import asyncio
 
 logger = get_logger()
 
@@ -81,10 +82,22 @@ def create_bot(config):
     # Store config in the bot for easy access
     bot.config = config
     
+    # Create a queue for OCR processing tasks
+    bot.ocr_queue = asyncio.Queue()
+    
     # Set up event handlers
     @bot.event
     async def on_ready():
         logger.info(f'Logged in as {bot.user.name}!')
+        
+        # Get worker count from config (default to 2 workers if not specified)
+        worker_count = config.get('ocr_worker_count', 2)
+        logger.info(f"Starting {worker_count} OCR workers")
+        
+        # Start multiple OCR workers
+        for i in range(worker_count):
+            asyncio.create_task(ocr_worker(bot, worker_id=i+1))
+        
         # Load cogs after bot is ready
         await load_cogs(bot)
     
@@ -93,19 +106,8 @@ def create_bot(config):
         if message.author.bot:
             return
             
-        # Process OCR if in a configured channel
-        if message.guild and str(message.guild.id) in config['ocr_read_channels']:
-            guild_id = str(message.guild.id)
-            if guild_id not in config['ocr_read_channels']:
-                logger.info(f'No read channels found for server {message.guild.name}:{message.guild.id}. CREATING NEW CHANNEL LIST')
-                config['ocr_read_channels'][guild_id] = []
-                from config.config_manager import save_config
-                save_config(config)
-                
-            if message.channel.id in config['ocr_read_channels'][guild_id]:
-                # Import here to avoid circular imports
-                from core.ocr import process_pics
-                await process_pics(bot, message)
+        # Create a task for processing this message to avoid blocking the event handler
+        asyncio.create_task(process_message(bot, message, config))
         
         await bot.process_commands(message)
     
@@ -127,6 +129,49 @@ def create_bot(config):
             await ctx.send(f"Error in command '{ctx.command}': {error}")
     
     return bot
+
+async def process_message(bot, message, config):
+    """Process an incoming message for OCR if needed"""
+    try :
+        # Check if message should be processed for OCR and queue it
+        if message.guild and str(message.guild.id) in config['ocr_read_channels']:
+            guild_id = str(message.guild.id)
+            if guild_id not in config['ocr_read_channels']:
+                logger.info(f'No read channels found for server {message.guild.name}:{message.guild.id}. CREATING NEW CHANNEL LIST')
+                config['ocr_read_channels'][guild_id] = []
+                from config.config_manager import save_config
+                save_config(config)
+                
+            if message.channel.id in config['ocr_read_channels'][guild_id]:
+                # Queue the message for OCR processing
+                await bot.ocr_queue.put(message)
+                logger.debug(f"Queued message for OCR processing: {message.id}")
+    except Exception as e:
+        logger.error(f"Error in message processing: {e}")
+
+async def ocr_worker(bot, worker_id=1):
+    """Worker to process OCR tasks from the queue"""
+    logger.info(f"OCR worker {worker_id} started")
+    while True:
+        try:
+            # Get a message from the queue
+            message = await bot.ocr_queue.get()
+            
+            try:
+                # Import here to avoid circular imports
+                from core.ocr import process_pics
+                logger.debug(f"Worker {worker_id} processing message: {message.id}")
+                await process_pics(bot, message)
+                logger.debug(f"Worker {worker_id} completed OCR task for message: {message.id}")
+            except Exception as e:
+                logger.error(f"Worker {worker_id} error processing OCR task: {e}")
+            finally:
+                # Mark the task as done
+                bot.ocr_queue.task_done()
+        except Exception as e:
+            logger.error(f"Error in OCR worker {worker_id}: {e}")
+            # Sleep briefly to avoid tight loop in case of repeated errors
+            await asyncio.sleep(1)
 
 async def load_cogs(bot):
     """Load all cogs for the bot"""
