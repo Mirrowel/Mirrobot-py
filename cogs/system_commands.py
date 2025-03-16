@@ -17,12 +17,364 @@ from utils.constants import (
     AUTHOR_ICON_URL, REPO_URL, GITHUB_ICON_URL, get_uptime
 )
 from utils.stats_tracker import get_ocr_stats
+from discord.ui import View, Select, Button
+from typing import Dict, List, Optional, Union
+import re
 
 logger = get_logger()
+
+def get_emoji(input_text: str, max_emojis: int = 1) -> str:
+    """
+    Return appropriate emojis based on keywords found in the input text.
+    
+    Args:
+        input_text: The text to search for keywords
+        max_emojis: Maximum number of emojis to return (default: 1)
+        
+    Returns:
+        String containing 1 or more emoji characters
+    """
+    # Convert to lowercase for case-insensitive matching
+    input_lower = input_text.lower()
+    
+    # Define keyword to emoji mappings
+    keyword_emojis = {
+        # Primary categories
+        "pattern": "🔍",
+        "ocr": "📷",
+        "system": "⚙️",
+        "permission": "🔐",
+        "configuration": "🛠️",
+        "utilities": "🔧",
+        "config": "🛠️",
+        "setup": "🔧",
+        "admin": "👑",
+        "moderation": "🔨",
+        "help": "❓",
+        "info": "ℹ️",
+        "utility": "🔧",
+        "tools": "🧰",
+        "image": "🖼️",
+        "text": "📝",
+        "chat": "💬",
+        "management": "📊",
+        "server": "🖥️",
+        "bot": "🤖",
+        "stats": "📈",
+        "analytic": "📊",
+        "notification": "🔔",
+        "alert": "⚠️",
+        "misc": "📌",
+        "miscellaneous": "📌",
+        "other": "📎",
+    }
+    
+    # Find all matching keywords with their positions in the input string
+    matched_keywords = []
+    for keyword, emoji in keyword_emojis.items():
+        pos = input_lower.find(keyword)
+        if pos != -1:
+            matched_keywords.append((pos, keyword, emoji))
+    
+    # Sort by position in the input string
+    matched_keywords.sort()
+    
+    # Extract emojis in order of appearance
+    matched_emojis = [emoji for _, _, emoji in matched_keywords]
+    
+    # Return the appropriate number of emojis
+    if not matched_emojis:
+        return "📌"  # Default emoji if no match
+    elif len(matched_emojis) == 1:
+        return matched_emojis[0]
+    # Return unique emojis up to max_emojis
+    unique_emojis = []
+    for emoji in matched_emojis:
+        if emoji not in unique_emojis:
+            unique_emojis.append(emoji)
+            if len(unique_emojis) >= max_emojis:
+                break
+    
+    return "".join(unique_emojis[:max_emojis])
+
+class HelpView(discord.ui.View):
+    def __init__(self, ctx, help_data, timeout=180):
+        super().__init__(timeout=timeout)
+        self.ctx = ctx
+        self.help_data = help_data
+        self.current_category = None
+        self.current_page = 0
+        self.pages_per_category = {}
+        self.embeds_per_category = {}
+        
+        # Initialize category selector
+        self.setup_category_selector()
+        # Create embeds for each category
+        self.generate_category_embeds()
+        
+    def setup_category_selector(self):
+        # Create the category dropdown
+        options = []
+        
+        # Add overview option
+        options.append(discord.SelectOption(
+            label="Overview", 
+            description="General bot information and commands overview",
+            emoji="📋",
+            value="overview"
+        ))
+        
+        # Add options for each category
+        for category in sorted(self.help_data['categories'].keys()):
+            if category == "System" and self.ctx.author.id != self.ctx.bot.owner_id:
+                # Skip system category for non-owners if it contains only owner commands
+                if all(cmd.checks and commands.is_owner().predicate in [c.__func__ for c in cmd.checks] 
+                       for cmd in self.help_data['categories'][category]):
+                    continue
+                
+            # Get appropriate emoji for the category using our helper function - limit to 1
+            emoji = get_emoji(category, max_emojis=1)
+            
+            options.append(discord.SelectOption(
+                label=category,
+                description=f"View {category} commands",
+                emoji=emoji,
+                value=category
+            ))
+        
+        # Create the select menu
+        select = Select(
+            placeholder="Select a command category...",
+            options=options,
+            custom_id="category_select"
+        )
+        select.callback = self.category_select_callback
+        self.add_item(select)
+    
+    async def category_select_callback(self, interaction: discord.Interaction):
+        # Get selected category
+        self.current_category = interaction.data['values'][0]
+        self.current_page = 0
+        
+        # Update buttons state
+        self.update_button_states()
+        
+        # Display the appropriate embed
+        await interaction.response.edit_message(
+            embed=self.get_current_embed(),
+            view=self
+        )
+    
+    def generate_category_embeds(self):
+        prefix = self.help_data['prefix']
+        
+        # Create overview embed first
+        self.embeds_per_category['overview'] = self.create_overview_embed()
+        
+        # Then create embeds for each category
+        for category, cmds in self.help_data['categories'].items():
+            if not cmds:
+                continue
+                
+            embeds = []
+            
+            # Create embeds with paginated commands
+            command_entries = []
+            for cmd in sorted(cmds, key=lambda x: x.name):
+                brief_desc = cmd.help.split('\n')[0] if cmd.help else "No description"
+                command_entries.append(f"• `{prefix}{cmd.name}` - {brief_desc}")
+            
+            # Split into pages of max 20 commands each
+            pages = []
+            current_page = []
+            for entry in command_entries:
+                current_page.append(entry)
+                if len(current_page) >= 20:  # Max 20 commands per page
+                    pages.append(current_page)
+                    current_page = []
+            
+            if current_page:  # Add any remaining entries
+                pages.append(current_page)
+            
+            # Store page count for navigation
+            self.pages_per_category[category] = len(pages)
+            
+            # Get the appropriate emoji for this category
+            category_emoji = get_emoji(category, max_emojis=2)
+            
+            # Create an embed for each page
+            for i, page_entries in enumerate(pages):
+                embed = discord.Embed(
+                    title=f"{category_emoji} {category} Commands",
+                    description=f"Commands related to {category.lower()} functionality.\nPage {i+1} of {len(pages)}",
+                    color=discord.Color.blue()
+                )
+                
+                # Add fields with commands
+                embed.add_field(
+                    name="Available Commands",
+                    value="\n".join(page_entries),
+                    inline=False
+                )
+                
+                # Add navigation instructions
+                embed.set_footer(
+                    text=f"{BOT_NAME} v{BOT_VERSION} | Use {prefix}help <command> for detailed help"
+                )
+                
+                embeds.append(embed)
+            
+            self.embeds_per_category[category] = embeds
+    
+    def create_overview_embed(self):
+        """Creates the main overview embed for help command"""
+        prefix = self.help_data['prefix']
+        
+        embed = discord.Embed(
+            title=f"{BOT_NAME} Help Menu",
+            url=REPO_URL,
+            description=f"Select a category from the dropdown menu below to view available commands.\n"
+                        f"**Note:** You only see commands you have permission to use.\n\n"
+                        f"**Current prefix:** `{prefix}`",
+            color=discord.Color.blue()
+        )
+        
+        # Add bot info
+        embed.add_field(
+            name="📝 About", 
+            value=f"{BOT_NAME} is an open-source bot developed by @{AUTHOR_NAME}.\n" \
+                  f"It uses OCR (Optical Character Recognition) to scan images for text patterns "
+                  f"and provide automatic responses to common issues.",
+            inline=False
+        )
+        
+        # Add category summary
+        categories_text = ""
+        for category, cmds in sorted(self.help_data['categories'].items()):
+            if cmds:
+                # Get appropriate emoji for this category - can use up to 2 for embed content
+                emoji = get_emoji(category, max_emojis=2)
+                categories_text += f"{emoji} **{category}** - {len(cmds)} commands\n"
+        
+        embed.add_field(
+            name="📋 Categories",
+            value=categories_text or "No categories available",
+            inline=False
+        )
+        
+        # Add usage tips
+        embed.add_field(
+            name="💡 Tips",
+            value=f"• Use the dropdown below to browse command categories\n"
+                  f"• Use `{prefix}help <command>` for detailed help on a specific command\n"
+                  f"• Use `{prefix}help` for a simple text-based help menu",
+            inline=False
+        )
+        
+        # Add footer info
+        embed.set_footer(
+            text=f"{BOT_NAME} v{BOT_VERSION} | Uptime: {get_uptime()}"
+        )
+        
+        # Set author info
+        embed.set_author(
+            name=AUTHOR_NAME,
+            url=AUTHOR_URL,
+            icon_url=AUTHOR_ICON_URL
+        )
+        
+        return embed
+    
+    def get_current_embed(self):
+        """Returns the current embed to display based on category and page"""
+        if not self.current_category:
+            self.current_category = "overview"
+            
+        if self.current_category == "overview":
+            return self.embeds_per_category["overview"]
+        
+        category_embeds = self.embeds_per_category.get(self.current_category, [])
+        if not category_embeds:
+            return discord.Embed(
+                title="No Commands Available",
+                description="There are no commands in this category that you can use.",
+                color=discord.Color.red()
+            )
+        
+        # Make sure page index is valid
+        if self.current_page >= len(category_embeds):
+            self.current_page = 0
+        elif self.current_page < 0:
+            self.current_page = len(category_embeds) - 1
+            
+        return category_embeds[self.current_page]
+    
+    def update_button_states(self):
+        """Update button states based on current page and category"""
+        # No pagination needed for overview
+        if self.current_category == "overview":
+            for item in self.children:
+                if isinstance(item, Button):
+                    item.disabled = True
+            return
+            
+        # Get number of pages for current category
+        page_count = len(self.embeds_per_category.get(self.current_category, []))
+        
+        # Enable/disable buttons based on page count
+        for item in self.children:
+            if isinstance(item, Button):
+                item.disabled = page_count <= 1
+    
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Go to previous page"""
+        self.current_page -= 1
+        if self.current_page < 0:
+            self.current_page = len(self.embeds_per_category.get(self.current_category, [])) - 1
+            
+        await interaction.response.edit_message(
+            embed=self.get_current_embed(),
+            view=self
+        )
+    
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.secondary, disabled=True)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Go to next page"""
+        self.current_page += 1
+        if self.current_page >= len(self.embeds_per_category.get(self.current_category, [])):
+            self.current_page = 0
+            
+        await interaction.response.edit_message(
+            embed=self.get_current_embed(),
+            view=self
+        )
 
 class SystemCommandsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._permission_cache = {}  # Cache for command permissions
+    
+    # Clear the permission cache periodically or when permissions might have changed
+    def clear_permission_cache(self):
+        self._permission_cache.clear()
+
+    # Helper method to check permissions with caching
+    async def check_command_permission(self, ctx, cmd):
+        # Create a unique cache key based on user, guild, and command
+        cache_key = f"{ctx.author.id}:{ctx.guild.id}:{cmd.name}"
+        
+        # Check if we have a cached result
+        if cache_key in self._permission_cache:
+            return self._permission_cache[cache_key]
+            
+        try:
+            result = await cmd.can_run(ctx)
+            self._permission_cache[cache_key] = result
+            return result
+        except:
+            self._permission_cache[cache_key] = False
+            return False
 
     @commands.command(name='shutdown', help='Shut down the bot completely (owner only).\nNo arguments required.\nExample: !shutdown')
     @commands.is_owner()  # Only the bot owner can use this command
@@ -56,11 +408,8 @@ class SystemCommandsCog(commands.Cog):
         if command_name:
             cmd = self.bot.get_command(command_name)
             if cmd:
-                # Check if user has permission to use this command
-                try:
-                    can_run = await cmd.can_run(ctx)
-                except:
-                    can_run = False
+                # Check if user has permission to use this command - use cached check
+                can_run = await self.check_command_permission(ctx, cmd)
                     
                 if not can_run:
                     await ctx.send(f"You don't have permission to use the `{command_name}` command.")
@@ -71,7 +420,9 @@ class SystemCommandsCog(commands.Cog):
                 
                 # Add category if available
                 if hasattr(cmd, 'category'):
-                    fields.append({"name": "Category", "value": cmd.category, "inline": True})
+                    category = cmd.category
+                    emoji = get_emoji(category)
+                    fields.append({"name": "Category", "value": f"{emoji} {category}", "inline": True})
                 
                 # Check for required arguments in the command signature
                 signature = cmd.signature
@@ -100,7 +451,8 @@ class SystemCommandsCog(commands.Cog):
         # Create main description
         description = f"Use `{prefix}help <command>` for detailed information on a command.\n" \
                       f"**Note:** You only see commands you have permission to use.\n\n" \
-                      f"**Current prefix:** `{prefix}`"
+                      f"**Current prefix:** `{prefix}`\n\n" \
+                      f"For an interactive help menu with dropdown categories, use `{prefix}helpmenu`"
         
         # Define fields
         fields = []
@@ -116,13 +468,19 @@ class SystemCommandsCog(commands.Cog):
     
         # Dynamically organize commands by their categories
         categories = {}
-        for cmd in self.bot.commands:
+        
+        # Collect all commands for permission check
+        commands_to_check = list(self.bot.commands)
+        check_tasks = [self.check_command_permission(ctx, cmd) for cmd in commands_to_check]
+        
+        # Run permission checks in parallel
+        results = await asyncio.gather(*check_tasks, return_exceptions=True)
+        
+        # Process results
+        for i, cmd in enumerate(commands_to_check):
             # Skip commands the user can't use
-            try:
-                if not await cmd.can_run(ctx):
-                    continue
-            except:
-                continue  # Skip if can_run raises an exception
+            if not isinstance(results[i], bool) or not results[i]:
+                continue
             
             # Get the command's category (or "Miscellaneous" if not set)
             # Make sure to check the command itself first, then the callback
@@ -141,6 +499,9 @@ class SystemCommandsCog(commands.Cog):
         # Process categories and add fields
         for category_name, cmds in sorted(categories.items()):
             if cmds:
+                # Get the appropriate emoji for this category - use max 2 emojis
+                emoji = get_emoji(category_name, 2)
+                
                 # Sort commands by name
                 sorted_cmds = sorted(cmds, key=lambda x: x.name)
                 
@@ -174,7 +535,7 @@ class SystemCommandsCog(commands.Cog):
                     
                     # Create multiple fields with proper naming
                     for i, part in enumerate(parts):
-                        field_name = f"📋 {category_name}"
+                        field_name = f"{emoji} {category_name}"
                         if len(parts) > 1:
                             field_name += f" ({i+1}/{len(parts)})"
                         
@@ -185,7 +546,7 @@ class SystemCommandsCog(commands.Cog):
                         })
                 else:
                     fields.append({
-                        "name": f"📋 {category_name}",
+                        "name": f"{emoji} {category_name}",
                         "value": category_value,
                         "inline": False
                     })
@@ -207,6 +568,50 @@ class SystemCommandsCog(commands.Cog):
             footer_text=footer_text,
             footer_icon_url=GITHUB_ICON_URL
         )
+        
+    @commands.command(name='helpmenu', help='Shows an interactive help menu with dropdown categories and command pagination.\nNo arguments required.\nExample: !helpmenu')
+    @commands.cooldown(1, 3, commands.BucketType.user)
+    @command_category("System")
+    async def helpmenu_command(self, ctx):
+        """Display an interactive help menu with dropdown categories"""
+        prefix = get_server_prefix(self.bot, ctx.message)
+        
+        # Prepare help data structure
+        help_data = {
+            'prefix': prefix,
+            'categories': {}
+        }
+        
+        # Collect all commands for permission check
+        commands_to_check = list(self.bot.commands)
+        check_tasks = [self.check_command_permission(ctx, cmd) for cmd in commands_to_check]
+        
+        # Run permission checks in parallel
+        results = await asyncio.gather(*check_tasks, return_exceptions=True)
+        
+        # Process results
+        for i, cmd in enumerate(commands_to_check):
+            # Skip commands the user can't use
+            if not isinstance(results[i], bool) or not results[i]:
+                continue
+            
+            # Get the command's category
+            if hasattr(cmd, 'category'):
+                category = cmd.category
+            elif hasattr(cmd, 'callback') and hasattr(cmd.callback, 'category'):
+                category = cmd.callback.category
+            else:
+                category = "Miscellaneous"
+                
+            # Add command to its category
+            if category not in help_data['categories']:
+                help_data['categories'][category] = []
+                
+            help_data['categories'][category].append(cmd)
+            
+        # Create and send the interactive help view
+        view = HelpView(ctx, help_data)
+        await ctx.send(embed=view.get_current_embed(), view=view)
 
     @commands.command(name='host', help='Display detailed information about the host system.\nNo arguments required.\nExample: !host')
     @command_category("System")
