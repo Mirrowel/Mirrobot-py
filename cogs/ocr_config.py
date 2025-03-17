@@ -309,3 +309,6 @@ class OCRConfigCog(commands.Cog):
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
         await ctx.reply(response)
+
+async def setup(bot):
+    await bot.add_cog(OCRConfigCog(bot))

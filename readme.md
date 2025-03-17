@@ -161,6 +161,18 @@ The bot can be configured to recognize specific text patterns and respond with a
 | **reload_patterns** | Reload the pattern database | `!reload_patterns` | Bot Owner Only |
 | **shutdown** | Shut down the bot completely | `!shutdown` | Bot Owner Only |
 
+### Moderation Commands
+
+Manage forum channels and threads with automated cleanup:
+- `!watch_forum` - Add a forum channel to the watchlist for automatic thread purging
+- `!unwatch_forum` - Remove a forum channel from the watchlist
+- `!list_watched` - List all watched forum channels
+- `!ignore_thread` - Add a thread to the ignore list (won't be purged)
+- `!unignore_thread` - Remove a thread from the ignore list
+- `!list_ignored` - List all ignored threads
+
+[View Moderation Command Documentation](docs/commands/moderation.md)
+
 ## 🔐 Permission System
 
 Mirrobot uses a tiered permission system:

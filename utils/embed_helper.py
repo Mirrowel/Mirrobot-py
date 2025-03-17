@@ -7,7 +7,9 @@ making it easier to create consistent, well-formatted responses.
 
 import discord
 
-async def create_embed_response(ctx, title, description, fields, footer_text=None, thumbnail_url=None, footer_icon_url=None, url=None, author_name=None, author_icon_url=None, author_url=None):
+from utils.constants import AUTHOR_ICON_URL, BOT_NAME, BOT_VERSION
+
+async def create_embed_response(ctx, description, fields, title=BOT_NAME, footer_text=f"{BOT_NAME} v{BOT_VERSION}", thumbnail_url=None, footer_icon_url=AUTHOR_ICON_URL, url=None, author_name=None, author_icon_url=None, author_url=None, field_unbroken=False):
     """
     Create and send a formatted Discord embed response.
     
@@ -29,6 +31,9 @@ async def create_embed_response(ctx, title, description, fields, footer_text=Non
         author_name (str, optional): Name to display in the author field
         author_icon_url (str, optional): URL of icon to display in the author field
         author_url (str, optional): URL to make the author name clickable
+        split_long_fields_with_continued (bool, optional): Whether to add "(continued)" to field names 
+                                          when splitting long fields. If True, continuation fields
+                                          will have an empty name. Default is False.
         
     Returns:
         discord.Message: The sent message object containing the embed
@@ -87,10 +92,13 @@ async def create_embed_response(ctx, title, description, fields, footer_text=Non
                 
             # Add the parts as separate fields
             for i, part in enumerate(parts):
-                if i == 0:
+                if not field_unbroken:
+                    embed.add_field(name=f"{name} ({i+1}/{len(parts)})", value=part, inline=inline)
+                elif i == 0:
                     embed.add_field(name=name, value=part, inline=inline)
                 else:
-                    embed.add_field(name=f"{name} (continued)", value=part, inline=inline)
+                    # Use an empty field name for continuation to make it appear connected
+                    embed.add_field(name='',value=part, inline=inline)
         else:
             embed.add_field(name=name, value=value, inline=inline)
     

@@ -597,3 +597,6 @@ class PatternCommandsCog(commands.Cog):
             except Exception as e:
                 logger.error(f"Error in OCR processing: {e}")
                 await ctx.reply(f"Error processing the image: {e}")
+
+async def setup(bot):
+    await bot.add_cog(PatternCommandsCog(bot))

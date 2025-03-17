@@ -95,6 +95,8 @@ def create_bot(config):
         'high_watermark': 0,
     }
     
+    
+    
     # Set up event handlers
     @bot.event
     async def on_ready():
@@ -282,20 +284,27 @@ async def ocr_worker(bot, worker_id=1):
 
 async def load_cogs(bot):
     """Load all cogs for the bot"""
-    from cogs.ocr_config import OCRConfigCog
-    from cogs.bot_config import BotConfigCog
-    from cogs.permission_commands import PermissionCommandsCog
-    from cogs.pattern_commands import PatternCommandsCog
-    from cogs.system_commands import SystemCommandsCog
-    
-    # Add cogs
-    await bot.add_cog(OCRConfigCog(bot))
-    await bot.add_cog(BotConfigCog(bot))
-    await bot.add_cog(PermissionCommandsCog(bot))
-    await bot.add_cog(PatternCommandsCog(bot))
-    await bot.add_cog(SystemCommandsCog(bot))
-    
-    logger.info("All cogs loaded successfully")
+    # Load all cogs
+    cogs_to_load = [
+        'cogs.bot_config', 
+        'cogs.ocr_config', 
+        'cogs.pattern_commands', 
+        'cogs.permission_commands', 
+        'cogs.system_commands', 
+        'cogs.moderation_commands'
+    ]
+    error_occurred = False
+    for cog_file in cogs_to_load:
+        try:
+            await bot.load_extension(cog_file)
+        except Exception as e:
+            logger.error(f"Failed to load extension {cog_file}: {e}")
+            error_occurred = True
+        else:
+            logger.debug(f"Loaded extension: {cog_file}")
+
+    if not error_occurred:
+        logger.info(f"All {len(cogs_to_load)} cogs loaded successfully")
     
     # Apply command categories after all cogs are loaded
     apply_command_categories(bot)

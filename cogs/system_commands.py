@@ -184,14 +184,21 @@ class HelpView(discord.ui.View):
                 brief_desc = cmd.help.split('\n')[0] if cmd.help else "No description"
                 command_entries.append(f"• `{prefix}{cmd.name}` - {brief_desc}")
             
-            # Split into pages of max 20 commands each
+            # Split into pages to avoid hitting the 1024 character limit
             pages = []
             current_page = []
+            current_page_text = ""
+            
             for entry in command_entries:
-                current_page.append(entry)
-                if len(current_page) >= 20:  # Max 20 commands per page
-                    pages.append(current_page)
-                    current_page = []
+                # Check if adding this entry would exceed Discord's field value limit
+                if len(current_page_text + entry + "\n") > 1024:  # Using 1024 as a safe limit
+                    if current_page:  # Only add if we have entries
+                        pages.append(current_page)
+                    current_page = [entry]
+                    current_page_text = entry + "\n"
+                else:
+                    current_page.append(entry)
+                    current_page_text += entry + "\n"
             
             if current_page:  # Add any remaining entries
                 pages.append(current_page)
@@ -513,43 +520,11 @@ class SystemCommandsCog(commands.Cog):
                 
                 # Combine entries and check length
                 category_value = "\n".join(command_entries)
-                
-                # If value is too long, break it into multiple fields
-                if len(category_value) > 1024:
-                    # Calculate how to split entries into multiple fields
-                    parts = []
-                    current_part = []
-                    current_length = 0
-                    
-                    for entry in command_entries:
-                        if current_length + len(entry) + 1 > 1024:  # +1 for the newline
-                            parts.append("\n".join(current_part))
-                            current_part = [entry]
-                            current_length = len(entry) + 1
-                        else:
-                            current_part.append(entry)
-                            current_length += len(entry) + 1
-                            
-                    if current_part:
-                        parts.append("\n".join(current_part))
-                    
-                    # Create multiple fields with proper naming
-                    for i, part in enumerate(parts):
-                        field_name = f"{emoji} {category_name}"
-                        if len(parts) > 1:
-                            field_name += f" ({i+1}/{len(parts)})"
-                        
-                        fields.append({
-                            "name": field_name,
-                            "value": part,
-                            "inline": False
-                        })
-                else:
-                    fields.append({
-                        "name": f"{emoji} {category_name}",
-                        "value": category_value,
-                        "inline": False
-                    })
+                fields.append({
+                    "name": f"{emoji} {category_name}",
+                    "value": category_value,
+                    "inline": False
+                })
                     
         # Add footer text
         footer_text = f"{BOT_NAME} v{BOT_VERSION} | Type {prefix}help <command> for more info\n" \
@@ -566,7 +541,8 @@ class SystemCommandsCog(commands.Cog):
             description=description,
             fields=fields,
             footer_text=footer_text,
-            footer_icon_url=GITHUB_ICON_URL
+            footer_icon_url=GITHUB_ICON_URL,
+            field_unbroken=True # Keep fields unbroken for better formatting
         )
         
     @commands.command(name='helpmenu', help='Shows an interactive help menu with dropdown categories and command pagination.\nNo arguments required.\nExample: !helpmenu')
@@ -684,6 +660,7 @@ class SystemCommandsCog(commands.Cog):
     @commands.command(name='ping', help='Check the bot\'s current latency.\nNo arguments required.\nExample: !ping')
     @commands.cooldown(1, 3, commands.BucketType.user)  # Prevent spam
     @command_category("System")
+    @has_command_permission()
     async def ping(self, ctx):
         """Ping command to check bot latency"""
         # Initial message and timing for message response
@@ -832,3 +809,6 @@ class SystemCommandsCog(commands.Cog):
             fields=fields,
             footer_text=f"{BOT_NAME} v{BOT_VERSION}"
         )
+
+async def setup(bot):
+    await bot.add_cog(SystemCommandsCog(bot))

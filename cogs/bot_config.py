@@ -264,3 +264,6 @@ class BotConfigCog(commands.Cog):
             footer_text=footer_text,
             thumbnail_url=thumbnail_url
         )
+
+async def setup(bot):
+    await bot.add_cog(BotConfigCog(bot))
