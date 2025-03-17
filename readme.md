@@ -170,14 +170,40 @@ The bot can be configured to recognize specific text patterns and respond with a
 ### Moderation Commands
 
 Manage forum channels and threads with automated cleanup:
-- `!watch_forum` - Add a forum channel to the watchlist for automatic thread purging
-- `!unwatch_forum` - Remove a forum channel from the watchlist
-- `!list_watched` - List all watched forum channels
-- `!ignore_thread` - Add a thread to the ignore list (won't be purged)
-- `!unignore_thread` - Remove a thread from the ignore list
-- `!list_ignored` - List all ignored threads
+
+| Command | Description | Usage | Permissions |
+|---------|-------------|-------|------------|
+| **watch_forum** | Add a forum channel to the watchlist for automatic thread purging | `!watch_forum <channel> <time_period>` | Admin, Manager |
+| **unwatch_forum** | Remove a forum channel from the watchlist | `!unwatch_forum <channel>` | Admin, Manager |
+| **ignore_thread** | Add a thread to the ignore list to prevent it from being purged | `!ignore_thread <thread>` | Admin, Manager |
+| **unignore_thread** | Remove a thread from the ignore list | `!unignore_thread <thread>` | Admin, Manager |
+| **ignore_tag** | Add a thread tag to the ignore list to prevent threads with that tag from being purged | `!ignore_tag <tag_name>` | Admin, Manager |
+| **unignore_tag** | Remove a thread tag from the ignore list | `!unignore_tag <tag_name>` | Admin, Manager |
+| **list_thread_settings** | List thread management settings for this server | `!list_thread_settings [type]` | Admin, Manager |
 
 [View Moderation Command Documentation](docs/commands/moderation.md)
+
+## Thread Management Features
+
+The bot can automatically purge inactive threads from forum channels:
+
+| Feature | Description |
+|---------|-------------|
+| **Thread Purging** | Automatically removes inactive threads after a configurable time period |
+| **Thread Ignoring** | Specific threads can be excluded from automatic purging |
+| **Tag Protection** | Threads with specific tags can be automatically protected from purging |
+| **Configurable Thresholds** | Each forum can have its own inactivity threshold (days, hours, minutes) |
+| **Pinned Thread Protection** | Pinned threads are never automatically purged |
+
+### Permission Management
+
+The bot features a comprehensive permission system:
+
+- Role and user-based permissions for commands and command categories
+- Permission blacklists to prevent specific roles or users from using commands
+- Persistent storage of permission settings that survive bot restarts
+
+For details, see the [Permissions Documentation](docs/commands/permissions.md).
 
 ## 🔐 Permission System
 

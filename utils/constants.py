@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 
 # Bot information
-BOT_VERSION = "0.4"
+BOT_VERSION = "0.45"
 BOT_NAME = "Mirrobot"
 
 # Author information

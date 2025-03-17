@@ -1,80 +1,88 @@
 # Moderation Commands
 
-This module provides commands for managing forum threads, including automatic purging of inactive threads.
-
-## Thread Purging Commands
+## Thread Management
 
 ### Watch Forum
-
 Add a forum channel to the watchlist for automatic thread purging.
 
 **Command:** `!watch_forum <channel> <time_period>`
 
-**Examples:**
-- `!watch_forum #help-forum 7d` - Purge threads in #help-forum that are inactive for 7 days
-- `!watch_forum #questions 24h` - Purge threads in #questions that are inactive for 24 hours
-- `!watch_forum #quick-help 30m` - Purge threads in #quick-help that are inactive for 30 minutes
+**Arguments:**
+- `<channel>` - The forum channel to watch
+- `<time_period>` - Inactivity threshold (format: 3d, 12h, 30m)
 
-**Notes:**
-- Time format can be specified as:
-  - `Xd` for X days
-  - `Xh` for X hours
-  - `Xm` for X minutes
-- Only works on forum channels
-- Requires "Manage Channels" permission
+**Examples:**
+- `!watch_forum #help-forum 7d` - Purge threads after 7 days of inactivity
 
 ### Unwatch Forum
-
 Remove a forum channel from the watchlist.
 
 **Command:** `!unwatch_forum <channel>`
 
-**Example:** `!unwatch_forum #help-forum`
+**Arguments:**
+- `<channel>` - The forum channel to remove from the watchlist
 
-**Notes:**
-- Requires "Manage Channels" permission
-
-### List Watched
-
-List all forum channels in the watchlist for this server.
-
-**Command:** `!list_watched`
-
-**Notes:**
-- Requires "Manage Channels" permission
-
-## Thread Ignore Commands
+**Examples:**
+- `!unwatch_forum #help-forum`
 
 ### Ignore Thread
-
-Add a thread to the ignore list to prevent it from being purged automatically.
+Add a thread to the ignore list to prevent it from being purged.
 
 **Command:** `!ignore_thread <thread>`
 
-**Example:** `!ignore_thread #important-thread`
+**Arguments:**
+- `<thread>` - The thread to add to the ignore list
 
-**Notes:**
-- Requires "Manage Threads" permission
+**Examples:**
+- `!ignore_thread #important-thread`
 
 ### Unignore Thread
-
 Remove a thread from the ignore list.
 
 **Command:** `!unignore_thread <thread>`
 
-**Example:** `!unignore_thread #no-longer-important-thread`
+**Arguments:**
+- `<thread>` - The thread to remove from the ignore list
 
-**Notes:**
-- Requires "Manage Threads" permission
+**Examples:**
+- `!unignore_thread #no-longer-important-thread`
 
-### List Ignored
+### Ignore Tag
+Add a thread tag to the ignore list to prevent threads with that tag from being purged.
 
-List all threads in the ignore list for this server.
+**Command:** `!ignore_tag <tag_name>`
 
-**Command:** `!list_ignored`
+**Arguments:**
+- `<tag_name>` - The name of the tag to ignore
 
-**Notes:**
-- Requires "Manage Threads" permission
+**Examples:**
+- `!ignore_tag important`
+- `!ignore_tag "do not delete"`
+
+### Unignore Tag
+Remove a thread tag from the ignore list.
+
+**Command:** `!unignore_tag <tag_name>`
+
+**Arguments:**
+- `<tag_name>` - The name of the tag to remove from the ignore list
+
+**Examples:**
+- `!unignore_tag important`
+
+### List Thread Settings
+List thread management settings for this server.
+
+**Command:** `!list_thread_settings [type]`
+
+**Arguments:**
+- `[type]` (optional) - Filter by "watched", "ignored", or "tags" (default: all)
+
+**Examples:**
+- `!list_thread_settings` - Show all settings
+- `!list_thread_settings watched` - Show only watched forums
+- `!list_thread_settings ignored` - Show only ignored threads
+- `!list_thread_settings tags` - Show only ignored tags
 
 ## Best Practices
 

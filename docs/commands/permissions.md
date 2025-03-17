@@ -98,6 +98,7 @@ Add a role or user to the command permission blacklist to prevent them from usin
 - Users with Administrator permission cannot be blacklisted
 - Roles with Administrator permission cannot be blacklisted
 - Blacklist overrides all other permission settings (except for administrators)
+- Blacklists are now stored persistently in `data/permission_blacklists.json` and will survive bot restarts and config resets
 
 ### Remove From Blacklist
 
@@ -115,15 +116,16 @@ List all roles and users in the command permission blacklist.
 
 **Command:** `!list_blacklist`
 
-## Permission System Hierarchy
+## Permission System Overview
 
-The permission system follows this hierarchy (from highest to lowest priority):
-
-1. **Server Administrators** - Always have access to all commands
+The permission system uses the following hierarchy (from highest to lowest priority):
+1. **Bot Owner** - Always has access to all commands
 2. **Blacklist** - Prevents command access regardless of other permissions (except administrators)
-3. **Bot Managers** - Have access to all non-system commands
-4. **Category Permissions** - Grant access to all commands in a category
-5. **Command-Specific Permissions** - Grant access to specific commands
+3. **Server Administrator** - Has access to all commands in the server
+4. **Bot Manager** - Has access to all non-system commands
+5. **Category Permission** - Has access to all commands in a specific category
+6. **Command Permission** - Has access to a specific command
+7. **Discord Permission** - Has access based on Discord permissions
 
 ## Default Permissions
 
