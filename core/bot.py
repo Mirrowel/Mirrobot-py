@@ -123,12 +123,26 @@ def create_bot(config):
         
         await bot.process_commands(message)
     
-    # Error handler for commands
+    # Global error handler
     @bot.event
     async def on_command_error(ctx, error):
-        if isinstance(error, commands.CommandNotFound):
+        if isinstance(error, commands.BotMissingPermissions):
+            permissions = ', '.join([f'`{p.replace("_", " ").title()}`' for p in error.missing_permissions])
+            await ctx.send(f"⚠️ **Missing Permissions**: I need {permissions} permission(s) to run this command.", 
+                          delete_after=15)
+        elif isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"⏰ This command is on cooldown. Please try again in {error.retry_after:.1f} seconds.",
+                          delete_after=10)
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send(f"❌ Missing required argument: `{error.param.name}`. Please check the command syntax.",
+                          delete_after=15)
+        elif isinstance(error, commands.BadArgument):
+            await ctx.send(f"❌ Invalid argument: {str(error)}. Please check the command syntax.",
+                          delete_after=15)
+        elif isinstance(error, commands.CommandNotFound):
             # Log the error
-            logger.debug(f"Unknown command: {ctx.message.content}, Server: {ctx.guild.name if ctx.guild else 'DM'}:{ctx.guild.id if ctx.guild else 'N/A'}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if hasattr(ctx.channel, 'type') and ctx.channel.type in ['public_thread', 'private_thread'] else ""))
+            # logger.debug(f"Unknown command: {ctx.message.content}, Server: {ctx.guild.name if ctx.guild else 'DM'}:{ctx.guild.id if ctx.guild else 'N/A'}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if hasattr(ctx.channel, 'type') and ctx.channel.type in ['public_thread', 'private_thread'] else ""))
+            pass  # Ignore unknown commands
         elif isinstance(error, commands.CheckFailure):
             pass  # Permission denied, already logged
         else:
@@ -139,7 +153,7 @@ def create_bot(config):
                 logger.debug("Command error in DM")
             logger.error(f"Error in command '{ctx.command}': {error}")
             await ctx.send(f"Error in command '{ctx.command}': {error}")
-    
+
     return bot
 
 async def process_message(bot, message, config):
