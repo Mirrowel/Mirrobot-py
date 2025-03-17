@@ -128,10 +128,16 @@ Environment variables take precedence over the config file settings.
 
 | Command | Description | Usage | Permissions |
 |---------|-------------|-------|------------|
-| **add_command_role** | Give a role or user permission to use a specific command | `!add_command_role @role command_name` | Admin, Manager |
-| **add_bot_manager** | Add a role or user as a bot manager with access to all non-system commands | `!add_bot_manager @role` | Admin, Manager |
-| **remove_command_role** | Remove a role or user's permission to use a specific command | `!remove_command_role @role command_name` | Admin, Manager |
-| **remove_bot_manager** | Remove a role or user from bot managers | `!remove_bot_manager @role` | Admin, Manager |
+| **add_command_role** | Give a role or user permission to use a specific command | `!add_command_role <target> <command_name>` | Admin, Manager |
+| **add_bot_manager** | Add a role or user as a bot manager with access to all non-system commands | `!add_bot_manager <target>` | Admin, Manager |
+| **remove_command_role** | Remove a role or user's permission to use a specific command | `!remove_command_role <target> <command_name>` | Admin, Manager |
+| **remove_bot_manager** | Remove a role or user from bot managers | `!remove_bot_manager <target>` | Admin, Manager |
+| **add_category_permission** | Give a role or user permission to use all commands in a category | `!add_category_permission <target> <category>` | Admin, Manager |
+| **remove_category_permission** | Remove a role or user's permission to use all commands in a category | `!remove_category_permission <target> <category>` | Admin, Manager |
+| **list_categories** | List all available command categories | `!list_categories` | Admin, Manager |
+| **add_to_blacklist** | Add a role or user to the blacklist to prevent using any commands | `!add_to_blacklist <target>` | Admin, Manager |
+| **remove_from_blacklist** | Remove a role or user from the blacklist | `!remove_from_blacklist <target>` | Admin, Manager |
+| **list_blacklist** | List all roles and users in the command permission blacklist | `!list_blacklist` | Admin, Manager |
 
 ### Pattern Management Commands
 
@@ -179,8 +185,10 @@ Mirrobot uses a tiered permission system:
 
 1. **Bot Owner** - Has unlimited access to all commands on all servers
 2. **Server Administrators** - Have access to all commands on their server
-3. **Bot Managers** - Roles or users granted access to all non-system commands
-4. **Command-specific Permissions** - Roles or users granted access to specific commands
+3. **Blacklist** - Prevents command access regardless of other permissions (except administrators)
+4. **Bot Managers** - Roles or users granted access to all non-system commands
+5. **Category Permissions** - Roles or users granted access to all commands in a specific category
+6. **Command-specific Permissions** - Roles or users granted access to specific commands
 
 ## 🔍 OCR Processing
 

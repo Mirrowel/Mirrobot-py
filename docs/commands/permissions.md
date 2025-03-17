@@ -1,86 +1,132 @@
 # Permission Management Commands
 
-This document describes the commands available for managing permissions in Mirrobot.
+This module provides commands for managing permissions to use the bot's features. Permissions can be granted to specific roles and users, or managed at the category level.
 
-## Permission System Overview
+## Role and User Permissions
 
-Mirrobot uses a hierarchical permission system:
+### Add Command Role
 
-1. **Bot Owner**: Has access to all commands without restriction
-2. **Server Administrators**: Have access to all commands on their server
-3. **Bot Managers**: Roles or users granted access to all non-system commands
-4. **Command-specific Permissions**: Roles or users granted access to specific commands
-
-## Command Reference
-
-### add_command_role
 Give a role or user permission to use a specific bot command.
 
-- **Usage**: `!add_command_role <target> <command_name>`
-- **Arguments**: 
-  - `target` (required): The role/user to grant permission to (mention or ID)
-  - `command_name` (required): The name of the command
-- **Examples**: 
-  - `!add_command_role @Moderators add_ocr_read_channel`
-  - `!add_command_role @username add_ocr_read_channel`
-- **Permissions**: Requires administrator privileges or bot manager status
+**Command:** `!add_command_role <target> <command_name>`
 
-### remove_command_role
+**Examples:**
+- `!add_command_role @Moderators add_ocr_read_channel` - Grant Moderators permission to add OCR channels
+- `!add_command_role @username extract_text` - Grant specific user permission to extract text from images
+
+**Notes:**
+- Target can be a role mention, role name, user mention, or user ID
+- Command name must be a valid bot command
+
+### Remove Command Role
+
 Remove a role or user's permission to use a specific bot command.
 
-- **Usage**: `!remove_command_role <target> <command_name>`
-- **Arguments**: 
-  - `target` (required): The role/user to remove permission from (mention or ID)
-  - `command_name` (required): The name of the command
-- **Examples**: 
-  - `!remove_command_role @Moderators add_ocr_read_channel`
-  - `!remove_command_role @username add_ocr_read_channel`
-- **Permissions**: Requires administrator privileges or bot manager status
+**Command:** `!remove_command_role <target> <command_name>`
 
-### add_bot_manager
+**Examples:**
+- `!remove_command_role @Moderators add_ocr_read_channel`
+- `!remove_command_role @username extract_text`
+
+## Bot Manager Commands
+
+### Add Bot Manager
+
 Add a role or user as a bot manager with access to all non-system commands.
 
-- **Usage**: `!add_bot_manager <target>`
-- **Arguments**: 
-  - `target` (required): The role/user to designate as bot manager (mention or ID)
-- **Examples**: 
-  - `!add_bot_manager @Admins`
-  - `!add_bot_manager @username`
-- **Permissions**: Requires administrator privileges
+**Command:** `!add_bot_manager <target>`
 
-### remove_bot_manager
+**Examples:**
+- `!add_bot_manager @Admins` - Make the Admins role a bot manager
+- `!add_bot_manager @username` - Make a specific user a bot manager
+
+**Notes:**
+- Bot managers can use all regular commands without needing specific permissions
+- System commands are still restricted to the bot owner
+
+### Remove Bot Manager
+
 Remove a role or user from bot managers, revoking access to all commands.
 
-- **Usage**: `!remove_bot_manager <target>`
-- **Arguments**: 
-  - `target` (required): The role/user to remove from manager status (mention or ID)
-- **Examples**: 
-  - `!remove_bot_manager @Admins`
-  - `!remove_bot_manager @username`
-- **Permissions**: Requires administrator privileges
+**Command:** `!remove_bot_manager <target>`
 
-## Permission Hierarchy
+**Examples:**
+- `!remove_bot_manager @Admins`
+- `!remove_bot_manager @username`
 
-When determining if a user can run a command, Mirrobot checks permissions in this order:
+## Category Permissions
 
-1. Is the user the bot owner?
-2. Is the user a server administrator?
-3. Is the user (or their roles) listed as a bot manager?
-4. Does the user (or their roles) have specific permission for the command?
+### Add Category Permission
 
-If any check passes, the user can use the command. Otherwise, access is denied.
+Give a role or user permission to use all commands in a category.
 
-## Managing Permissions
+**Command:** `!add_category_permission <target> <category>`
 
-It's recommended to:
+**Examples:**
+- `!add_category_permission @Moderators Moderation` - Grant all moderation commands to Moderators
+- `!add_category_permission @username OCR Configuration` - Grant all OCR commands to a user
 
-1. Grant `bot_manager` status to trusted admin/mod roles
-2. Use command-specific permissions for roles that need limited access
-3. Use the `server_info` command to review current permission settings
+### Remove Category Permission
 
-## Best Practices
+Remove a role or user's permission to use all commands in a category.
 
-- **Least Privilege**: Give users only the permissions they need
-- **Role-Based**: Grant permissions to roles rather than individual users when possible
-- **Documentation**: Keep track of which roles have which permissions
-- **Audit**: Periodically review permissions using `server_info`
+**Command:** `!remove_category_permission <target> <category>`
+
+**Examples:**
+- `!remove_category_permission @Moderators Moderation`
+- `!remove_category_permission @username OCR Configuration`
+
+### List Categories
+
+List all available command categories.
+
+**Command:** `!list_categories`
+
+## Blacklist Management
+
+### Add To Blacklist
+
+Add a role or user to the command permission blacklist to prevent them from using any commands.
+
+**Command:** `!add_to_blacklist <target>`
+
+**Examples:**
+- `!add_to_blacklist @Troublemaker` - Prevent a user from using any commands
+- `!add_to_blacklist @RestrictedRole` - Prevent anyone with a specific role from using commands
+
+**Notes:**
+- Users with Administrator permission cannot be blacklisted
+- Roles with Administrator permission cannot be blacklisted
+- Blacklist overrides all other permission settings (except for administrators)
+
+### Remove From Blacklist
+
+Remove a role or user from the permission blacklist.
+
+**Command:** `!remove_from_blacklist <target>`
+
+**Examples:**
+- `!remove_from_blacklist @Troublemaker`
+- `!remove_from_blacklist @RestrictedRole`
+
+### List Blacklist
+
+List all roles and users in the command permission blacklist.
+
+**Command:** `!list_blacklist`
+
+## Permission System Hierarchy
+
+The permission system follows this hierarchy (from highest to lowest priority):
+
+1. **Server Administrators** - Always have access to all commands
+2. **Blacklist** - Prevents command access regardless of other permissions (except administrators)
+3. **Bot Managers** - Have access to all non-system commands
+4. **Category Permissions** - Grant access to all commands in a category
+5. **Command-Specific Permissions** - Grant access to specific commands
+
+## Default Permissions
+
+- Server owners/administrators have access to all commands
+- Only the bot owner can use system commands like `shutdown`, `reload_patterns`, etc.
+- Other users need explicit permission grants to use commands

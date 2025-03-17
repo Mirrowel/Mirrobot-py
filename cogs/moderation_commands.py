@@ -128,10 +128,15 @@ class ModerationCommandsCog(commands.Cog):
     # ----- Commands -----
 
     @commands.command(name='watch_forum', help='Add a forum channel to the watchlist for automatic thread purging.\nArguments: <channel> <time_period>\nTime format examples: 3d (3 days), 12h (12 hours), 30m (30 minutes)\nExample: !watch_forum #help-forum 7d')
-    @commands.has_permissions(manage_channels=True)
+    @has_command_permission("manage_channels")
     @command_category("Moderation")
     async def watch_forum(self, ctx, channel: discord.TextChannel, inactivity: str):
         """Add a forum channel to the watchlist"""
+        # Check if the user has manage_threads permission for the channel
+        if not channel.permissions_for(ctx.author).manage_threads:
+            await ctx.send(f"You need the Manage Threads permission in {channel.mention} to add it to the watchlist.")
+            return
+            
         # Check if the channel is a forum channel
         if not self.is_forum_channel(channel):
             await ctx.send(f"Error: {channel.mention} is not a forum channel.")
@@ -167,10 +172,15 @@ class ModerationCommandsCog(commands.Cog):
         )
 
     @commands.command(name='unwatch_forum', help='Remove a forum channel from the watchlist.\nArguments: <channel>\nExample: !unwatch_forum #help-forum')
-    @commands.has_permissions(manage_channels=True)
+    @has_command_permission("manage_channels")
     @command_category("Moderation")
     async def unwatch_forum(self, ctx, channel: discord.TextChannel):
         """Remove a forum channel from the watchlist"""
+        # Check if the user has manage_threads permission for the channel
+        if not channel.permissions_for(ctx.author).manage_threads:
+            await ctx.send(f"You need the Manage Threads permission in {channel.mention} to remove it from the watchlist.")
+            return
+            
         guild_id_str = str(ctx.guild.id)
         channel_id_str = str(channel.id)
         
@@ -195,10 +205,15 @@ class ModerationCommandsCog(commands.Cog):
             await ctx.send(f"Error: {channel.mention} is not in the watchlist.")
 
     @commands.command(name='ignore_thread', help='Add a thread to the ignore list to prevent it from being purged.\nArguments: <thread>\nExample: !ignore_thread #important-thread')
-    @commands.has_permissions(manage_threads=True)
+    @has_command_permission("manage_channels")
     @command_category("Moderation")
     async def ignore_thread(self, ctx, thread: discord.Thread):
         """Add a thread to the ignore list"""
+        # Check if the user has manage_threads permission for the thread's parent channel
+        if hasattr(thread, "parent") and thread.parent and not thread.parent.permissions_for(ctx.author).manage_threads:
+            await ctx.send(f"You need the Manage Threads permission in {thread.parent.mention} to manage threads.")
+            return
+            
         guild_id_str = str(ctx.guild.id)
         thread_id_str = str(thread.id)
         
@@ -226,10 +241,15 @@ class ModerationCommandsCog(commands.Cog):
         )
 
     @commands.command(name='unignore_thread', help='Remove a thread from the ignore list.\nArguments: <thread>\nExample: !unignore_thread #no-longer-important-thread')
-    @commands.has_permissions(manage_threads=True)
+    @has_command_permission("manage_channels")
     @command_category("Moderation")
     async def unignore_thread(self, ctx, thread: discord.Thread):
         """Remove a thread from the ignore list"""
+        # Check if the user has manage_threads permission for the thread's parent channel
+        if hasattr(thread, "parent") and thread.parent and not thread.parent.permissions_for(ctx.author).manage_threads:
+            await ctx.send(f"You need the Manage Threads permission in {thread.parent.mention} to manage threads.")
+            return
+            
         guild_id_str = str(ctx.guild.id)
         thread_id_str = str(thread.id)
         
@@ -254,7 +274,7 @@ class ModerationCommandsCog(commands.Cog):
             await ctx.send(f"Error: {thread.mention} is not in the ignore list.")
 
     @commands.command(name='list_thread_settings', help='List thread management settings for this server.\nArguments: [type] - Optional filter: "watched" or "ignored" (default: all)\nExample: !list_thread_settings or !list_thread_settings watched')
-    @commands.has_permissions(manage_channels=True)
+    @has_command_permission("manage_channels")
     @command_category("Moderation")
     async def list_thread_settings(self, ctx, setting_type: str = "all"):
         """List thread management settings for this server - both watched channels and ignored threads"""
