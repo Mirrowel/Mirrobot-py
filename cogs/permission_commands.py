@@ -464,11 +464,6 @@ class PermissionCommandsCog(commands.Cog):
         if add_to_blacklist(guild_id, target_id_str, is_role):
             target_type = "Role" if is_role else "User"
             response = f'{target_type} {target_obj.name} added to the command permission blacklist.'
-            
-            # Save blacklists to config
-            config = self.bot.config
-            save_blacklists(config)
-            save_config(config)
         else:
             target_type = "Role" if is_role else "User"
             response = f'{target_type} {target_obj.name} is already in the command permission blacklist.'
@@ -499,11 +494,6 @@ class PermissionCommandsCog(commands.Cog):
         if remove_from_blacklist(guild_id, target_id_str, is_role):
             target_type = "Role" if is_role else "User"
             response = f'{target_type} {target_obj.name} removed from the command permission blacklist.'
-            
-            # Save blacklists to config
-            config = self.bot.config
-            save_blacklists(config)
-            save_config(config)
         else:
             target_type = "Role" if is_role else "User"
             response = f'{target_type} {target_obj.name} is not in the command permission blacklist.'

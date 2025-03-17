@@ -10,6 +10,8 @@ from discord.ext import commands
 from utils.logging_setup import get_logger
 from functools import wraps
 import asyncio
+import os
+import json
 
 logger = get_logger()
 
@@ -19,10 +21,16 @@ SYSTEM_COMMANDS = ['shutdown', 'reload_patterns', 'host']
 # Dictionary to store command categories
 _command_categories = {}
 
+# File path for storing blacklists
+BLACKLIST_FILE = "data/permission_blacklists.json"
+
+# Ensure data directory exists
+os.makedirs(os.path.dirname(BLACKLIST_FILE), exist_ok=True)
+
 # Store permission blacklists
 _permission_blacklists = {
-    "users": {},  # Guild ID -> User ID list
-    "roles": {}   # Guild ID -> Role ID list
+    "users": {},  # Guild ID -> List of User IDs
+    "roles": {}   # Guild ID -> List of Role IDs
 }
 
 def has_command_permission(*required_permissions):
@@ -317,7 +325,14 @@ def add_to_blacklist(guild_id: str, target_id: str, is_role: bool):
     
     if target_id not in _permission_blacklists[blacklist_type][guild_id]:
         _permission_blacklists[blacklist_type][guild_id].append(target_id)
+        # Save changes immediately
+        try:
+            with open(BLACKLIST_FILE, 'w') as f:
+                json.dump(_permission_blacklists, f, indent=4)
+        except Exception as e:
+            logger.error(f"Error saving permission blacklists to file: {e}")
         return True
+    
     return False
 
 def remove_from_blacklist(guild_id: str, target_id: str, is_role: bool):
@@ -338,7 +353,14 @@ def remove_from_blacklist(guild_id: str, target_id: str, is_role: bool):
         if not _permission_blacklists[blacklist_type][guild_id]:
             del _permission_blacklists[blacklist_type][guild_id]
         
+        # Save changes immediately
+        try:
+            with open(BLACKLIST_FILE, 'w') as f:
+                json.dump(_permission_blacklists, f, indent=4)
+        except Exception as e:
+            logger.error(f"Error saving permission blacklists to file: {e}")
         return True
+    
     return False
 
 def get_blacklist(guild_id: str):
@@ -358,9 +380,25 @@ def get_blacklist(guild_id: str):
 
 # Load blacklists from config
 def load_blacklists(config):
+    """Load permission blacklists from disk"""
     global _permission_blacklists
+    
+    # Try to load from the dedicated file first
+    try:
+        if os.path.exists(BLACKLIST_FILE):
+            with open(BLACKLIST_FILE, 'r') as f:
+                loaded_blacklists = json.load(f)
+                if isinstance(loaded_blacklists, dict) and "users" in loaded_blacklists and "roles" in loaded_blacklists:
+                    _permission_blacklists = loaded_blacklists
+                    return
+    except Exception as e:
+        logger.error(f"Error loading permission blacklists from file: {e}")
+    
+    # Fall back to config if file doesn't exist or has issues
     if 'permission_blacklists' in config:
         _permission_blacklists = config['permission_blacklists']
+        # Save to file for future use
+        save_blacklists(config)
     else:
         _permission_blacklists = {
             "users": {},
@@ -369,8 +407,16 @@ def load_blacklists(config):
 
 # Save blacklists to config
 def save_blacklists(config):
+    """Save permission blacklists to disk and config"""
+    # Update the config
     config['permission_blacklists'] = _permission_blacklists
-    return config
+    
+    # Save to dedicated file
+    try:
+        with open(BLACKLIST_FILE, 'w') as f:
+            json.dump(_permission_blacklists, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving permission blacklists to file: {e}")
 
 def check_target_permissions(target, permissions, ctx=None):
     """

@@ -15,6 +15,7 @@ logger = get_logger()
 # File paths for storing data
 WATCHLIST_FILE = "data/thread_watchlist.json"
 IGNORE_LIST_FILE = "data/thread_ignore_list.json"
+TAG_IGNORE_FILE = "data/thread_tag_ignore_list.json"  # New file for ignored tags
 
 # Default settings
 DEFAULT_PURGE_INTERVAL = 2  # minutes
@@ -27,6 +28,7 @@ class ModerationCommandsCog(commands.Cog):
         self.bot = bot
         self.watchlist = {}  # Guild ID -> Channel ID -> Settings
         self.ignore_list = {}  # Guild ID -> Thread ID -> Settings
+        self.tag_ignore_list = {}  # Guild ID -> Tag Name -> Settings
         self.load_data()
         
         # Get purge interval from config or use default
@@ -67,6 +69,18 @@ class ModerationCommandsCog(commands.Cog):
         except Exception as e:
             logger.error(f"Error loading thread ignore list: {e}")
             self.ignore_list = {}
+            
+        # Load tag ignore list
+        try:
+            if os.path.exists(TAG_IGNORE_FILE):
+                with open(TAG_IGNORE_FILE, 'r') as f:
+                    self.tag_ignore_list = json.load(f)
+            else:
+                self.tag_ignore_list = {}
+                self.save_tag_ignore_list()
+        except Exception as e:
+            logger.error(f"Error loading thread tag ignore list: {e}")
+            self.tag_ignore_list = {}
 
     def save_watchlist(self):
         """Save watchlist to disk"""
@@ -83,6 +97,14 @@ class ModerationCommandsCog(commands.Cog):
                 json.dump(self.ignore_list, f, indent=4)
         except Exception as e:
             logger.error(f"Error saving thread ignore list: {e}")
+            
+    def save_tag_ignore_list(self):
+        """Save tag ignore list to disk"""
+        try:
+            with open(TAG_IGNORE_FILE, 'w') as f:
+                json.dump(self.tag_ignore_list, f, indent=4)
+        except Exception as e:
+            logger.error(f"Error saving thread tag ignore list: {e}")
 
     # ----- Helper Functions -----
 
@@ -134,6 +156,13 @@ class ModerationCommandsCog(commands.Cog):
         
         return (guild_id_str in self.ignore_list and 
                 thread_id_str in self.ignore_list[guild_id_str])
+                
+    def is_tag_ignored(self, guild_id: int, tag_name: str) -> bool:
+        """Check if a tag is in the ignore list"""
+        guild_id_str = str(guild_id)
+        
+        return (guild_id_str in self.tag_ignore_list and 
+                tag_name in self.tag_ignore_list[guild_id_str])
 
     # ----- Commands -----
 
@@ -307,7 +336,77 @@ class ModerationCommandsCog(commands.Cog):
         else:
             await ctx.send(f"Error: {thread.mention} is not in the ignore list.")
 
-    @commands.command(name='list_thread_settings', help='List thread management settings for this server.\nArguments: [type] - Optional filter: "watched" or "ignored" (default: all)\nExample: !list_thread_settings or !list_thread_settings watched')
+    @commands.command(name='ignore_tag', help='Add a thread tag to the ignore list to prevent threads with that tag from being purged.\nArguments: <tag_name>\nExample: !ignore_tag important')
+    @has_command_permission("manage_channels")
+    @command_category("Moderation")
+    async def ignore_tag(self, ctx, *, tag_name: str):
+        """Add a thread tag to the ignore list"""
+        if not tag_name:
+            await ctx.send("Error: You must provide a tag name.")
+            return
+            
+        # Clean the tag name (remove extra spaces, etc.)
+        tag_name = tag_name.strip()
+        
+        guild_id_str = str(ctx.guild.id)
+        
+        if guild_id_str not in self.tag_ignore_list:
+            self.tag_ignore_list[guild_id_str] = {}
+            
+        # Check if already ignored
+        if tag_name in self.tag_ignore_list[guild_id_str]:
+            await ctx.send(f"Tag '{tag_name}' is already in the ignore list.")
+            return
+            
+        self.tag_ignore_list[guild_id_str][tag_name] = {
+            "added_by": str(ctx.author.id),
+            "added_at": datetime.datetime.now().isoformat()
+        }
+        
+        self.save_tag_ignore_list()
+        
+        await create_embed_response(
+            ctx=ctx,
+            title="Tag Added to Ignore List",
+            description=f"Added tag '{tag_name}' to the ignore list. Threads with this tag will not be purged automatically.",
+            color=discord.Color.green()
+        )
+
+    @commands.command(name='unignore_tag', help='Remove a thread tag from the ignore list.\nArguments: <tag_name>\nExample: !unignore_tag important')
+    @has_command_permission("manage_channels")
+    @command_category("Moderation")
+    async def unignore_tag(self, ctx, *, tag_name: str):
+        """Remove a thread tag from the ignore list"""
+        if not tag_name:
+            await ctx.send("Error: You must provide a tag name.")
+            return
+            
+        # Clean the tag name
+        tag_name = tag_name.strip()
+        
+        guild_id_str = str(ctx.guild.id)
+        
+        if (guild_id_str in self.tag_ignore_list and 
+            tag_name in self.tag_ignore_list[guild_id_str]):
+            
+            del self.tag_ignore_list[guild_id_str][tag_name]
+            
+            # Clean up if the guild has no more ignored tags
+            if not self.tag_ignore_list[guild_id_str]:
+                del self.tag_ignore_list[guild_id_str]
+                
+            self.save_tag_ignore_list()
+            
+            await create_embed_response(
+                ctx=ctx,
+                title="Tag Removed from Ignore List",
+                description=f"Removed tag '{tag_name}' from the ignore list. Threads with this tag may now be purged if inactive.",
+                color=discord.Color.green()
+            )
+        else:
+            await ctx.send(f"Error: Tag '{tag_name}' is not in the ignore list.")
+
+    @commands.command(name='list_thread_settings', help='List thread management settings for this server.\nArguments: [type] - Optional filter: "watched", "ignored", or "tags" (default: all)\nExample: !list_thread_settings or !list_thread_settings tags')
     @has_command_permission("manage_channels")
     @command_category("Moderation")
     async def list_thread_settings(self, ctx, setting_type: str = "all"):
@@ -325,8 +424,8 @@ class ModerationCommandsCog(commands.Cog):
         setting_type = setting_type.lower()
         
         # Validate setting type
-        if setting_type not in ["all", "watched", "ignored"]:
-            await ctx.send("Invalid setting type. Please use 'watched', 'ignored', or omit for all settings.")
+        if setting_type not in ["all", "watched", "ignored", "tags"]:
+            await ctx.send("Invalid setting type. Please use 'watched', 'ignored', 'tags', or omit for all settings.")
             return
         
         fields = []
@@ -340,6 +439,11 @@ class ModerationCommandsCog(commands.Cog):
         if setting_type in ["all", "ignored"]:
             ignored_fields = self._get_ignored_fields(ctx.guild, guild_id_str)
             fields.extend(ignored_fields)
+            
+        # Add ignored tags section if requested
+        if setting_type in ["all", "tags"]:
+            tag_fields = self._get_ignored_tag_fields(ctx.guild, guild_id_str)
+            fields.extend(tag_fields)
         
         # If no fields were added, there's nothing to show
         if not fields:
@@ -348,6 +452,8 @@ class ModerationCommandsCog(commands.Cog):
                 sections.append("watched channels")
             if setting_type in ["all", "ignored"]:
                 sections.append("ignored threads")
+            if setting_type in ["all", "tags"]:
+                sections.append("ignored tags")
                 
             await ctx.send(f"No {' or '.join(sections)} found for this server.")
             return
@@ -359,9 +465,12 @@ class ModerationCommandsCog(commands.Cog):
         elif setting_type == "watched":
             title = "Watched Forum Channels"
             description = "List of forum channels being watched for thread purging."
-        else:  # ignored
+        elif setting_type == "ignored":
             title = "Ignored Threads"
             description = "List of threads that will not be automatically purged."
+        else:  # tags
+            title = "Ignored Tags"
+            description = "List of thread tags that will prevent threads from being automatically purged."
         
         # Create and send the embed response
         await create_embed_response(
@@ -429,6 +538,36 @@ class ModerationCommandsCog(commands.Cog):
                     logger.error(f"Error getting thread info: {e}")
         
         return fields
+        
+    def _get_ignored_tag_fields(self, guild, guild_id_str):
+        """Helper method to get fields for ignored tags"""
+        fields = []
+        
+        # Add section header if we have ignored tags
+        if guild_id_str in self.tag_ignore_list and self.tag_ignore_list[guild_id_str]:
+            fields.append({
+                "name": "🏷️ IGNORED TAGS",
+                "value": "Thread tags that will prevent threads from being automatically purged.",
+                "inline": False
+            })
+            
+            # Create a single field with all tags
+            tag_list = []
+            for tag_name, settings in self.tag_ignore_list[guild_id_str].items():
+                added_date = settings.get('added_at', 'Unknown').split('T')[0]
+                tag_list.append(f"`{tag_name}` (added: {added_date})")
+            
+            # Split into smaller chunks if we have many tags
+            if tag_list:
+                tag_chunks = [tag_list[i:i+10] for i in range(0, len(tag_list), 10)]
+                for i, chunk in enumerate(tag_chunks):
+                    fields.append({
+                        "name": f"Ignored Tags {i+1}" if i > 0 else "Ignored Tags",
+                        "value": "\n".join(chunk),
+                        "inline": False
+                    })
+        
+        return fields
 
     # ----- Background Task -----
 
@@ -492,6 +631,7 @@ class ModerationCommandsCog(commands.Cog):
         
         # Combine all threads into a single list
         all_threads = active_threads + archived_threads
+        guild_id_str = str(guild.id)
         
         for thread in all_threads:
             try:
@@ -501,6 +641,18 @@ class ModerationCommandsCog(commands.Cog):
                 
                 # Skip if in ignore list
                 if self.is_thread_ignored(guild.id, thread.id):
+                    continue
+                
+                # Skip if thread has an ignored tag
+                has_ignored_tag = False
+                if hasattr(thread, "applied_tags") and thread.applied_tags:
+                    for tag in thread.applied_tags:
+                        if guild_id_str in self.tag_ignore_list and tag.name in self.tag_ignore_list[guild_id_str]:
+                            logger.info(f"Skipping thread {thread.name} as it has ignored tag: {tag.name}")
+                            has_ignored_tag = True
+                            break
+                
+                if has_ignored_tag:
                     continue
                 
                 # Check if the bot has permission to delete this thread
