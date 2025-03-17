@@ -62,6 +62,7 @@ class PatternCommandsCog(commands.Cog):
     
     @commands.command(name='list_patterns', help='List all pattern responses for this server.\nArguments: [verbosity] - Optional verbosity level (1-3, default: 1)\nExample: !list_patterns or !list_patterns 2')
     @has_command_permission()
+    @commands.bot_has_permissions(embed_links=True)
     @command_category("OCR Configuration")
     async def list_patterns(self, ctx, verbosity: int = 1):
         """List all patterns for this server with configurable verbosity"""
@@ -416,6 +417,7 @@ class PatternCommandsCog(commands.Cog):
 
     @commands.command(name='view_response', help='View details of a specific response.\nArguments: response_id_or_name - ID number or name of the response\nExample: !view_response 5\nExample: !view_response v6fix_command')
     @has_command_permission()
+    @commands.bot_has_permissions(embed_links=True)
     @command_category("OCR Configuration")
     async def view_response(self, ctx, response_id_or_name: str):
         """View details of a specific response"""
@@ -504,6 +506,7 @@ class PatternCommandsCog(commands.Cog):
 
     @commands.command(name='extract_text', help='Extract text from an image without matching patterns.\nArguments: [url] (optional) - URL to an image\n           [language] (optional) - Language for OCR (default: eng, options: eng, rus)\nExample: !extract_text https://example.com/image.jpg rus')
     @has_command_permission()
+    @commands.bot_has_permissions(attach_files=True)
     @command_category("OCR Utilities")
     async def extract_text(self, ctx, url_or_lang: str = None, language: str = None):
         """Extract text from an image attachment or URL without applying patterns"""

@@ -406,6 +406,7 @@ class SystemCommandsCog(commands.Cog):
 
     @commands.command(name='help', aliases=['info'], help='Show info about the bot and its features.\nArguments: [command] (optional) - Get detailed help on a specific command\nExample: !help, !info or !help server_info')
     @commands.cooldown(1, 3, commands.BucketType.user)  # Prevent spam
+    @commands.bot_has_permissions(embed_links=True)
     @command_category("System")
     async def help_command(self, ctx, command_name=None):
         """Display help information about the bot and its commands"""
@@ -547,6 +548,7 @@ class SystemCommandsCog(commands.Cog):
         
     @commands.command(name='helpmenu', help='Shows an interactive help menu with dropdown categories and command pagination.\nNo arguments required.\nExample: !helpmenu')
     @commands.cooldown(1, 3, commands.BucketType.user)
+    @commands.bot_has_permissions(embed_links=True)
     @command_category("System")
     async def helpmenu_command(self, ctx):
         """Display an interactive help menu with dropdown categories"""
@@ -592,6 +594,7 @@ class SystemCommandsCog(commands.Cog):
     @commands.command(name='host', help='Display detailed information about the host system.\nNo arguments required.\nExample: !host')
     @command_category("System")
     @commands.is_owner()  # Only the bot owner can use this command
+    @commands.bot_has_permissions(embed_links=True)
     async def host(self, ctx):
         """Display information about the host system running the bot"""
         # Get system information
@@ -751,6 +754,7 @@ class SystemCommandsCog(commands.Cog):
 
     @commands.command(name='status', help='Display bot status, uptime, and statistics.\nNo additional arguments required.\nExample: !status')
     @has_command_permission()
+    @commands.bot_has_permissions(embed_links=True)
     @command_category("System")
     async def status(self, ctx):
         """Display current bot status and statistics"""

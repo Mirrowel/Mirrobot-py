@@ -73,6 +73,7 @@ class BotConfigCog(commands.Cog):
 
     @commands.command(name='server_info', help='Display all bot configuration settings for this server.\nNo additional arguments required.\nExample: !server_info')
     @has_command_permission()
+    @commands.bot_has_permissions(embed_links=True)
     @command_category("Bot Configuration")
     async def server_info(self, ctx):
         if not ctx.guild:
