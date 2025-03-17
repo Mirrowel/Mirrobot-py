@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from utils.logging_setup import get_logger
-from utils.permissions import has_command_permission, command_category
+from utils.permissions import check_target_permissions, has_command_permission, command_category
 from config.config_manager import save_config
 from utils.embed_helper import create_embed_response
 import asyncio
@@ -76,6 +76,16 @@ class BotConfigCog(commands.Cog):
     @commands.bot_has_permissions(embed_links=True)
     @command_category("Bot Configuration")
     async def server_info(self, ctx):
+        """Display all server configuration settings"""
+        # Check if the bot has required permissions to display rich embeds
+        has_perms, _, _ = check_target_permissions(
+            ctx.channel,
+            ["view_channel", "send_messages", "embed_links"],
+            ctx
+        )
+        if not has_perms:
+            return
+        
         if not ctx.guild:
             await ctx.reply("This command can only be used in a server.")
             return

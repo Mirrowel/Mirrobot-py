@@ -7,7 +7,7 @@ import datetime
 import re
 from typing import Dict, List, Optional, Union, Tuple
 from utils.logging_setup import get_logger
-from utils.permissions import has_command_permission, command_category
+from utils.permissions import has_command_permission, command_category, check_target_permissions
 from utils.embed_helper import create_embed_response
 
 logger = get_logger()
@@ -15,6 +15,9 @@ logger = get_logger()
 # File paths for storing data
 WATCHLIST_FILE = "data/thread_watchlist.json"
 IGNORE_LIST_FILE = "data/thread_ignore_list.json"
+
+# Default settings
+DEFAULT_PURGE_INTERVAL = 2  # minutes
 
 # Ensure data directory exists
 os.makedirs(os.path.dirname(WATCHLIST_FILE), exist_ok=True)
@@ -25,6 +28,13 @@ class ModerationCommandsCog(commands.Cog):
         self.watchlist = {}  # Guild ID -> Channel ID -> Settings
         self.ignore_list = {}  # Guild ID -> Thread ID -> Settings
         self.load_data()
+        
+        # Get purge interval from config or use default
+        self.purge_interval = bot.config.get('thread_purge_interval_minutes', DEFAULT_PURGE_INTERVAL)
+        logger.debug(f"Thread purge task will run every {self.purge_interval} minutes")
+        
+        # Start the purge task with the configured interval
+        self.thread_purge_task.change_interval(minutes=self.purge_interval)
         self.thread_purge_task.start()
 
     def cog_unload(self):
@@ -137,6 +147,15 @@ class ModerationCommandsCog(commands.Cog):
             await ctx.send(f"You need the Manage Threads permission in {channel.mention} to add it to the watchlist.")
             return
             
+        # Check if the bot has required permissions
+        has_perms, _, _ = check_target_permissions(
+            channel, 
+            ["manage_threads", "view_channel", "read_message_history"], 
+            ctx
+        )
+        if not has_perms:
+            return
+            
         # Check if the channel is a forum channel
         if not self.is_forum_channel(channel):
             await ctx.send(f"Error: {channel.mention} is not a forum channel.")
@@ -181,6 +200,11 @@ class ModerationCommandsCog(commands.Cog):
             await ctx.send(f"You need the Manage Threads permission in {channel.mention} to remove it from the watchlist.")
             return
             
+        # Check if the bot has required permissions
+        has_perms, _, _ = check_target_permissions(channel, ["view_channel"], ctx)
+        if not has_perms:
+            return
+            
         guild_id_str = str(ctx.guild.id)
         channel_id_str = str(channel.id)
         
@@ -212,6 +236,11 @@ class ModerationCommandsCog(commands.Cog):
         # Check if the user has manage_threads permission for the thread's parent channel
         if hasattr(thread, "parent") and thread.parent and not thread.parent.permissions_for(ctx.author).manage_threads:
             await ctx.send(f"You need the Manage Threads permission in {thread.parent.mention} to manage threads.")
+            return
+            
+        # Check if the bot has required permissions
+        has_perms, _, _ = check_target_permissions(thread, ["manage_threads", "view_channel"], ctx)
+        if not has_perms:
             return
             
         guild_id_str = str(ctx.guild.id)
@@ -250,6 +279,11 @@ class ModerationCommandsCog(commands.Cog):
             await ctx.send(f"You need the Manage Threads permission in {thread.parent.mention} to manage threads.")
             return
             
+        # Check if the bot has required permissions
+        has_perms, _, _ = check_target_permissions(thread, ["manage_threads", "view_channel"], ctx)
+        if not has_perms:
+            return
+            
         guild_id_str = str(ctx.guild.id)
         thread_id_str = str(thread.id)
         
@@ -278,6 +312,15 @@ class ModerationCommandsCog(commands.Cog):
     @command_category("Moderation")
     async def list_thread_settings(self, ctx, setting_type: str = "all"):
         """List thread management settings for this server - both watched channels and ignored threads"""
+        # Bot needs to be able to read channels to list them
+        has_perms, _, _ = check_target_permissions(
+            ctx.channel, 
+            ["view_channel", "read_message_history"], 
+            ctx
+        )
+        if not has_perms:
+            return
+            
         guild_id_str = str(ctx.guild.id)
         setting_type = setting_type.lower()
         
@@ -389,10 +432,10 @@ class ModerationCommandsCog(commands.Cog):
 
     # ----- Background Task -----
 
-    @tasks.loop(minutes=2)
+    @tasks.loop(minutes=DEFAULT_PURGE_INTERVAL)  # Default interval that will be overridden
     async def thread_purge_task(self):
         """Background task that purges inactive threads in watched channels"""
-        logger.info("Running thread purge task")
+        logger.info(f"Running thread purge task (interval: {self.purge_interval} minutes)")
         
         for guild_id_str, channels in self.watchlist.items():
             try:
@@ -406,6 +449,16 @@ class ModerationCommandsCog(commands.Cog):
                         # Get channel object
                         channel = guild.get_channel(int(channel_id_str))
                         if not channel or not self.is_forum_channel(channel):
+                            continue
+                        
+                        # Check if the bot has required permissions in this channel
+                        has_perms, missing, _ = check_target_permissions(
+                            channel, 
+                            ["manage_threads", "view_channel", "read_message_history"]
+                        )
+                        if not has_perms:
+                            missing_perms = ", ".join(missing)
+                            logger.warning(f"Skipping thread purge in channel {channel.name} (ID: {channel_id_str}) - missing permissions: {missing_perms}")
                             continue
                         
                         # Get max inactivity threshold
@@ -448,6 +501,12 @@ class ModerationCommandsCog(commands.Cog):
                 
                 # Skip if in ignore list
                 if self.is_thread_ignored(guild.id, thread.id):
+                    continue
+                
+                # Check if the bot has permission to delete this thread
+                has_perms, missing, _ = check_target_permissions(thread, ["manage_threads"])
+                if not has_perms:
+                    logger.warning(f"Skipping thread {thread.name} (ID: {thread.id}) - missing permissions: {', '.join(missing)}")
                     continue
                 
                 # Check last activity

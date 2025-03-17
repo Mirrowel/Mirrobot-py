@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from utils.logging_setup import get_logger
-from utils.permissions import has_command_permission, command_category
+from utils.permissions import has_command_permission, command_category, check_target_permissions
 from config.config_manager import save_config
 
 logger = get_logger()
@@ -42,6 +42,15 @@ class OCRConfigCog(commands.Cog):
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
             await ctx.reply(response)
+            return
+
+        # Check if the bot has required permissions in the channel
+        has_perms, _, _ = check_target_permissions(
+            channel, 
+            ["view_channel", "read_message_history", "read_messages", "send_messages"], 
+            ctx
+        )
+        if not has_perms:
             return
 
         guild_id = str(ctx.guild.id)
@@ -159,6 +168,11 @@ class OCRConfigCog(commands.Cog):
             await ctx.reply(response)
             return
 
+        # Check if the bot has required permissions in the channel
+        has_perms, _, _ = check_target_permissions(channel, ["view_channel"], ctx)
+        if not has_perms:
+            return
+
         guild_id = str(ctx.guild.id)
         if guild_id in ocr_read_channels and channel_id in ocr_read_channels[guild_id]:
             ocr_read_channels[guild_id].remove(channel_id)
@@ -201,6 +215,15 @@ class OCRConfigCog(commands.Cog):
             await ctx.reply(response)
             return
 
+        # Check if the bot has required permissions in the channel
+        has_perms, _, _ = check_target_permissions(
+            channel, 
+            ["view_channel", "send_messages", "embed_links"], 
+            ctx
+        )
+        if not has_perms:
+            return
+
         guild_id = str(ctx.guild.id)
         if guild_id not in ocr_response_channels:
             ocr_response_channels[guild_id] = []
@@ -241,6 +264,11 @@ class OCRConfigCog(commands.Cog):
             await ctx.reply(response)
             return
 
+        # Check if the bot has required permissions in the channel
+        has_perms, _, _ = check_target_permissions(channel, ["view_channel"], ctx)
+        if not has_perms:
+            return
+
         guild_id = str(ctx.guild.id)
         if guild_id in ocr_response_channels and channel_id in ocr_response_channels[guild_id]:
             ocr_response_channels[guild_id].remove(channel_id)
@@ -272,6 +300,15 @@ class OCRConfigCog(commands.Cog):
         if guild_id not in ocr_response_fallback:
             ocr_response_fallback[guild_id] = []
 
+        # Check if the bot has required permissions in the channel
+        has_perms, _, _ = check_target_permissions(
+            channel, 
+            ["view_channel", "read_message_history", "read_messages", "send_messages"], 
+            ctx
+        )
+        if not has_perms:
+            return
+
         if channel_id in ocr_response_fallback[guild_id]:
             response = f'Channel {channel.mention} is already in the OCR response fallback list for this server.'
         else:
@@ -296,6 +333,11 @@ class OCRConfigCog(commands.Cog):
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
             await ctx.reply(response)
+            return
+
+        # Check if the bot has required permissions in the channel
+        has_perms, _, _ = check_target_permissions(channel, ["view_channel"], ctx)
+        if not has_perms:
             return
 
         guild_id = str(ctx.guild.id)

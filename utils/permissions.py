@@ -371,3 +371,66 @@ def load_blacklists(config):
 def save_blacklists(config):
     config['permission_blacklists'] = _permission_blacklists
     return config
+
+def check_target_permissions(target, permissions, ctx=None):
+    """
+    Check if the bot has the required permissions for a target (channel or thread)
+    
+    Args:
+        target: The channel or thread to check permissions in
+        permissions: List of required permissions as strings
+        ctx: Optional command context for sending error messages
+            
+    Returns:
+        tuple: (has_permissions, missing_permissions, error_message)
+    """
+    missing = []
+    error_message = None
+    
+    # Handle the case where target is None
+    if not target:
+        error_message = "Target channel or thread not found"
+        return False, ["target not found"], error_message
+    
+    # Get the appropriate permissions object based on target type
+    if isinstance(target, discord.Thread):
+        # For threads, we need the parent channel's permissions
+        if not target.parent:
+            error_message = f"Parent channel for thread {getattr(target, 'mention', '#unknown-thread')} not found"
+            return False, ["parent channel not found"], error_message
+            
+        bot_member = target.guild.get_member(ctx.bot.user.id if ctx else None)
+        if not bot_member:
+            error_message = "Bot is not a member of this server"
+            return False, ["bot not in guild"], error_message
+            
+        perms = target.parent.permissions_for(bot_member)
+    else:
+        # For channels and other Discord objects with guild property
+        if not hasattr(target, "guild"):
+            error_message = "Target doesn't belong to a guild"
+            return False, ["invalid target"], error_message
+            
+        bot_member = target.guild.get_member(ctx.bot.user.id if ctx else None)
+        if not bot_member:
+            error_message = "Bot is not a member of this server"
+            return False, ["bot not in guild"], error_message
+            
+        perms = target.permissions_for(bot_member)
+    
+    # Check each required permission
+    for perm in permissions:
+        if not getattr(perms, perm, False):
+            missing.append(perm)
+    
+    has_permissions = len(missing) == 0
+    
+    # If context provided and permissions are missing, send error message
+    if not has_permissions and missing:
+        missing_formatted = ", ".join([f"`{perm.replace('_', ' ').title()}`" for perm in missing])
+        target_mention = getattr(target, 'mention', 'this channel/thread')
+        error_message = f"I don't have sufficient permissions in {target_mention}. Missing: {missing_formatted}"
+        if ctx and not ctx.response.is_done():
+            asyncio.create_task(ctx.send(error_message, delete_after=15))
+    
+    return has_permissions, missing, error_message
