@@ -1,9 +1,13 @@
 import discord
 from discord.ext import commands
+import cogs
 from core.ocr import respond_to_ocr
 from utils.logging_setup import get_logger
 import sys
 import asyncio
+from utils.resource_monitor import ResourceMonitor, get_system_info
+from utils.log_manager import LogManager
+from cogs.__init__ import cogs
 
 logger = get_logger()
 
@@ -95,7 +99,9 @@ def create_bot(config):
         'high_watermark': 0,
     }
     
-    
+    # Set up resource monitoring
+    bot.resource_monitor = ResourceMonitor()
+    bot.log_manager = LogManager()
     
     # Set up event handlers
     @bot.event
@@ -109,6 +115,21 @@ def create_bot(config):
         # Start multiple OCR workers
         for i in range(worker_count):
             asyncio.create_task(ocr_worker(bot, worker_id=i+1))
+        
+        # Start resource monitoring
+        bot.resource_monitor.start()
+        
+        # Schedule log cleanup task to run daily
+        async def cleanup_logs_task():
+            while True:
+                try:
+                    bot.log_manager.cleanup_old_logs()
+                except Exception as e:
+                    logger.error(f"Error cleaning up logs: {e}")
+                await asyncio.sleep(86400)  # 24 hours
+                
+        bot.log_cleanup_task = asyncio.create_task(cleanup_logs_task())
+        logger.info("Resource monitoring and log management initialized")
         
         # Load cogs after bot is ready
         await load_cogs(bot)
@@ -151,8 +172,8 @@ def create_bot(config):
                 logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if hasattr(ctx.channel, 'type') and ctx.channel.type in ['public_thread', 'private_thread'] else ""))
             else:
                 logger.debug("Command error in DM")
-            logger.error(f"Error in command '{ctx.command}': {error}")
-            await ctx.send(f"Error in command '{ctx.command}': {error}")
+            logger.error(f"Error in command '{ctx.command}': {error.__class__.__name__}: {error}")
+            await ctx.send(f"Error in command '{ctx.command}': {error.__class__.__name__}: {error}")
 
     return bot
 
@@ -299,26 +320,19 @@ async def ocr_worker(bot, worker_id=1):
 async def load_cogs(bot):
     """Load all cogs for the bot"""
     # Load all cogs
-    cogs_to_load = [
-        'cogs.bot_config', 
-        'cogs.ocr_config', 
-        'cogs.pattern_commands', 
-        'cogs.permission_commands', 
-        'cogs.system_commands', 
-        'cogs.moderation_commands'
-    ]
     error_occurred = False
-    for cog_file in cogs_to_load:
+    for cog_file in cogs:
+        full_cog = f"cogs.{cog_file}"  # Prepend folder name
         try:
-            await bot.load_extension(cog_file)
+            await bot.load_extension(full_cog)
         except Exception as e:
-            logger.error(f"Failed to load extension {cog_file}: {e}")
+            logger.error(f"Failed to load extension {full_cog}: {e}")
             error_occurred = True
         else:
-            logger.debug(f"Loaded extension: {cog_file}")
+            logger.debug(f"Loaded extension: {full_cog}")
 
     if not error_occurred:
-        logger.info(f"All {len(cogs_to_load)} cogs loaded successfully")
+        logger.info(f"All {len(cogs)} cogs loaded successfully")
     
     # Apply command categories after all cogs are loaded
     apply_command_categories(bot)

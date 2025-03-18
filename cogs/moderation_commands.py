@@ -18,7 +18,7 @@ IGNORE_LIST_FILE = "data/thread_ignore_list.json"
 TAG_IGNORE_FILE = "data/thread_tag_ignore_list.json"  # New file for ignored tags
 
 # Default settings
-DEFAULT_PURGE_INTERVAL = 2  # minutes
+DEFAULT_PURGE_INTERVAL = 10  # minutes
 
 # Ensure data directory exists
 os.makedirs(os.path.dirname(WATCHLIST_FILE), exist_ok=True)
@@ -116,7 +116,7 @@ class ModerationCommandsCog(commands.Cog):
         if not time_str:
             return 0, False
 
-        pattern = re.compile(r'^(\d+)([dhm])$')
+        pattern = re.compile(r'^(\d+)([dhms])$')
         match = pattern.match(time_str.lower())
         
         if not match:
@@ -131,23 +131,37 @@ class ModerationCommandsCog(commands.Cog):
             return value * 60 * 60, True
         elif unit == 'm':
             return value * 60, True
+        elif unit == 's':
+            return value, True
         
         return 0, False
 
     def format_time(self, seconds: int) -> str:
         """Format seconds into a human-readable string"""
-        if seconds < 60:
-            return f"{seconds} seconds"
-        elif seconds < 3600:
-            return f"{seconds // 60} minutes"
-        elif seconds < 86400:
-            return f"{seconds // 3600} hours"
-        else:
-            return f"{seconds // 86400} days"
+        seconds = int(seconds)  # Ensure seconds is an integer
+        days, remainder = divmod(seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        parts = []
+        if days:
+            parts.append(f"{days} day{'s' if days != 1 else ''}")
+        if hours:
+            parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+        if minutes:
+            parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+        if seconds or not parts:
+            parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
+        
+        return " ".join(parts)
 
     def is_forum_channel(self, channel) -> bool:
         """Check if a channel is a forum channel"""
         return isinstance(channel, discord.ForumChannel)
+    
+    def can_have_threads(self, channel) -> bool:
+        """Check if a channel can have threads"""
+        return isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.VoiceChannel))
 
     def is_thread_ignored(self, guild_id: int, thread_id: int) -> bool:
         """Check if a thread is in the ignore list"""
@@ -166,11 +180,17 @@ class ModerationCommandsCog(commands.Cog):
 
     # ----- Commands -----
 
-    @commands.command(name='watch_forum', help='Add a forum channel to the watchlist for automatic thread purging.\nArguments: <channel> <time_period>\nTime format examples: 3d (3 days), 12h (12 hours), 30m (30 minutes)\nExample: !watch_forum #help-forum 7d')
+    @commands.command(name='watch_forum', help='Add a channel to the watchlist for automatic thread purging.\nArguments: <channel> <time_period>\nTime format examples: 3d (3 days), 12h (12 hours), 30m (30 minutes)\nExample: !watch_forum #help-forum 7d')
     @has_command_permission("manage_channels")
     @command_category("Moderation")
-    async def watch_forum(self, ctx, channel: discord.TextChannel, inactivity: str):
-        """Add a forum channel to the watchlist"""
+    async def watch_forum(self, ctx, channel: discord.abc.GuildChannel, inactivity: str):
+        """Add a channel to the watchlist"""
+        
+        # Check if the channel can have threads
+        if not self.can_have_threads(channel):
+            await ctx.send(f"Error: {channel.mention} cannot have threads. Only text channels, forum channels, and voice channels with threads can be watched.")
+            return
+        
         # Check if the user has manage_threads permission for the channel
         if not channel.permissions_for(ctx.author).manage_threads:
             await ctx.send(f"You need the Manage Threads permission in {channel.mention} to add it to the watchlist.")
@@ -183,11 +203,6 @@ class ModerationCommandsCog(commands.Cog):
             ctx
         )
         if not has_perms:
-            return
-            
-        # Check if the channel is a forum channel
-        if not self.is_forum_channel(channel):
-            await ctx.send(f"Error: {channel.mention} is not a forum channel.")
             return
         
         # Parse the inactivity threshold
@@ -207,14 +222,15 @@ class ModerationCommandsCog(commands.Cog):
             "max_inactivity_seconds": seconds,
             "max_inactivity_str": inactivity,
             "added_by": str(ctx.author.id),
-            "added_at": datetime.datetime.now().isoformat()
+            "added_at": datetime.datetime.now().isoformat(),
+            "channel_type": channel.__class__.__name__
         }
         
         self.save_watchlist()
         
         await create_embed_response(
             ctx=ctx,
-            title="Forum Channel Added to Watchlist",
+            title="Channel Added to Watchlist",
             description=f"Added {channel.mention} to the thread purge watchlist. Threads inactive for more than {self.format_time(seconds)} will be automatically purged.",
             color=discord.Color.green()
         )
@@ -222,7 +238,7 @@ class ModerationCommandsCog(commands.Cog):
     @commands.command(name='unwatch_forum', help='Remove a forum channel from the watchlist.\nArguments: <channel>\nExample: !unwatch_forum #help-forum')
     @has_command_permission("manage_channels")
     @command_category("Moderation")
-    async def unwatch_forum(self, ctx, channel: discord.TextChannel):
+    async def unwatch_forum(self, ctx, channel: discord.abc.GuildChannel):
         """Remove a forum channel from the watchlist"""
         # Check if the user has manage_threads permission for the channel
         if not channel.permissions_for(ctx.author).manage_threads:
@@ -576,6 +592,11 @@ class ModerationCommandsCog(commands.Cog):
         """Background task that purges inactive threads in watched channels"""
         logger.info(f"Running thread purge task (interval: {self.purge_interval} minutes)")
         
+        # Validate channels before processing - remove any that don't exist anymore
+        channels_removed = await self.validate_watchlist_channels()
+        if channels_removed > 0:
+            logger.info(f"Removed {channels_removed} invalid or deleted channels from watchlist during validation")
+        
         for guild_id_str, channels in self.watchlist.items():
             try:
                 # Get guild object
@@ -612,9 +633,169 @@ class ModerationCommandsCog(commands.Cog):
             except Exception as e:
                 logger.error(f"Error processing guild {guild_id_str}: {e}")
     
+    async def validate_watchlist_channels(self) -> int:
+        """
+        Validates all channels in the watchlist and removes entries for channels 
+        that no longer exist or are invalid.
+        
+        Returns:
+            int: Number of channels removed from the watchlist
+        """
+        removed_count = 0
+        guilds_to_remove = []
+        channels_to_remove = {}
+        
+        # First pass: collect all invalid channels
+        for guild_id_str, channels in self.watchlist.items():
+            try:
+                guild = self.bot.get_guild(int(guild_id_str))
+                
+                # If guild doesn't exist anymore, mark all its channels for removal
+                if not guild:
+                    guilds_to_remove.append(guild_id_str)
+                    removed_count += len(channels)
+                    continue
+                
+                # Check each channel in this guild
+                if guild_id_str not in channels_to_remove:
+                    channels_to_remove[guild_id_str] = []
+                    
+                for channel_id_str, settings in channels.items():
+                    try:
+                        channel_id = int(channel_id_str)
+                        channel = guild.get_channel(channel_id)
+                        
+                        # Mark for removal if:
+                        # 1. Channel doesn't exist, or
+                        # 2. Channel cannot have threads
+                        if not channel or not self.can_have_threads(channel):
+                            channels_to_remove[guild_id_str].append(channel_id_str)
+                            removed_count += 1
+                            logger.debug(f"Marking channel {channel_id_str} in guild {guild.name} for removal - " + 
+                                       ("channel deleted" if not channel else "channel type cannot have threads"))
+                    except Exception as e:
+                        logger.error(f"Error validating channel {channel_id_str} in guild {guild_id_str}: {e}")
+                        # Still mark it for removal if there was an error
+                        channels_to_remove[guild_id_str].append(channel_id_str)
+                        removed_count += 1
+            except Exception as e:
+                logger.error(f"Error validating guild {guild_id_str}: {e}")
+                # If there's an error processing the guild, mark it for removal
+                guilds_to_remove.append(guild_id_str)
+                removed_count += len(channels)
+        
+        # Second pass: remove all collected invalid entries
+        
+        # Remove invalid guilds
+        for guild_id_str in guilds_to_remove:
+            if guild_id_str in self.watchlist:
+                del self.watchlist[guild_id_str]
+                logger.debug(f"Removed guild {guild_id_str} from watchlist - guild no longer exists")
+        
+        # Remove invalid channels
+        for guild_id_str, channel_ids in channels_to_remove.items():
+            if guild_id_str in self.watchlist:
+                for channel_id_str in channel_ids:
+                    if channel_id_str in self.watchlist[guild_id_str]:
+                        del self.watchlist[guild_id_str][channel_id_str]
+                        logger.debug(f"Removed channel {channel_id_str} from watchlist in guild {guild_id_str}")
+                
+                # If guild has no more channels, remove it too
+                if not self.watchlist[guild_id_str]:
+                    del self.watchlist[guild_id_str]
+                    logger.debug(f"Removed empty guild {guild_id_str} from watchlist")
+        
+        # Save changes if we removed anything
+        if removed_count > 0:
+            self.save_watchlist()
+        
+        return removed_count
+
+    # Same validation concept should be applied to ignored threads
+    async def validate_ignored_threads(self) -> int:
+        """
+        Validates all threads in the ignore list and removes entries for threads
+        that no longer exist.
+        
+        Returns:
+            int: Number of threads removed from the ignore list
+        """
+        removed_count = 0
+        guilds_to_remove = []
+        threads_to_remove = {}
+        
+        # First pass: collect all invalid threads
+        for guild_id_str, threads in self.ignore_list.items():
+            try:
+                guild = self.bot.get_guild(int(guild_id_str))
+                
+                # If guild doesn't exist anymore, mark all its threads for removal
+                if not guild:
+                    guilds_to_remove.append(guild_id_str)
+                    removed_count += len(threads)
+                    continue
+                
+                # Check each thread in this guild
+                if guild_id_str not in threads_to_remove:
+                    threads_to_remove[guild_id_str] = []
+                    
+                for thread_id_str, settings in threads.items():
+                    try:
+                        thread_id = int(thread_id_str)
+                        thread = guild.get_thread(thread_id)
+                        
+                        # Mark for removal if thread doesn't exist
+                        if not thread:
+                            threads_to_remove[guild_id_str].append(thread_id_str)
+                            removed_count += 1
+                            thread_name = settings.get('thread_name', 'Unknown thread')
+                            logger.debug(f"Marking thread {thread_name} ({thread_id_str}) in guild {guild.name} for removal - thread deleted")
+                    except Exception as e:
+                        logger.error(f"Error validating thread {thread_id_str} in guild {guild_id_str}: {e}")
+                        # Still mark it for removal if there was an error
+                        threads_to_remove[guild_id_str].append(thread_id_str)
+                        removed_count += 1
+            except Exception as e:
+                logger.error(f"Error validating guild {guild_id_str} for ignored threads: {e}")
+                guilds_to_remove.append(guild_id_str)
+                removed_count += len(threads)
+        
+        # Second pass: remove all collected invalid entries
+        
+        # Remove invalid guilds
+        for guild_id_str in guilds_to_remove:
+            if guild_id_str in self.ignore_list:
+                del self.ignore_list[guild_id_str]
+                logger.debug(f"Removed guild {guild_id_str} from ignore list - guild no longer exists")
+        
+        # Remove invalid threads
+        for guild_id_str, thread_ids in threads_to_remove.items():
+            if guild_id_str in self.ignore_list:
+                for thread_id_str in thread_ids:
+                    if thread_id_str in self.ignore_list[guild_id_str]:
+                        del self.ignore_list[guild_id_str][thread_id_str]
+                        logger.debug(f"Removed thread {thread_id_str} from ignore list in guild {guild_id_str}")
+                
+                # If guild has no more threads, remove it too
+                if not self.ignore_list[guild_id_str]:
+                    del self.ignore_list[guild_id_str]
+                    logger.debug(f"Removed empty guild {guild_id_str} from ignore list")
+        
+        # Save changes if we removed anything
+        if removed_count > 0:
+            self.save_ignore_list()
+        
+        return removed_count
+
+    # Make our thread purge task call both validation methods
     @thread_purge_task.before_loop
     async def before_thread_purge(self):
         await self.bot.wait_until_ready()
+        # Validate channels and threads when the bot starts up
+        channels_removed = await self.validate_watchlist_channels()
+        threads_removed = await self.validate_ignored_threads()
+        if channels_removed > 0 or threads_removed > 0:
+            logger.info(f"Initial validation: Removed {channels_removed} invalid channels and {threads_removed} invalid threads")
     
     async def purge_inactive_threads(self, guild, channel, max_inactivity):
         """Purge inactive threads in a specific channel"""
@@ -624,13 +805,23 @@ class ModerationCommandsCog(commands.Cog):
         async def collect_threads(async_iterable):
             return [thread async for thread in async_iterable]
         
-        # Gather active and archived threads concurrently
-        active_threads_task = asyncio.create_task(collect_threads(channel.threads()))
-        archived_threads_task = asyncio.create_task(collect_threads(channel.archived_threads()))
-        active_threads, archived_threads = await asyncio.gather(active_threads_task, archived_threads_task)
+        # Get threads based on channel type
+        all_threads = []
         
-        # Combine all threads into a single list
-        all_threads = active_threads + archived_threads
+        # Get active threads
+        if hasattr(channel, "threads"):
+            all_threads.extend(channel.threads)
+        try:    
+            # Get archived threads if applicable
+            if hasattr(channel, "archived_threads"):
+                archived_threads = []
+                async for thread in channel.archived_threads():
+                    archived_threads.append(thread)
+                all_threads.extend(archived_threads)
+        except Exception as e:
+            logger.error(f"Error collecting archived threads from channel {channel.id}: {e}")
+            return
+        
         guild_id_str = str(guild.id)
         
         for thread in all_threads:
@@ -676,13 +867,173 @@ class ModerationCommandsCog(commands.Cog):
                 
                 # Delete if inactive longer than threshold
                 if inactivity_seconds > max_inactivity:
-                    logger.info(f"Deleting inactive thread: {thread.name} (ID: {thread.id}) in channel {channel.name}")
+                    logger.debug(f"Deleting inactive thread: {thread.name} (ID: {thread.id}) in channel {channel.name}. Inactive for {self.format_time(inactivity_seconds)}, threshold: {self.format_time(max_inactivity)}")   
                     await thread.delete()
                     threads_purged += 1
             except Exception as e:
                 logger.error(f"Error processing thread {thread.id}: {e}")
+        if threads_purged > 0:
+            logger.debug(f"Purged {threads_purged} threads from channel {channel.name} in {guild.name}")
+
+    @commands.command(name='purge_threads', help='Manually purge inactive threads from a channel.\nArguments: <channel> <time_period>\nTime format examples: 3d (3 days), 12h (12 hours), 30m (30 minutes)\nExample: !purge_threads #help-forum 7d')
+    @has_command_permission("manage_channels")
+    @command_category("Moderation")
+    async def purge_threads(self, ctx, channel: discord.abc.GuildChannel, inactivity: str):
+        """Manually purge inactive threads from a channel"""
         
-        logger.info(f"Purged {threads_purged} threads from channel {channel.name} in {guild.name}")
+        # Check if the channel can have threads
+        if not self.can_have_threads(channel):
+            await ctx.send(f"Error: {channel.mention} cannot have threads. Only text channels, forum channels, and voice channels with threads can be purged.")
+            return
+        
+        # Check if the user has manage_threads permission for the channel
+        if not channel.permissions_for(ctx.author).manage_threads:
+            await ctx.send(f"You need the Manage Threads permission in {channel.mention} to purge its threads.")
+            return
+            
+        # Check if the bot has required permissions
+        has_perms, missing_perms, _ = check_target_permissions(
+            channel, 
+            ["manage_threads", "view_channel", "read_message_history"], 
+            ctx
+        )
+        if not has_perms:
+            return
+        
+        # Parse the inactivity threshold
+        seconds, success = self.parse_time(inactivity)
+        if not success:
+            await ctx.send("Error: Invalid time format. Use format like '7d', '24h', or '30m'.")
+            return
+        
+        # Send an initial message
+        initial_message = await ctx.send(f"🔍 Scanning {channel.mention} for inactive threads...")
+        
+        # Run the purge and get purged thread information
+        purged_threads = await self.manual_purge_inactive_threads(ctx.guild, channel, seconds)
+        
+        if not purged_threads:
+            await initial_message.edit(content=f"No inactive threads found in {channel.mention} that have been inactive for more than {self.format_time(seconds)}.")
+            return
+        
+        # Create fields for the embed
+        fields = []
+        thread_list = []
+
+        for i, thread in enumerate(purged_threads):
+            thread_name, inactive_time, inactive_seconds = thread
+            thread_list.append(f"• **{thread_name}** - Inactive for {inactive_time}")
+            
+        fields.append({
+            "name": "Purged Threads",
+            "value": "\n".join(thread_list),
+            "inline": False
+        })
+        
+        # Create and send the embed
+        await create_embed_response(
+            ctx=ctx,
+            title=f"Thread Purge Results",
+            description=f"Purged **{len(purged_threads)}** inactive threads from {channel.mention} that were inactive for more than {self.format_time(seconds)}.",
+            fields=fields,
+            color=discord.Color.green(),
+            footer_text=f"Requested by {ctx.author.display_name}",
+            field_unbroken=True
+        )
+        
+        # Delete the initial message
+        try:
+            await initial_message.delete()
+        except:
+            pass
+
+    async def manual_purge_inactive_threads(self, guild, channel, max_inactivity):
+        """Purge inactive threads in a specific channel and return info about purged threads"""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        purged_threads = []  # Will store tuples of (thread_name, inactive_time_formatted, inactive_seconds)
+        
+        # Get threads based on channel type
+        all_threads = []
+        
+        # Get active threads
+        if hasattr(channel, "threads"):
+            all_threads.extend(channel.threads)
+        try:    
+            # Get archived threads if applicable
+            if hasattr(channel, "archived_threads"):
+                archived_threads = []
+                async for thread in channel.archived_threads():
+                    archived_threads.append(thread)
+                all_threads.extend(archived_threads)
+        except Exception as e:
+            logger.error(f"Error collecting archived threads from channel {channel.id}: {e}")
+            return purged_threads
+        
+        guild_id_str = str(guild.id)
+        
+        for thread in all_threads:
+            try:
+                # Skip if pinned
+                if thread.flags.pinned:
+                    continue
+                
+                # Skip if in ignore list
+                if self.is_thread_ignored(guild.id, thread.id):
+                    continue
+                
+                # Skip if thread has an ignored tag
+                has_ignored_tag = False
+                if hasattr(thread, "applied_tags") and thread.applied_tags:
+                    for tag in thread.applied_tags:
+                        if guild_id_str in self.tag_ignore_list and tag.name in self.tag_ignore_list[guild_id_str]:
+                            #logger.debug(f"Skipping thread {thread.name} as it has ignored tag: {tag.name}")
+                            has_ignored_tag = True
+                            break
+                
+                if has_ignored_tag:
+                    continue
+                
+                # Check if the bot has permission to delete this thread
+                has_perms, missing, _ = check_target_permissions(thread, ["manage_threads"])
+                if not has_perms:
+                    logger.warning(f"Skipping thread {thread.name} (ID: {thread.id}) - missing permissions: {', '.join(missing)}")
+                    continue
+                
+                # Check last activity
+                last_message_time = thread.last_message_id
+                if last_message_time:
+                    # Get last message timestamp using snowflake ID
+                    last_message_time = discord.utils.snowflake_time(last_message_time)
+                else:
+                    # If no messages, use creation time
+                    last_message_time = thread.created_at
+                
+                # Calculate inactivity duration
+                inactivity_duration = now - last_message_time
+                inactivity_seconds = inactivity_duration.total_seconds()
+                
+                # Delete if inactive longer than threshold
+                if inactivity_seconds > max_inactivity:
+                    thread_name = thread.name
+                    inactive_time = self.format_time(int(inactivity_seconds))
+                    
+                    logger.debug(f"Deleting inactive thread: {thread_name} (ID: {thread.id}) in channel {channel.name}. Inactive for {inactive_time}")
+                    
+                    # Store information before deleting
+                    purged_threads.append((thread_name, inactive_time, inactivity_seconds))
+                    
+                    # Delete the thread
+                    await thread.delete()
+            except Exception as e:
+                logger.error(f"Error processing thread {thread.id}: {e}")
+                
+        # Sort purged threads by inactivity time (most inactive first)
+        purged_threads.sort(key=lambda x: x[2], reverse=True)
+        
+        if purged_threads:
+            logger.info(f"Manually purged {len(purged_threads)} threads from channel {channel.name} in {guild.name}")
+            
+        return purged_threads
 
 async def setup(bot):
     await bot.add_cog(ModerationCommandsCog(bot))

@@ -445,7 +445,7 @@ def check_target_permissions(target, permissions, ctx=None):
             error_message = f"Parent channel for thread {getattr(target, 'mention', '#unknown-thread')} not found"
             return False, ["parent channel not found"], error_message
             
-        bot_member = target.guild.get_member(ctx.bot.user.id if ctx else None)
+        bot_member = target.guild.me
         if not bot_member:
             error_message = "Bot is not a member of this server"
             return False, ["bot not in guild"], error_message
@@ -457,7 +457,7 @@ def check_target_permissions(target, permissions, ctx=None):
             error_message = "Target doesn't belong to a guild"
             return False, ["invalid target"], error_message
             
-        bot_member = target.guild.get_member(ctx.bot.user.id if ctx else None)
+        bot_member = target.guild.me
         if not bot_member:
             error_message = "Bot is not a member of this server"
             return False, ["bot not in guild"], error_message
@@ -476,7 +476,7 @@ def check_target_permissions(target, permissions, ctx=None):
         missing_formatted = ", ".join([f"`{perm.replace('_', ' ').title()}`" for perm in missing])
         target_mention = getattr(target, 'mention', 'this channel/thread')
         error_message = f"I don't have sufficient permissions in {target_mention}. Missing: {missing_formatted}"
-        if ctx and not ctx.response.is_done():
+        if ctx:
             asyncio.create_task(ctx.send(error_message, delete_after=15))
     
     return has_permissions, missing, error_message

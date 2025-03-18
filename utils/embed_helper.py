@@ -9,7 +9,7 @@ import discord
 
 from utils.constants import AUTHOR_ICON_URL, BOT_NAME, BOT_VERSION
 
-async def create_embed_response(ctx, description, fields, title=BOT_NAME, footer_text=f"{BOT_NAME} v{BOT_VERSION}", thumbnail_url=None, footer_icon_url=AUTHOR_ICON_URL, url=None, author_name=None, author_icon_url=None, author_url=None, field_unbroken=False):
+async def create_embed_response(ctx, description, fields=None, title=BOT_NAME, footer_text=f"{BOT_NAME} v{BOT_VERSION}", thumbnail_url=None, footer_icon_url=AUTHOR_ICON_URL, url=None, author_name=None, author_icon_url=None, author_url=None, field_unbroken=False, color=discord.Color.blue()):
     """
     Create and send a formatted Discord embed response.
     
@@ -58,7 +58,7 @@ async def create_embed_response(ctx, description, fields, title=BOT_NAME, footer
     embed = discord.Embed(
         title=title,
         description=description,
-        color=discord.Color.blue()
+        color=color
     )
     
     # Add URL if provided
@@ -66,41 +66,42 @@ async def create_embed_response(ctx, description, fields, title=BOT_NAME, footer
         embed.url = url
         
     # Add all fields
-    for field in fields:
-        name = field.get('name', '')
-        value = field.get('value', '')
-        inline = field.get('inline', False)
-        
-        # Skip empty fields
-        if not value:
-            continue
+    if fields:
+        for field in fields:
+            name = field.get('name', '')
+            value = field.get('value', '')
+            inline = field.get('inline', False)
             
-        # Handle fields that are too long
-        if len(value) > 1024:
-            # Split into multiple fields
-            parts = []
-            current_part = ""
-            lines = value.split('\n')
-            for line in lines:
-                if len(current_part + line + '\n') > 1024:
-                    parts.append(current_part)
-                    current_part = line + '\n'
-                else:
-                    current_part += line + '\n'
-            if current_part:
-                parts.append(current_part)
+            # Skip empty fields
+            if not value:
+                continue
                 
-            # Add the parts as separate fields
-            for i, part in enumerate(parts):
-                if not field_unbroken:
-                    embed.add_field(name=f"{name} ({i+1}/{len(parts)})", value=part, inline=inline)
-                elif i == 0:
-                    embed.add_field(name=name, value=part, inline=inline)
-                else:
-                    # Use an empty field name for continuation to make it appear connected
-                    embed.add_field(name='',value=part, inline=inline)
-        else:
-            embed.add_field(name=name, value=value, inline=inline)
+            # Handle fields that are too long
+            if len(value) > 1024:
+                # Split into multiple fields
+                parts = []
+                current_part = ""
+                lines = value.split('\n')
+                for line in lines:
+                    if len(current_part + line + '\n') > 1024:
+                        parts.append(current_part)
+                        current_part = line + '\n'
+                    else:
+                        current_part += line + '\n'
+                if current_part:
+                    parts.append(current_part)
+                    
+                # Add the parts as separate fields
+                for i, part in enumerate(parts):
+                    if not field_unbroken:
+                        embed.add_field(name=f"{name} ({i+1}/{len(parts)})", value=part, inline=inline)
+                    elif i == 0:
+                        embed.add_field(name=name, value=part, inline=inline)
+                    else:
+                        # Use an empty field name for continuation to make it appear connected
+                        embed.add_field(name='',value=part, inline=inline)
+            else:
+                embed.add_field(name=name, value=value, inline=inline)
     
     # Add footer if provided
     if footer_text:

@@ -14,3 +14,6 @@ colorlog>=6.6.0
 
 # Environment variables
 python-dotenv>=1.0.0
+
+# Add these lines to your existing requirements.txt
+psutil>=5.9.0
