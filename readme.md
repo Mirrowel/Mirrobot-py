@@ -12,6 +12,8 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
 - **Flexible Configuration**: Customize command prefix and permissions
 - **Role-based Permissions**: Grant specific access to commands by role or user
 - **Comprehensive Statistics**: Monitor OCR performance and queue metrics
+- **Resource Monitoring**: Track system resource usage and performance
+- **Thread Management**: Automatically or manually purge inactive threads from any channel type
 - **Environment Variable Support**: Secure configuration through environment variables
 
 ## 🛠️ Installation
@@ -68,6 +70,9 @@ The bot relies on the following libraries:
 - **collections**: Container datatypes
 - **threading**: Thread-based parallelism
 
+### Additional Dependencies
+- **psutil**: Cross-platform process and system monitoring
+
 ## ⚙️ Configuration
 
 The bot can be configured in two ways:
@@ -109,9 +114,10 @@ Environment variables take precedence over the config file settings.
 
 | Command | Description | Usage | Permissions |
 |---------|-------------|-------|------------|
-| **add_ocr_read_channel** | Add a channel where the bot will scan images for OCR processing | `!add_ocr_read_channel #channel` | Admin, Manager |
+| **add_ocr_read_channel** | Add a channel where the bot will scan images for OCR processing | `!add_ocr_read_channel #channel [language]` | Admin, Manager |
 | **remove_ocr_read_channel** | Remove a channel from the OCR reading list | `!remove_ocr_read_channel #channel` | Admin, Manager |
-| **add_ocr_response_channel** | Add a channel where the bot will post OCR analysis results | `!add_ocr_response_channel #channel` | Admin, Manager |
+| **set_ocr_language** | Set the OCR language for a channel | `!set_ocr_language #channel language` | Admin, Manager |
+| **add_ocr_response_channel** | Add a channel where the bot will post OCR analysis results | `!add_ocr_response_channel #channel [language]` | Admin, Manager |
 | **remove_ocr_response_channel** | Remove a channel from the OCR response list | `!remove_ocr_response_channel #channel` | Admin, Manager |
 | **add_ocr_response_fallback** | Add a fallback channel for OCR responses | `!add_ocr_response_fallback #channel` | Admin, Manager |
 | **remove_ocr_response_fallback** | Remove a channel from the OCR response fallback list | `!remove_ocr_response_fallback #channel` | Admin, Manager |
@@ -169,12 +175,13 @@ The bot can be configured to recognize specific text patterns and respond with a
 
 ### Moderation Commands
 
-Manage forum channels and threads with automated cleanup:
+Manage channels and threads with automated cleanup:
 
 | Command | Description | Usage | Permissions |
 |---------|-------------|-------|------------|
-| **watch_forum** | Add a forum channel to the watchlist for automatic thread purging | `!watch_forum <channel> <time_period>` | Admin, Manager |
-| **unwatch_forum** | Remove a forum channel from the watchlist | `!unwatch_forum <channel>` | Admin, Manager |
+| **watch_forum** | Add a channel to the watchlist for automatic thread purging | `!watch_forum <channel> <time_period>` | Admin, Manager |
+| **unwatch_forum** | Remove a channel from the watchlist | `!unwatch_forum <channel>` | Admin, Manager |
+| **purge_threads** | Manually purge inactive threads from a channel | `!purge_threads <channel> <time_period>` | Admin, Manager |
 | **ignore_thread** | Add a thread to the ignore list to prevent it from being purged | `!ignore_thread <thread>` | Admin, Manager |
 | **unignore_thread** | Remove a thread from the ignore list | `!unignore_thread <thread>` | Admin, Manager |
 | **ignore_tag** | Add a thread tag to the ignore list to prevent threads with that tag from being purged | `!ignore_tag <tag_name>` | Admin, Manager |
@@ -185,14 +192,16 @@ Manage forum channels and threads with automated cleanup:
 
 ## Thread Management Features
 
-The bot can automatically purge inactive threads from forum channels:
+The bot can automatically or manually purge inactive threads from channels:
 
 | Feature | Description |
 |---------|-------------|
 | **Thread Purging** | Automatically removes inactive threads after a configurable time period |
+| **Manual Purging** | Command to manually purge inactive threads on demand |
+| **Multiple Channel Support** | Works with text channels, forum channels, and voice channels |
 | **Thread Ignoring** | Specific threads can be excluded from automatic purging |
 | **Tag Protection** | Threads with specific tags can be automatically protected from purging |
-| **Configurable Thresholds** | Each forum can have its own inactivity threshold (days, hours, minutes) |
+| **Configurable Thresholds** | Each channel can have its own inactivity threshold (days, hours, minutes, seconds) |
 | **Pinned Thread Protection** | Pinned threads are never automatically purged |
 
 ### Permission Management
@@ -235,6 +244,7 @@ The bot tracks various statistics:
 - Queue statistics (current size, total enqueued, rejected, high watermark)
 - Pattern match frequency
 - Processing times and averages
+- System resource usage (CPU, memory)
 
 View statistics with the `!status` command.
 
@@ -265,7 +275,10 @@ The bot includes robust error handling to maintain stability:
 
 ## 🔄 Updates and Version History
 
-- **v0.35** - Current version with improved queue management, environment variable support, comprehensive documentation, configuration validation, enhanced embedding, and status command.
+- **v0.5** - Refactored channel handling and enhanced thread purge validations. Updated ModerationCommandsCog and OCRConfigCog with improved time parsing, detailed logging, new manual purge command, and channel validation. Also refactored core bot setup and embed customization.
+- **v0.45 Unstable** - Enhanced permission management with category permissions and blacklist support. Updated moderation commands to use the new @has_command_permission decorator with Manage Threads checks, added category-level commands (add/remove/list_category_permission) and blacklist management, and revised permissions configuration.
+- **v0.4 Unstable** - Introduced Moderation Commands with automated thread purging (watch/unwatch, ignore/unignore, list settings), improved cog loading with enhanced logging/debug details, time parsing, embed formatting, and updated documentation in docs/commands/moderation.md.
+- **v0.35** - Improved queue management, environment variable support, comprehensive documentation, configuration validation, enhanced embedding, and status command.
 - **v0.30** - Parallel OCR processing using multiple workers.
 - **v0.25** - First modular structure release. A lot of edits and improvements.
 - **v0.20** - Final single-file release.
