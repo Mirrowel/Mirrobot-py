@@ -15,6 +15,8 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
 - **Resource Monitoring**: Track system resource usage and performance
 - **Thread Management**: Automatically or manually purge inactive threads from any channel type
 - **Environment Variable Support**: Secure configuration through environment variables
+- **LLM Integration**: Connect to a local or Google AI-powered LLM for natural language queries using `!ask` and `!think` commands.
+- **Conversational Chatbot Mode**: Enable persistent, context-aware chat in designated channels with `!chatbot_enable` / `!chatbot_disable`, leveraging automatic message and pinned context indexing.
 
 ## 🛠️ Installation
 
@@ -42,6 +44,7 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
 The bot relies on the following libraries:
 
 ### External Libraries
+
 - **discord.py**: Discord API wrapper for Python
 - **pytesseract**: Python wrapper for Google's Tesseract OCR
 - **Pillow (PIL)**: Python Imaging Library for image processing
@@ -51,8 +54,10 @@ The bot relies on the following libraries:
 - **psutil**: Cross-platform process and system monitoring
 - **py-cpuinfo**: CPU information retrieval library
 - **python-dotenv**: Loading environment variables from .env files
+- **google-generativeai**: Google's Generative AI Python SDK for accessing Gemini models
 
 ### Standard Libraries
+
 - **json**: JSON data encoding/decoding
 - **os**: Operating system interfaces
 - **re**: Regular expression operations
@@ -71,6 +76,7 @@ The bot relies on the following libraries:
 - **threading**: Thread-based parallelism
 
 ### Additional Dependencies
+
 - **psutil**: Cross-platform process and system monitoring
 
 ## ⚙️ Configuration
@@ -78,7 +84,9 @@ The bot relies on the following libraries:
 The bot can be configured in two ways:
 
 ### 1. Configuration File
+
 The bot uses a `config.json` file to store:
+
 - Discord bot token
 - Command prefix (default: `!`)
 - Designated channels for OCR reading and responses
@@ -87,6 +95,7 @@ The bot uses a `config.json` file to store:
 - Command permissions
 
 Example configuration:
+
 ```json
 {
   "token": "your_discord_bot_token_here",
@@ -102,11 +111,55 @@ Example configuration:
 ```
 
 ### 2. Environment Variables
+
 For improved security, you can use environment variables:
+
 1. Create a `.env` file based on `.env.example`
 2. Add your Discord bot token: `DISCORD_BOT_TOKEN=your_token_here`
 
 Environment variables take precedence over the config file settings.
+
+### 3. LLM and Chatbot Configuration
+
+#### LLM Configuration (`data/llm_config.json`)
+
+- `base_url`: URL of local LLM server when using `provider: local`
+
+- `timeout`, `max_retries`, `retry_delay`: Request settings
+
+- `provider`: `local` or `google_ai`
+
+- `google_ai_api_key`, `google_ai_model_name`: Google AI key and default model
+
+- `servers`: Per-guild overrides (`enabled`, `preferred_model`, `last_used_model`)
+
+Commands:
+
+| Command          | Description                            | Usage                                  | Permissions     |
+|------------------|----------------------------------------|----------------------------------------|-----------------|
+| **llm_provider**   | Switch LLM provider                     | `!llm_provider <local\|google_ai>`       | Bot Owner       |
+| **llm_set_api_key**| Set Google AI API key                   | `!llm_set_api_key <api_key>`             | Bot Owner       |
+| **llm_status**     | Show provider and model status          | `!llm_status`                            | Manage Messages |
+| **llm_models**     | List available models                   | `!llm_models [filters]`                  | Manage Messages |
+| **llm_select**     | Select model by name or index           | `!llm_select <model_name_or_number>`     | Bot Owner       |
+| **ask**            | Standard LLM query                      | `!ask <question>`                        | Manage Messages |
+| **think**          | LLM query with thinking prompt          | `!think [<true\|false>] <question>`      | Manage Guild    |
+
+#### Chatbot Configuration (`data/chatbot_config.json`)
+
+- `channels`: Per-guild/channel settings (`enabled`, `max_context_messages`, `max_user_context_messages`, `context_window_hours`, `response_delay_seconds`, `max_response_length`, `auto_prune_enabled`, `prune_interval_hours`, `auto_respond_to_mentions`, `auto_respond_to_replies`)
+
+- `global`: Defaults (`max_context_messages`, `max_user_context_messages`, `context_window_hours`, `response_delay_seconds`, `max_response_length`, `auto_prune_enabled`, `prune_interval_hours`, `user_index_cleanup_hours`, `auto_index_on_restart`, `auto_index_on_enable`)
+
+Commands:
+
+| Command                | Description                      | Usage                         | Permissions        |
+|------------------------|----------------------------------|-------------------------------|--------------------|
+| **chatbot_enable**       | Enable chatbot in current channel | `!chatbot_enable`             | Chatbot Enable     |
+| **chatbot_disable**      | Disable chatbot mode              | `!chatbot_disable`            | Chatbot Disable    |
+| **chatbot_status**       | Show config and stats             | `!chatbot_status`             | Chatbot Status     |
+| **chatbot_config**       | View/modify settings              | `!chatbot_config [setting] [value]` | Chatbot Config     |
+| **chatbot_clear_history**| Clear conversation history         | `!chatbot_clear_history`      | Chatbot Clear History |
 
 ## 📝 Available Commands
 
@@ -172,6 +225,28 @@ The bot can be configured to recognize specific text patterns and respond with a
 | **host** | Display system information about the host | `!host` | Bot Owner Only |
 | **reload_patterns** | Reload the pattern database | `!reload_patterns` | Bot Owner Only |
 | **shutdown** | Shut down the bot completely | `!shutdown` | Bot Owner Only |
+
+### LLM Integration Commands
+
+| Command | Description | Usage | Permissions |
+|---------|-------------|-------|-------------|
+| **llm_provider** | Switch LLM provider | `!llm_provider <local\|google_ai>` | Bot Owner |
+| **llm_set_api_key** | Set Google AI API key | `!llm_set_api_key <api_key>` | Bot Owner |
+| **llm_status** | Show provider and model status | `!llm_status` | Manage Messages |
+| **llm_models** | List available models | `!llm_models [filters]` | Manage Messages |
+| **llm_select** | Select model by name or index | `!llm_select <model_name_or_number>` | Bot Owner |
+| **ask** | Standard LLM query | `!ask <question>` | Manage Messages |
+| **think** | LLM query with thinking prompt | `!think [<true\|false>] <question>` | Manage Guild |
+
+### Chatbot Commands
+
+| Command | Description | Usage | Permissions |
+|---------|-------------|-------|-------------|
+| **chatbot_enable** | Enable chatbot in current channel | `!chatbot_enable` | Chatbot Enable |
+| **chatbot_disable** | Disable chatbot mode | `!chatbot_disable` | Chatbot Disable |
+| **chatbot_status** | Show config and stats | `!chatbot_status` | Chatbot Status |
+| **chatbot_config** | View/modify settings | `!chatbot_config [setting] [value]` | Chatbot Config |
+| **chatbot_clear_history** | Clear conversation history | `!chatbot_clear_history` | Chatbot Clear History |
 
 ### Moderation Commands
 
@@ -239,6 +314,7 @@ Mirrobot automatically processes images posted in designated OCR read channels:
 ## 📊 Stats and Monitoring
 
 The bot tracks various statistics:
+
 - Number of images processed
 - Success/failure rate of OCR operations
 - Queue statistics (current size, total enqueued, rejected, high watermark)
@@ -260,6 +336,7 @@ View statistics with the `!status` command.
 ## ⚠️ Error Handling
 
 The bot includes robust error handling to maintain stability:
+
 - Connection issues are automatically retried
 - Queue backpressure prevents memory overload
 - Config validation ensures proper setup
@@ -275,6 +352,7 @@ The bot includes robust error handling to maintain stability:
 
 ## 🔄 Updates and Version History
 
+- **v0.65 AI** - Added LLM integration with support for both local and Google AI providers, direct query commands (`!ask`, `!think`), and persistent conversational chatbot mode for channels. Includes automatic message/user indexing, context-aware responses, and intelligent embed formatting. See the detailed [AI Changelog](docs/changelogs/changelog_065AI.md) and [LLM Integration Guide](docs/llm_integration.md).
 - **v0.5** - Refactored channel handling and enhanced thread purge validations. Updated ModerationCommandsCog and OCRConfigCog with improved time parsing, detailed logging, new manual purge command, and channel validation. Also refactored core bot setup and embed customization.
 - **v0.45 Unstable** - Enhanced permission management with category permissions and blacklist support. Updated moderation commands to use the new @has_command_permission decorator with Manage Threads checks, added category-level commands (add/remove/list_category_permission) and blacklist management, and revised permissions configuration.
 - **v0.4 Unstable** - Introduced Moderation Commands with automated thread purging (watch/unwatch, ignore/unignore, list settings), improved cog loading with enhanced logging/debug details, time parsing, embed formatting, and updated documentation in docs/commands/moderation.md.
