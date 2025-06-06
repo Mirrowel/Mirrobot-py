@@ -128,7 +128,7 @@ Enable Developer Mode in Discord, then:
 2. **Always use** environment variables for sensitive data like tokens
 3. **Restrict file permissions** on config files containing secrets
 
-> 📖 **For detailed configuration examples and troubleshooting**, see `CONFIG_EXAMPLE_README.md`
+> 📖 **For detailed configuration examples and troubleshooting**, see [Configuration Guide](docs/configuration.md)
 
 ### LLM and Chatbot Configuration
 
