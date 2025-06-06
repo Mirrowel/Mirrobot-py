@@ -96,6 +96,24 @@ def load_config(config_file='config.json'):
             if 'ocr_max_queue_size' not in config:
                 config['ocr_max_queue_size'] = 100  # Default to 100 queue items
             
+            # Check for LLM settings that should be migrated
+            if any(key in config for key in ['llm', 'llm_global', 'llm_servers']):
+                try:
+                    from config.llm_config_manager import migrate_from_main_config
+                    logger.info("Migrating LLM settings to dedicated LLM config file...")
+                    migrate_from_main_config(config)
+                    
+                    # Remove LLM settings from main config after migration
+                    for key in ['llm', 'llm_global', 'llm_servers']:
+                        if key in config:
+                            logger.info(f"Removing {key} from main config after migration to dedicated LLM config")
+                            del config[key]
+                    
+                    # Save the updated config without LLM settings
+                    save_config(config, config_file)
+                except Exception as e:
+                    logger.error(f"Failed to migrate LLM settings: {e}")
+            
             # Validate the configuration
             if not validate_config(config):
                 logger.error("Configuration validation failed. Check the errors above and fix your config file.")

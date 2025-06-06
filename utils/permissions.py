@@ -16,7 +16,7 @@ import json
 logger = get_logger()
 
 # System commands that only the owner can use
-SYSTEM_COMMANDS = ['shutdown', 'reload_patterns', 'host']
+SYSTEM_COMMANDS = ['shutdown', 'reload_patterns', 'host', 'llm_models', 'llm_select', 'llm_provider', 'llm_set_api_key']
 
 # Dictionary to store command categories
 _command_categories = {}
@@ -77,26 +77,24 @@ def has_command_permission(*required_permissions):
         # Get the config and command permissions
         config = ctx.bot.config
         command_permissions = config.get('command_permissions', {})
-        guild_id = str(ctx.guild.id)
-        
-        # System commands can only be used by the bot owner
-        if command_name in SYSTEM_COMMANDS:
-            try:
-                app_info = await ctx.bot.application_info()
-                return ctx.author.id == app_info.owner.id
-            except Exception as e:
-                logger.error(f"Error checking owner for system command: {e}")
-                return False
+        guild_id = str(ctx.guild.id) if ctx.guild else None # Handle DMs
 
-        # Bot owner always has permission
+        # Bot owner always has permission, especially for system commands
         try:
             app_info = await ctx.bot.application_info()
             if ctx.author.id == app_info.owner.id:
                 return True
         except Exception as e:
             logger.error(f"Error checking owner: {e}")
-        
-        # Check if we're in a guild
+            # If owner check fails, assume not owner for safety
+            pass
+            
+        # System commands can *only* be used by the bot owner (already checked above)
+        if command_name in SYSTEM_COMMANDS:
+             logger.debug(f"Command '{command_name}' is a system command, denied for non-owner {ctx.author}.")
+             return False # Owner check already passed if they are the owner
+
+        # Check if we're in a guild for non-system commands
         if not ctx.guild:
             logger.debug(f"Command '{command_name}' denied in DM for {ctx.author}")
             return False
@@ -186,7 +184,7 @@ def command_category(category):
     Args:
         category (str): The category name to assign
         
-    Returns:
+Returns:
         function: A decorator that adds category metadata to commands
     """
     def decorator(func):

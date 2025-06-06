@@ -11,6 +11,7 @@ logger = get_logger()
 # List of cogs to load
 cogs = [
     'bot_config',
+    'llm_commands',
     'moderation_commands',
     'ocr_config',
     'pattern_commands',

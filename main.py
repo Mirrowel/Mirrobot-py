@@ -32,7 +32,14 @@ async def main():
     
     # Create and run the bot
     bot = create_bot(config)
-    await bot.start(config['token'])
+
+    # Get the bot token, trying config first, then environment variable
+    bot_token = config.get('token') or os.environ.get('DISCORD_BOT_TOKEN')
+    if not bot_token:
+        logger.critical("DISCORD_BOT_TOKEN not found in config or environment variables. Bot cannot start.")
+        return
+
+    await bot.start(bot_token)
 
 if __name__ == "__main__":
     try:
