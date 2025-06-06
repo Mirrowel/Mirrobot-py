@@ -81,45 +81,56 @@ The bot relies on the following libraries:
 
 ## ⚙️ Configuration
 
-The bot can be configured in two ways:
+### Quick Setup
 
-### 1. Configuration File
+1. Copy `config_example.json` to `config.json`
+2. **RECOMMENDED**: Create a `.env` file from `.env.example` and add your bot token there
+3. Configure channels and permissions as needed
 
-The bot uses a `config.json` file to store:
+### Environment Variables (Recommended)
 
-- Discord bot token
-- Command prefix (default: `!`)
-- Designated channels for OCR reading and responses
-- OCR worker count (default: 2)
-- OCR queue size (default: 100)
-- Command permissions
+For security, use environment variables instead of storing sensitive data in config files:
 
-Example configuration:
+- `DISCORD_BOT_TOKEN` - Your Discord bot token (**USE THIS INSTEAD OF STORING IN CONFIG**)
+- `GOOGLE_AI_API_KEY` - Google AI API key for LLM features (optional)
 
-```json
-{
-  "token": "your_discord_bot_token_here",
-  "command_prefix": "!",
-  "ocr_worker_count": 2,
-  "ocr_max_queue_size": 100,
-  "ocr_read_channels": {},
-  "ocr_response_channels": {},
-  "ocr_response_fallback": {},
-  "server_prefixes": {},
-  "command_permissions": {}
-}
-```
+### Key Configuration Options
 
-### 2. Environment Variables
+#### Basic Settings
+- **token**: Discord bot token (use environment variable `DISCORD_BOT_TOKEN`)
+- **command_prefix**: Default command prefix (e.g., `"!"` for `!help`)
+- **ocr_worker_count**: Number of parallel OCR workers (1-10, default: 2)
+- **ocr_max_queue_size**: Maximum queued OCR requests (10-1000, default: 100)
 
-For improved security, you can use environment variables:
+#### Channel Configuration
+All use format: `{"guild_id": [channel_id1, channel_id2]}`
 
-1. Create a `.env` file based on `.env.example`
-2. Add your Discord bot token: `DISCORD_BOT_TOKEN=your_token_here`
+- **ocr_read_channels**: Channels where the bot scans images for OCR
+- **ocr_response_channels**: Channels where OCR results are posted
+- **ocr_response_fallback**: Backup channels if primary response channels fail
 
-Environment variables take precedence over the config file settings.
+#### Advanced Settings
+- **server_prefixes**: Custom command prefixes per server
+- **command_permissions**: Role-based command access control
+- **ocr_channel_config**: OCR language settings per channel
+- **maintenance**: Auto-restart and maintenance settings
 
-### 3. LLM and Chatbot Configuration
+### Getting Discord IDs
+
+Enable Developer Mode in Discord, then:
+- **Server/Guild ID**: Right-click server name → Copy ID
+- **Channel ID**: Right-click channel → Copy ID  
+- **Role ID**: Right-click role in server settings → Copy ID
+
+### Security Best Practices
+
+1. **Never commit** your actual `config.json` with real tokens to version control
+2. **Always use** environment variables for sensitive data like tokens
+3. **Restrict file permissions** on config files containing secrets
+
+> 📖 **For detailed configuration examples and troubleshooting**, see `CONFIG_EXAMPLE_README.md`
+
+### LLM and Chatbot Configuration
 
 #### LLM Configuration (`data/llm_config.json`)
 
