@@ -10,7 +10,8 @@ from utils.log_manager import LogManager
 from cogs.__init__ import cogs
 import re
 # Import chatbot_manager directly here for config access
-from utils.chatbot_manager import chatbot_manager, DEFAULT_CHATBOT_CONFIG
+from utils.chatbot.manager import chatbot_manager
+from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
 
 logger = get_logger()
 
@@ -114,7 +115,7 @@ def create_bot(config):
         logger.info(f'Logged in as {bot.user.name}!')
 
         # --- Set bot's user ID in chatbot_manager ---
-        # from utils.chatbot_manager import chatbot_manager # Already imported above
+        # from utils.chatbot.manager import chatbot_manager # Already imported above
         chatbot_manager.set_bot_user_id(bot.user.id)
         # --- END NEW ---
 
@@ -140,7 +141,7 @@ def create_bot(config):
             while True:
                 try:
                     await asyncio.sleep(3600)  # Wait 1 hour before first cleanup
-                    from utils.chatbot_manager import chatbot_manager
+                    from utils.chatbot.manager import chatbot_manager
                     total_cleaned = chatbot_manager.cleanup_all_stale_users(bot.guilds)
                     if total_cleaned > 0:
                         logger.info(f"Periodic cleanup: removed {total_cleaned} stale users")
@@ -154,7 +155,7 @@ def create_bot(config):
         # Auto-index chatbot-enabled channels on bot restart
         async def auto_index_on_restart():
             try:
-                # from utils.chatbot_manager import chatbot_manager # Already imported above
+                # from utils.chatbot.manager import chatbot_manager # Already imported above
 
                 config_data = chatbot_manager.config_cache.get("global", {})
                 if config_data.get("auto_index_on_restart", True):
@@ -276,7 +277,7 @@ def create_bot(config):
         
         try:
             # Update message in conversation history if chatbot is enabled
-            from utils.chatbot_manager import chatbot_manager
+            from utils.chatbot.manager import chatbot_manager
 
             #logger.debug(f"Checking chatbot enabled for guild {guild_id}, channel {channel_id} for raw edit")
 
@@ -302,7 +303,7 @@ def create_bot(config):
         
         try:
             # Remove message from conversation history if chatbot is enabled
-            from utils.chatbot_manager import chatbot_manager
+            from utils.chatbot.manager import chatbot_manager
             guild_id = payload.guild_id
             channel_id = payload.channel_id
             message_id = payload.message_id
@@ -486,7 +487,7 @@ async def process_chatbot_message(bot, message):
         if not message.guild:
             return
 
-        # from utils.chatbot_manager import chatbot_manager # Already imported above
+        # from utils.chatbot.manager import chatbot_manager # Already imported above
 
         guild_id = message.guild.id
         channel_id = message.channel.id
@@ -496,7 +497,7 @@ async def process_chatbot_message(bot, message):
             return
         
         # Always add the message to conversation history if chatbot is enabled
-        chatbot_manager.add_message_to_conversation(guild_id, channel_id, message, bot.user.id) # Pass bot.user.id
+        chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
         
         # Check if we should respond to this message
         if chatbot_manager.should_respond_to_message(guild_id, channel_id, message, bot.user.id):
@@ -513,7 +514,7 @@ async def handle_chatbot_response(bot, message):
     try:
         from cogs.llm_commands import LLMCommands # Import LLMCommands here to use its methods
 
-        # from utils.chatbot_manager import chatbot_manager # Already imported above
+        # from utils.chatbot.manager import chatbot_manager # Already imported above
 
         guild_id = message.guild.id
         channel_id = message.channel.id
@@ -545,7 +546,7 @@ async def handle_chatbot_response(bot, message):
                 full_context_string = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
                 
                 # Load system prompt (this loads from file and applies thinking mode if configured)
-                system_prompt_for_llm = llm_cog.load_system_prompt(guild_id, thinking=False) # Chatbot typically doesn't show thinking
+                system_prompt_for_llm = llm_cog.load_system_prompt(guild_id) # Chatbot typically doesn't show thinking
                 
                 # The raw user message content
                 user_prompt_content = message.content
@@ -586,7 +587,7 @@ async def handle_chatbot_response(bot, message):
                 response_text, performance_metrics = await llm_cog.make_llm_request(
                     system_prompt=system_prompt_for_llm,
                     context=full_context_string,
-                    model_type="chatbot",
+                    model_type="chat",
                     max_tokens=min(channel_config.max_response_length, 2000),
                     guild_id=guild_id
                 )
@@ -605,7 +606,7 @@ async def handle_chatbot_response(bot, message):
                     sent_message = await message.reply(cleaned_response)
 
                     # Add the bot's response to conversation history
-                    chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message, bot.user.id) # Pass bot.user.id
+                    chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
                     
                     logger.info(f"Sent chatbot response to message {message.id} in channel {channel_id}")
                 else:

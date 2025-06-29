@@ -12,6 +12,7 @@ from utils.permissions import has_command_permission, command_category
 from utils.embed_helper import create_embed_response, create_llm_response
 from lib.rotator_library import RotatingClient
 from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env
+from utils.chatbot.manager import chatbot_manager
 
 logger = get_logger()
 
@@ -29,6 +30,7 @@ class LLMCommands(commands.Cog):
         # Global default models
         self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
+        self.multimodal_models_whitelist = ["gemini", "gemma"]
 
     async def cog_load(self):
         """Initialize the LLM client and check provider status on cog load."""
@@ -88,23 +90,20 @@ class LLMCommands(commands.Cog):
         os.makedirs(data_path, exist_ok=True)
         logger.debug(f"Ensured LLM data directory exists: {data_path}")
     
-    def get_system_prompt_path(self, guild_id: Optional[int] = None, thinking: bool = False) -> str:
+    def get_system_prompt_path(self, guild_id: Optional[int] = None, prompt_type: str = "chat") -> str:
         """Get the path to the system prompt file"""
         data_path = self.get_llm_data_path(guild_id)
-        if thinking:
-            return os.path.join(data_path, "system_prompt_thinking.txt")
-        else:
-            return os.path.join(data_path, "system_prompt.txt")
+        return os.path.join(data_path, f"system_prompt_{prompt_type}.txt")
     
     def get_context_file_path(self, guild_id: Optional[int] = None) -> str:
         """Get the path to the context file"""
         data_path = self.get_llm_data_path(guild_id)
         return os.path.join(data_path, "context.txt")
     
-    def load_system_prompt(self, guild_id: Optional[int] = None, thinking: bool = False) -> str:
+    def load_system_prompt(self, guild_id: Optional[int] = None, prompt_type: str = "chat") -> str:
         """Load the system prompt from file or return default"""
-        prompt_path = self.get_system_prompt_path(guild_id, thinking)
-        default_path = "llm_data/default_system_prompt_thinking.txt" if thinking else "llm_data/default_system_prompt.txt"
+        prompt_path = self.get_system_prompt_path(guild_id, prompt_type)
+        default_path = f"llm_data/default_system_prompt_{prompt_type}.txt"
         
         prompt = None
         
@@ -113,8 +112,6 @@ class LLMCommands(commands.Cog):
             try:
                 with open(prompt_path, 'r', encoding='utf-8') as f:
                     prompt = f.read().strip()
-                    #if prompt:
-                        #logger.debug(f"Loaded guild-specific system prompt from {prompt_path}")
             except Exception as e:
                 logger.warning(f"Failed to load guild-specific system prompt from {prompt_path}: {e}")
         
@@ -123,21 +120,18 @@ class LLMCommands(commands.Cog):
             try:
                 with open(default_path, 'r', encoding='utf-8') as f:
                     prompt = f.read().strip()
-                    #if prompt:
-                        #logger.debug(f"Loaded default system prompt from {default_path}")
             except Exception as e:
                 logger.warning(f"Failed to load default system prompt from {default_path}: {e}")
         
         # Final fallback to hardcoded prompt
         if not prompt:
-            if thinking:
+            if prompt_type == "think":
                 prompt = "You are a helpful AI assistant named Helper Retirement Machine 9000, here to answer questions about the bot and its functionality, as well as general questions. Think through your response step by step, showing your reasoning process clearly before providing your final answer."
-            else:
+            elif prompt_type == "ask":
+                prompt = "You are a helpful AI assistant named Helper Retirement Machine 9000, here to answer questions about the bot and its functionality, as well as general questions. Provide clear, concise, and accurate responses."
+            else: # chat
                 prompt = "You are a helpful AI assistant named Helper Retirement Machine 9000, here to answer questions about the bot and its functionality, as well as general questions. Provide clear, concise, and accurate responses."
         
-        # Automatically append /no_think to non-thinking prompts if not already present
-        #if not thinking and not prompt.endswith('/no_think'):
-        #    prompt = prompt.rstrip() + ' /no_think'        
         return prompt
     
     def load_context(self, guild_id: Optional[int] = None) -> Optional[str]:
@@ -169,16 +163,16 @@ class LLMCommands(commands.Cog):
         
         return None
     
-    def save_system_prompt(self, prompt: str, guild_id: Optional[int] = None, thinking: bool = False) -> bool:
+    def save_system_prompt(self, prompt: str, guild_id: Optional[int] = None, prompt_type: str = "chat") -> bool:
         """Save a system prompt to file"""
         try:
             self.ensure_llm_data_directory(guild_id)
-            prompt_path = self.get_system_prompt_path(guild_id, thinking)
+            prompt_path = self.get_system_prompt_path(guild_id, prompt_type)
             
             with open(prompt_path, 'w', encoding='utf-8') as f:
                 f.write(prompt)
             
-            logger.info(f"Saved {'thinking ' if thinking else ''}system prompt to {prompt_path}")
+            logger.info(f"Saved {prompt_type} system prompt to {prompt_path}")
             return True
         except Exception as e:
             logger.error(f"Failed to save system prompt: {e}")
@@ -235,7 +229,8 @@ class LLMCommands(commands.Cog):
         guild_id: Optional[int] = None,
         system_prompt: Optional[str] = None,
         context: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        image_urls: Optional[List[str]] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Make a request to the LLM API using the RotatingClient and return the response
@@ -244,14 +239,16 @@ class LLMCommands(commands.Cog):
         start_time = time.time()
         
         # Determine the model to use
-        thinking = model_type == "think"
         target_model = model or self.get_model_for_guild(guild_id, model_type)
         if not target_model:
             raise ValueError("No model specified and no default model configured.")
 
         # Prepare prompts
-        system_prompt, context = self._prepare_prompts(system_prompt, context, thinking, guild_id)
-        messages = self._build_messages_list(system_prompt, context, prompt)
+        system_prompt, context = self._prepare_prompts(system_prompt, context, model_type, guild_id)
+        
+        is_multimodal = any(keyword in target_model for keyword in self.multimodal_models_whitelist) and image_urls
+        
+        messages = self._build_messages_list(system_prompt, context, prompt, image_urls if is_multimodal else None)
         
         # Prepare kwargs for the rotating client
         request_kwargs = {
@@ -302,11 +299,11 @@ class LLMCommands(commands.Cog):
             raise  # Re-raise the exception to be handled by the command
 
     def _prepare_prompts(self, system_prompt: Optional[str], context: Optional[str],
-                        thinking: bool, guild_id: Optional[int]) -> Tuple[str, Optional[str]]:
+                        model_type: str, guild_id: Optional[int]) -> Tuple[str, Optional[str]]:
         """Prepare system prompt and context for both providers"""
         # Prepare the system prompt
         if system_prompt is None:
-            system_prompt = self.load_system_prompt(guild_id, thinking=thinking)
+            system_prompt = self.load_system_prompt(guild_id, prompt_type=model_type)
 
         # Load context if available and not provided
         # (This is for static context from file, dynamic chatbot context is passed directly)
@@ -392,7 +389,7 @@ class LLMCommands(commands.Cog):
         }
 
     def _build_messages_list(self, system_prompt: str, context: Optional[str],
-                          prompt: Optional[str]) -> List[Dict[str, str]]:
+                          prompt: Optional[str], image_urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Build messages list with roles: 'system', 'user', 'assistant'"""
         messages = []
 
@@ -437,7 +434,7 @@ class LLMCommands(commands.Cog):
                 else:
                     i += 1 # Skip non-header parts (e.g., initial empty string)
 
-            # Combine Channel Info, Known Users, and Pinned Messages into a single 'user' message
+            # Combine Channel Info, Known Users, and Pinned Messages into a single 'system' message
             # This provides general context before the dynamic conversation history
             combined_static_context_block = []
             if channel_info:
@@ -449,7 +446,7 @@ class LLMCommands(commands.Cog):
             
             if combined_static_context_block:
                 llm_context_content = "\n\n".join(combined_static_context_block)
-                messages.append({"role": "user", "content": llm_context_content})
+                messages.append({"role": "system", "content": llm_context_content})
 
             # Add the actual conversation history
             if conversation_history_text:
@@ -457,58 +454,73 @@ class LLMCommands(commands.Cog):
         
         # Add the actual current user prompt
         if prompt:
-            messages.append({"role": "user", "content": prompt})
+            content_parts = [{"type": "text", "text": prompt}]
+            if image_urls:
+                for url in image_urls:
+                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+            
+            messages.append({"role": "user", "content": content_parts})
             
         return messages
 
-    def _parse_conversation_history_block(self, conversation_text: str) -> List[Dict[str, str]]:
-        """Parse raw conversation history text into messages list with 'user' and 'assistant' roles.
-        This function expects *only* the conversation lines, not including the '===' headers or channel info.
-        """
+    def _parse_conversation_history_block(self, conversation_text: str) -> List[Dict[str, any]]:
+        """Parse raw conversation history text into messages list with 'user' and 'assistant' roles."""
         messages = []
         
         # Remove the '=== End of Conversation History ===' line if it's there
         conversation_text = conversation_text.split("=== End of Conversation History ===")[0].strip()
 
-        conversation_lines = conversation_text.split('\n')
+        # This regex is designed to find blocks of text associated with a user.
+        # It looks for a username followed by a colon, and then captures all subsequent lines
+        # until it hits the next username or the end of the string.
+        pattern = re.compile(r"^(.*?): (.*?)(?=\n^.*?: |\Z)", re.DOTALL | re.MULTILINE)
         
-        current_role = None
-        current_content = []
-        
-        for line in conversation_lines:
-            line = line.strip()
-            if not line:
-                continue
+        for match in pattern.finditer(conversation_text):
+            role_name = match.group(1).strip()
+            content_block = match.group(2).strip()
             
-            # Check for role markers (e.g., "Username: ", "Helper Retirement Machine 9000: ")
-            # Ensure it's not a context note line or channel information that might also have a colon
-            if ": " in line and not line.startswith("Note:") and not line.startswith("Context:") and not line.startswith("Channel Information:") and not line.startswith("Pinned Messages:"):
-                # If we were building a previous message, add it now
-                if current_role is not None:
-                    self._add_parsed_message(messages, current_role, current_content)
-                    current_content = []
+            # Determine the role for the message
+            role = "assistant" if role_name in ["Mirrobot", "Other Bot"] else "user"
+            
+            # Regex to find image URLs in the content block
+            image_pattern = re.compile(r"\(Image: (https?://[^\)]+)\)")
+            
+            text_parts = image_pattern.split(content_block)
+            
+            # The first part is always text.
+            # Subsequent parts will be [image_url, text, image_url, text, ...]
+            
+            final_content = []
+            
+            # Process the first text part
+            if text_parts[0].strip():
+                # For user messages, prepend the username to the first text part
+                # to maintain speaker identity for the LLM.
+                text_to_add = f"{role_name}: {text_parts[0].strip()}" if role == "user" else text_parts[0].strip()
+                final_content.append({"type": "text", "text": text_to_add})
+
+            # Process the rest of the parts (image_url, text pairs)
+            for i in range(1, len(text_parts), 2):
+                # Add the image part
+                image_url = text_parts[i]
+                final_content.append({"type": "image_url", "image_url": {"url": image_url}})
                 
-                # Start a new message
-                parts = line.split(": ", 1)
-                current_role = parts[0]
-                current_content = [parts[1]] if len(parts) > 1 and parts[1].strip() else []
-            else:
-                # Continue the current message
-                if current_role is not None:
-                    # Filter out empty bot responses like "Helper Retirement Machine 9000:" or "Other Bot:" if the line is empty
-                    if current_role in ["Mirrobot", "Other Bot"] and not line.strip():
-                        continue
-                    current_content.append(line)
-                    
-        # Add the last message if there is one
-        if current_role is not None:
-            self._add_parsed_message(messages, current_role, current_content)
+                # Add the subsequent text part if it exists and is not empty
+                if i + 1 < len(text_parts) and text_parts[i+1].strip():
+                    final_content.append({"type": "text", "text": text_parts[i+1].strip()})
             
+            if final_content:
+                messages.append({"role": role, "content": final_content})
+                
         return messages
 
-    def _add_parsed_message(self, messages: List[Dict[str, str]], current_role: str, 
+    def _add_parsed_message(self, messages: List[Dict[str, str]], current_role: str,
                           current_content: List[str]):
         """Add a parsed message to the messages list, mapping roles to 'user'/'assistant'."""
+        # This function is now largely superseded by the logic in _parse_conversation_history_block,
+        # but we'll keep it for now in case it's used elsewhere.
+        # The new implementation in _parse_conversation_history_block is more robust for multimodal content.
+        
         # Map specific roles to 'assistant', otherwise 'user'
         if current_role in ["Mirrobot", "Other Bot"]:
             role = "assistant"
@@ -681,7 +693,7 @@ class LLMCommands(commands.Cog):
             # Load user index for mentions (used by both mention formats)
             user_index = {}
             try:
-                from utils.chatbot_manager import chatbot_manager
+                from utils.chatbot.manager import chatbot_manager
                 if guild_id:
                     user_index = chatbot_manager.load_user_index(guild_id)
                     logger.debug(f"Loaded user index with {len(user_index)} users for mention conversion")
@@ -817,12 +829,22 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
+        image_urls = [att.url for att in ctx.message.attachments if att.content_type.startswith('image/')]
+
         async with ctx.typing():
             try:
+                guild_id = ctx.guild.id if ctx.guild else None
+                channel_context = chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                context = f"{channel_context}\n{user_context}"
+
+                formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
-                    prompt=question,
+                    prompt=formatted_prompt,
                     model_type="ask",
-                    guild_id=ctx.guild.id if ctx.guild else None
+                    guild_id=guild_id,
+                    image_urls=image_urls,
+                    context=context
                 )
                 cleaned_response, _ = self.strip_thinking_tokens(response)
                 await self.send_llm_response(ctx, cleaned_response, question, model_type="ask", performance_metrics=performance_metrics)
@@ -840,12 +862,22 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
+        image_urls = [att.url for att in ctx.message.attachments if att.content_type.startswith('image/')]
+
         async with ctx.typing():
             try:
+                guild_id = ctx.guild.id if ctx.guild else None
+                channel_context = chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                context = f"{channel_context}\n{user_context}"
+
+                formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
-                    prompt=question,
+                    prompt=formatted_prompt,
                     model_type="think",
-                    guild_id=ctx.guild.id if ctx.guild else None
+                    guild_id=guild_id,
+                    image_urls=image_urls,
+                    context=context
                 )
                 
                 if not display_thinking:
@@ -880,7 +912,7 @@ class LLMCommands(commands.Cog):
         
         guild_id = ctx.guild.id if ctx.guild else None
         models_info = []
-        for model_type in ["default", "chatbot", "ask", "think"]:
+        for model_type in ["default", "chat", "ask", "think"]:
             model_name = self.get_model_for_guild(guild_id, model_type)
             models_info.append(f"**{model_type.title()}**: `{model_name}`")
         
@@ -997,7 +1029,7 @@ class LLMCommands(commands.Cog):
                     guild_id = ctx.guild.id if ctx.guild else None
                     for model in sorted(filtered_models):
                         indicators = []
-                        for model_type in ["default", "chatbot", "ask", "think"]:
+                        for model_type in ["default", "chat", "ask", "think"]:
                             if model == self.get_model_for_guild(guild_id, model_type):
                                 indicators.append(model_type.title())
                         
@@ -1025,7 +1057,7 @@ class LLMCommands(commands.Cog):
             
             guild_id = ctx.guild.id if ctx.guild else None
             models_info = []
-            for model_type in ["default", "chatbot", "ask", "think"]:
+            for model_type in ["default", "chat", "ask", "think"]:
                 model_name = self.get_model_for_guild(guild_id, model_type)
                 models_info.append(f"**{model_type.title()}**: `{model_name}`")
 
@@ -1064,7 +1096,7 @@ class LLMCommands(commands.Cog):
     @command_category("AI Assistant")
     async def select_model(self, ctx, *args):
         """
-        Select a preferred model for a specific type (chatbot, ask, think) or default for this server.
+        Select a preferred model for a specific type (chat, ask, think) or default for this server.
         Usage: !llm_select [manual] [type] <model_name>
                !llm_select [manual] <model_name> (sets default for this server)
         """
@@ -1081,7 +1113,7 @@ class LLMCommands(commands.Cog):
             is_manual = True
             arg_list.pop(0)
 
-        valid_types = ["default", "chatbot", "ask", "think"]
+        valid_types = ["default", "chat", "ask", "think"]
         if arg_list and arg_list[0].lower() in valid_types:
             model_type = arg_list.pop(0).lower()
         
@@ -1139,7 +1171,7 @@ class LLMCommands(commands.Cog):
     async def chatbot_enable(self, ctx):
         """Enable chatbot mode for this channel."""
         try:
-            from utils.chatbot_manager import chatbot_manager
+            from utils.chatbot.manager import chatbot_manager
             
             guild_id = ctx.guild.id
             if not guild_id:
@@ -1179,7 +1211,7 @@ class LLMCommands(commands.Cog):
     async def chatbot_disable(self, ctx):
         """Disable chatbot mode for this channel"""
         try:
-            from utils.chatbot_manager import chatbot_manager
+            from utils.chatbot.manager import chatbot_manager
             
             guild_id = ctx.guild.id if ctx.guild else None
             channel_id = ctx.channel.id
@@ -1253,7 +1285,7 @@ class LLMCommands(commands.Cog):
     async def chatbot_status(self, ctx):
         """Show chatbot mode status and configuration for this channel"""
         try:
-            from utils.chatbot_manager import chatbot_manager
+            from utils.chatbot.manager import chatbot_manager
             
             guild_id = ctx.guild.id if ctx.guild else None
             channel_id = ctx.channel.id
@@ -1343,7 +1375,7 @@ class LLMCommands(commands.Cog):
         - replies: Enable/disable auto-response to replies (true/false)
         """
         try:
-            from utils.chatbot_manager import chatbot_manager
+            from utils.chatbot.manager import chatbot_manager
             
             guild_id = ctx.guild.id if ctx.guild else None
             channel_id = ctx.channel.id
@@ -1575,7 +1607,7 @@ class LLMCommands(commands.Cog):
     async def chatbot_clear_history(self, ctx):
         """Clear conversation history for this channel"""
         try:
-            from utils.chatbot_manager import chatbot_manager
+            from utils.chatbot.manager import chatbot_manager
             
             guild_id = ctx.guild.id if ctx.guild else None
             channel_id = ctx.channel.id
@@ -1631,7 +1663,7 @@ class LLMCommands(commands.Cog):
         - test_message: The message content to test
         """
         try:
-            from utils.chatbot_manager import chatbot_manager, ConversationMessage
+            from utils.chatbot.manager import chatbot_manager, ConversationMessage
             import time
             
             # Create a mock discord.Message object with content and empty attachments/embeds for filter test
@@ -1737,7 +1769,7 @@ class LLMCommands(commands.Cog):
         - user_id: The user ID to generate context for (defaults to command author)
         """
         try:
-            from utils.chatbot_manager import chatbot_manager
+            from utils.chatbot.manager import chatbot_manager
             import tempfile
             import io
             

@@ -12,7 +12,7 @@ DEFAULT_LLM_CONFIG = {
     "retry_delay": 5,
     "models": {
         "default": "chutes/deepseek-ai/DeepSeek-V3-0324",
-        "chatbot": "chutes/deepseek-ai/DeepSeek-V3-0324",
+        "chat": "chutes/deepseek-ai/DeepSeek-V3-0324",
         "ask": "chutes/deepseek-ai/DeepSeek-V3-0324",
         "think": "chutes/deepseek-ai/DeepSeek-R1-0528"
     },
@@ -62,7 +62,7 @@ def validate_llm_config(config):
             errors.append(f"LLM field {field} should be of type {field_type.__name__}, got {type(config[field]).__name__}")
 
     if "models" in config and isinstance(config["models"], dict):
-        for model_type in ["default", "chatbot", "ask", "think"]:
+        for model_type in ["default", "chat", "ask", "think"]:
             if model_type not in config["models"]:
                 errors.append(f"Missing required model type in global 'models': {model_type}")
             elif not isinstance(config["models"][model_type], str):
@@ -82,7 +82,7 @@ def validate_llm_config(config):
             elif not isinstance(server_config["models"], dict):
                 errors.append(f"'models' in server config for {server_id} should be a dictionary")
             else:
-                for model_type in ["default", "chatbot", "ask", "think"]:
+                for model_type in ["default", "chat", "ask", "think"]:
                     if model_type not in server_config["models"]:
                         errors.append(f"Missing required model type in 'models' for server {server_id}: {model_type}")
                     elif not isinstance(server_config["models"][model_type], str):
