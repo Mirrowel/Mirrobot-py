@@ -488,7 +488,11 @@ class ChatbotManager:
             if self.check_duplicate_message(guild_id, channel_id, message.id):
                 # Message already exists in history, consider this a success
                 return True
-                
+            
+            # Ensure bot_user_id is available
+            if self.bot_user_id is None:
+                self.set_bot_user_id(bot_user_id) # Set it if not already set
+
             # Process message content and media
             cleaned_content, image_urls, embed_urls = self._process_discord_message_for_context(message)
             
@@ -496,7 +500,39 @@ class ChatbotManager:
             # This handles messages that are *only* filtered videos/gifs
             if not cleaned_content and not image_urls:
                 logger.debug(f"Skipping message {message.id} as content became empty after media filtering and no images are present.")
-                return True # Treat as success, as it means we correctly handled the message
+                return False # Message skipped, not indexed
+
+            # Create a temporary ConversationMessage to pass to the validity checker
+            temp_conv_message = ConversationMessage( # type: ignore
+                user_id=message.author.id,
+                username=message.author.display_name,
+                content=cleaned_content,
+                timestamp=message.created_at.timestamp(),
+                message_id=message.id,
+                is_bot_response=message.author.bot,
+                is_self_bot_response=(message.author.id == self.bot_user_id),
+                referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
+                attachment_urls=image_urls,
+                embed_urls=embed_urls
+            )
+
+            # Get channel configuration for context window
+            channel_config = self.get_channel_config(guild_id, channel_id)
+            
+            # Check if message is within the context window hours
+            cutoff_time = time.time() - (channel_config.context_window_hours * 3600)
+            if temp_conv_message.timestamp < cutoff_time:
+                logger.debug(f"Skipping message {message.id} from {message.author.display_name} as it's outside context window ({channel_config.context_window_hours} hours).")
+                return False # Message skipped, not indexed
+
+            # Check if message is valid for context inclusion (e.g., not a command, not empty)
+            is_valid, _ = self._is_valid_context_message(temp_conv_message, debug_mode=False)
+            if not is_valid:
+                logger.debug(f"Skipping message {message.id} from {message.author.display_name} as it's not a valid context message (e.g., command, empty).")
+                return False # Message skipped, not indexed
+
+            # If it passed all checks, proceed to add it
+            conv_message = temp_conv_message # Use the validated message
 
             # Update user index from message (message-based user discovery)
             self.update_user_index(guild_id, message.author, is_message_author=True)
@@ -504,29 +540,10 @@ class ChatbotManager:
             # Load existing conversation
             messages = self.load_conversation_history(guild_id, channel_id)
             
-            # Ensure bot_user_id is available
-            if self.bot_user_id is None:
-                self.set_bot_user_id(bot_user_id) # Set it if not already set
-            
-            # Create conversation message
-            conv_message = ConversationMessage( # type: ignore
-                user_id=message.author.id,
-                username=message.author.display_name, # This is Discord's display_name (nickname)
-                content=cleaned_content, # Use cleaned content
-                timestamp=message.created_at.timestamp(),
-                message_id=message.id,
-                is_bot_response=message.author.bot, # True if any bot, including self
-                is_self_bot_response=(message.author.id == self.bot_user_id), # True only if *this* bot
-                referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
-                attachment_urls=image_urls, # Only store image URLs here for now
-                embed_urls=embed_urls # Store embed URLs
-            )
-            
             # Add to messages
             messages.append(conv_message)
             
             # Apply message limit
-            channel_config = self.get_channel_config(guild_id, channel_id)
             if len(messages) > channel_config.max_context_messages:
                 messages = messages[-channel_config.max_context_messages:]
             
@@ -1540,65 +1557,87 @@ class ChatbotManager:
             
             # Get channel configuration to determine how many messages to fetch
             channel_config = self.get_channel_config(guild_id, channel_id)
-            max_messages = channel_config.max_context_messages
+            max_messages_to_index = channel_config.max_context_messages
             
-            logger.debug(f"Fetching last {max_messages} messages from #{channel.name} for chatbot context")
+            logger.debug(f"Attempting to index up to {max_messages_to_index} qualifying messages from #{channel.name} for chatbot context")
             
-            # Fetch recent messages from the channel
             messages_indexed = 0
             messages_skipped = 0
             messages_failed = 0
-            messages_fetched = 0
-            try:
-                # Fetch messages, trying to get more than max_messages to allow filtering.
-                # However, Discord's API limits how many messages can be fetched in one call.
-                # `limit=max_messages` is appropriate.
-                async for message in channel.history(limit=max_messages, oldest_first=False):
-                    messages_fetched += 1
+            total_messages_fetched_from_discord = 0
+            consecutive_old_messages = 0 # Counter for consecutive messages older than cutoff
+            
+            # Get channel configuration for context window
+            channel_config = self.get_channel_config(guild_id, channel_id)
+            max_messages_to_index = channel_config.max_context_messages
+            cutoff_time = time.time() - (channel_config.context_window_hours * 3600)
+            
+            logger.debug(f"Attempting to index up to {max_messages_to_index} qualifying messages from #{channel.name} for chatbot context")
+            
+            # Fetch messages in chunks until we have enough qualifying messages or run out of history
+            last_message_object = None
+            while messages_indexed < max_messages_to_index:
+                try:
+                    fetch_limit = 500 # Fetch a larger batch to find qualifying messages
                     
-                    # Filter out system messages. `discord.MessageType.default` (0) and `discord.MessageType.reply` (19) are standard.
-                    # Other types include `discord.MessageType.channel_follow_add`, `pins_add`, `guild_boost`, etc.
-                    # We usually only want standard user/bot messages for conversation history.
-                    if message.type not in [discord.MessageType.default, discord.MessageType.reply]:
-                        messages_skipped += 1
-                        logger.debug(f"Skipped system message {message.id} of type {message.type}")
-                        continue
+                    history_iterator = channel.history(limit=fetch_limit, oldest_first=False, before=last_message_object)
                     
-                    # Add each message to conversation history
-                    # This will also index users who sent the messages, mentioned users, etc.
-                    # Ensure bot_user_id is available for this call
-                    if self.bot_user_id is None:
-                        logger.warning(f"Bot user ID not set in ChatbotManager, cannot correctly mark self-bot messages.")
-                        # Attempt to get it from a dummy message or a placeholder
-                        # For indexing, this might be okay if it's set later by main bot loop.
-                        # But for adding messages here, it's better to have it.
-                        # For now, it will default to `is_self_bot_response=False` if bot_user_id is None.
-                        bot_id_for_indexing = 0 # Fallback
-                    else:
-                        bot_id_for_indexing = self.bot_user_id
-
-                    success = self.add_message_to_conversation(guild_id, channel_id, message, bot_id_for_indexing)
-                    if success:
-                        messages_indexed += 1
+                    batch_fetched = 0
+                    async for message in history_iterator:
+                        total_messages_fetched_from_discord += 1
+                        batch_fetched += 1
+                        last_message_object = message
                         
-                        # Index users mentioned in the message
-                        for mentioned_user in message.mentions:
-                            self.update_user_index(guild_id, mentioned_user)
+                        # Check if message is older than the context window
+                        if message.created_at.timestamp() < cutoff_time:
+                            consecutive_old_messages += 1
+                            #logger.debug(f"Message {message.id} is older than cutoff. Consecutive old messages: {consecutive_old_messages}")
+                            if consecutive_old_messages >= 4: # Stop if 4 consecutive messages are old
+                                logger.debug(f"Stopping fetch: {consecutive_old_messages} consecutive messages older than cutoff.")
+                                break # Break from async for loop
+                            continue # Skip processing this message, it's too old
+                        else:
+                            consecutive_old_messages = 0 # Reset counter if message is within time window
                         
-                        # Index user who was replied to (if this is a reply)
-                        if message.reference and message.reference.resolved:
-                            if hasattr(message.reference.resolved, 'author'):
-                                self.update_user_index(guild_id, message.reference.resolved.author)
-                    else:
-                        messages_failed += 1
-                        logger.warning(f"Failed to add message {message.id} to conversation history")
-                
-                logger.info(f"Indexed chatbot channel #{channel.name}: {messages_indexed}/{messages_fetched} messages indexed "
-                           f"({messages_skipped} skipped, {messages_failed} failed) for guild {guild_id}")
-            except Exception as e:
-                logger.error(f"Error fetching message history from #{channel.name}: {e}", exc_info=True)
-                # Continue anyway - at least we have the channel metadata indexed
-                logger.info(f"Indexed chatbot channel #{channel.name} (metadata only) for guild {guild_id}")
+                        # Filter out system messages.
+                        if message.type not in [discord.MessageType.default, discord.MessageType.reply]:
+                            messages_skipped += 1
+                            logger.debug(f"Skipped system message {message.id} of type {message.type}")
+                            continue
+                        
+                        # Ensure bot_user_id is available for this call
+                        bot_id_for_indexing = self.bot_user_id if self.bot_user_id is not None else 0
+                        
+                        success = self.add_message_to_conversation(guild_id, channel_id, message, bot_id_for_indexing)
+                        if success:
+                            messages_indexed += 1
+                            
+                            # Index users mentioned in the message
+                            for mentioned_user in message.mentions:
+                                self.update_user_index(guild_id, mentioned_user)
+                            
+                            # Index user who was replied to (if this is a reply)
+                            if message.reference and message.reference.resolved:
+                                if hasattr(message.reference.resolved, 'author'):
+                                    self.update_user_index(guild_id, message.reference.resolved.author)
+                        else:
+                            messages_failed += 1
+                            logger.debug(f"Message {message.id} from {message.author.display_name} failed to add to conversation history (filtered).")
+                        
+                        # If we've indexed enough messages, break early
+                        if messages_indexed >= max_messages_to_index:
+                            break # Break from async for loop
+                    
+                    if batch_fetched == 0 or consecutive_old_messages >= 4: # No more messages in history or hit consecutive old limit
+                        logger.debug(f"Exiting fetch loop. Batch fetched: {batch_fetched}, Consecutive old: {consecutive_old_messages}")
+                        break # Exit while loop
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching message history batch from #{channel.name}: {e}", exc_info=True)
+                    break # Exit loop on error
+            
+            logger.info(f"Indexed chatbot channel #{channel.name}: {messages_indexed}/{max_messages_to_index} qualifying messages "
+                       f"({messages_skipped} system skipped, {messages_failed} content/time filtered, {total_messages_fetched_from_discord} Discord messages fetched) for guild {guild_id}")
             
             return True
             
