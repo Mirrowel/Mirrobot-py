@@ -26,15 +26,5 @@ def load_environment():
             visible_part = token[:5] + "..." + token[-5:] if len(token) > 10 else "***masked***"
             logger.debug(f"Using token: {visible_part}")
 
-        # Check for Google AI API Key
-        if 'GOOGLE_AI_API_KEY' in os.environ:
-            logger.info("Found GOOGLE_AI_API_KEY in environment variables")
-            # Mask token in logs for security
-            api_key = os.environ['GOOGLE_AI_API_KEY']
-            visible_key_part = api_key[:5] + "..." + api_key[-5:] if len(api_key) > 10 else "***masked***"
-            logger.debug(f"Google AI API Key: {visible_key_part}")
-        else:
-            logger.warning("GOOGLE_AI_API_KEY not found in environment variables. Cloud LLM features will be unavailable unless set in config.")
-
     except Exception as e:
         logger.error(f"Error loading environment variables: {e}")

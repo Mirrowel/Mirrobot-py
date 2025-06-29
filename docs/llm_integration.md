@@ -46,9 +46,7 @@ This file manages the connection details and model preferences for the LLM servi
 * `timeout`: The maximum time in seconds to wait for a response from the LLM server.
 * `max_retries`: The number of times the bot will attempt to retry a failed LLM request.
 * `retry_delay`: The delay in seconds between retry attempts.
-* `provider`: Specifies the global LLM service to use. Can be `local` (your own server) or `google_ai` (Google's cloud models). Set using the `!llm_provider` command.
-* `google_ai_api_key`: Your API key for accessing Google AI services. It is highly recommended to set this via the `GOOGLE_AI_API_KEY` environment variable on your system for security. If the environment variable is set, it will override this setting in the file. Can be set using the `!llm_set_api_key` command (message is deleted). Only used when `provider` is `google_ai`.
-* `google_ai_model_name`: The default model to use when the `provider` is `google_ai`. Set using the `!llm_select` command.
+* `preferred_model`: The default model to use for all LLM requests. This should be a string that includes the provider and model name, e.g., `"google/gemma-3-27b-it"`. This is set using the `!llm_select` command.
 * `servers`: This optional section allows server-specific overrides.
     * `YOUR_GUILD_ID_HERE`: Replace with the actual Discord server (guild) ID (as a string).
         * `enabled`: A boolean (`true`/`false`). If `provider` is `local`, setting this to `false` disables the `!ask` and `!think` commands specifically for this server. Default is `true` if no entry exists for the guild. This setting has no effect when `provider` is `google_ai`.
@@ -114,14 +112,9 @@ This file manages the settings for the persistent chatbot feature. Settings can 
 
 ## Core Functionality
 
-### LLM Providers (`local` and `google_ai`)
+### LLM Providers
 
-The bot supports connecting to different LLM services configured via `data/llm_config.json`:
-
-* **Local LLM:** Connects to a server running locally or on your network, exposing an OpenAI-compatible API (like LM Studio, Ollama, etc.) at the `base_url`. This provider is active when `llm_config.json`'s `provider` is set to `"local"`. Server-specific `enabled` and `preferred_model` settings apply here.
-* **Google AI:** Connects to Google's cloud-based Gemini models using your API key. This provider is active when `llm_config.json`'s `provider` is set to `"google_ai"`. Requires an API key set via config or environment variable. Server-specific `enabled` and `preferred_model` settings in `llm_config.json` do *not* apply to Google AI; Google AI settings are global (`google_ai_api_key`, `google_ai_model_name`).
-
-You can switch the active provider using the `!llm_provider` command.
+The bot supports connecting to any LLM provider supported by the `litellm` library. Configuration is done entirely through environment variables.
 
 ### LLM Status and Model Management
 
@@ -205,18 +198,6 @@ The following commands are available for managing and interacting with the LLM a
 
 ### LLM Connection and Model Commands
 
-* `llm_provider <provider>`
-    * **Description:** Sets the global LLM provider to use.
-    * **Arguments:** `<provider>` - Must be `local` or `google_ai`.
-    * **Examples:**
-        * `!llm_provider google_ai` - Switch to using Google AI models.
-        * `!llm_provider local` - Switch to using your locally hosted LLM.
-    * **Permissions:** Requires `manage_guild` permission.
-* `llm_set_api_key <api_key>`
-    * **Description:** Sets the Google AI API key. The message containing the key is automatically deleted for security. This key is saved to `data/llm_config.json` but will be overridden by the `GOOGLE_AI_API_KEY` environment variable if set.
-    * **Arguments:** `<api_key>` - Your Google AI API key.
-    * **Example:** `!llm_set_api_key AIza...`
-    * **Permissions:** Requires `manage_guild` permission.
 * `llm_status`
     * **Description:** Displays the current LLM provider, connection status, active model, and key configuration details.
     * **Permissions:** Requires `manage_messages` permission.
@@ -326,13 +307,12 @@ If you choose the `local` provider, you will need to have an LLM server running 
 
 Ensure your chosen LLM server is running and configured to listen on the `base_url` specified in `data/llm_config.json` before attempting to use the local LLM features.
 
-## Google AI Integration
+## Provider Integration
 
-To use Google AI models (`provider: google_ai`), you need to:
+To use any provider, you need to set the appropriate environment variable for the API key. The format is typically `PROVIDERNAME_API_KEY`. For example:
 
-1. Obtain an API key from the [Google AI Studio](https://aistudio.google.com/).
-2. Set the `GOOGLE_AI_API_KEY` environment variable on the system running the bot OR set the `google_ai_api_key` field in `data/llm_config.json` using the `!llm_set_api_key` command. Using an environment variable is the more secure method.
-3. Set the `provider` in `data/llm_config.json` (or via `!llm_provider google_ai`) to `google_ai`.
-4. Select a Google AI model using `!llm_select` (e.g., `!llm_select gemini-1.5-pro-latest`).
+*   **Google:** `GOOGLE_API_KEY=your_google_api_key`
+*   **OpenAI:** `OPENAI_API_KEY=your_openai_api_key`
+*   **Anthropic:** `ANTHROPIC_API_KEY=your_anthropic_api_key`
 
-The bot will then communicate directly with Google's API. Note that using Google AI may incur costs depending on your usage and Google's pricing.
+Once the environment variable is set, you can select a model from that provider using the `!llm_select` command with the full model name, e.g., `!llm_select google/gemma-3-27b-it`.

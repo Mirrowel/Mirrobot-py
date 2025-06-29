@@ -10,6 +10,13 @@ import sys
 import colorlog
 from datetime import datetime
 
+class LiteLLMFilter(logging.Filter):
+    """
+    Filter to remove the initial "Provider List" message from litellm.
+    """
+    def filter(self, record):
+        return "Provider List:" not in record.getMessage()
+
 class DiscordReconnectFilter(logging.Filter):
     """
     Filter to remove excessive reconnection messages from discord.py.
@@ -102,6 +109,7 @@ class StreamToLogger:
         self.logger = logger
         self.log_level = log_level
         self.linebuf = ''
+        self._is_writing = False
         
     def write(self, buf):
         """
@@ -110,18 +118,24 @@ class StreamToLogger:
         Args:
             buf (str): Text to write
         """
-        for line in buf.rstrip().splitlines():
-            # Skip lines that appear to be already formatted discord log messages
-            if 'discord.' in line and ('[INFO' in line or '[ERROR' in line or '[DEBUG' in line or '[WARNING' in line):
-                continue
-            # Check if the line already contains log level indicators
-            if '[INFO' in line or '[ERROR' in line:
-                # Write directly to handlers to avoid double formatting
-                for handler in self.logger.handlers:
-                    handler.stream.write(line + '\n')
-            else:
-                # Use logger's formatting
-                self.logger.log(self.log_level, line.rstrip())
+        if self._is_writing:
+            return
+        try:
+            self._is_writing = True
+            for line in buf.rstrip().splitlines():
+                # Skip lines that appear to be already formatted discord log messages
+                if 'discord.' in line and ('[INFO' in line or '[ERROR' in line or '[DEBUG' in line or '[WARNING' in line):
+                    continue
+                # Check if the line already contains log level indicators
+                if '[INFO' in line or '[ERROR' in line:
+                    # Write directly to handlers to avoid double formatting
+                    for handler in self.logger.handlers:
+                        handler.stream.write(line + '\n')
+                else:
+                    # Use logger's formatting
+                    self.logger.log(self.log_level, line.rstrip())
+        finally:
+            self._is_writing = False
 
     def flush(self):
         """Flush the stream (no-op for logging)."""
@@ -177,6 +191,11 @@ def setup_logging():
     reconnect_filter = DiscordReconnectFilter()
     file_handler.addFilter(reconnect_filter)
     console_handler.addFilter(reconnect_filter)
+
+    # Add the litellm filter to the handlers
+    litellm_filter = LiteLLMFilter()
+    file_handler.addFilter(litellm_filter)
+    console_handler.addFilter(litellm_filter)
     
     # Configure the root discord logger to capture all discord.py modules
     discord_logger = logging.getLogger('discord')

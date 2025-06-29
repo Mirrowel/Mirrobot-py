@@ -6,7 +6,6 @@ from core.ocr import respond_to_ocr
 from utils.logging_setup import get_logger
 import sys
 import asyncio
-from utils.resource_monitor import ResourceMonitor, get_system_info
 from utils.log_manager import LogManager
 from cogs.__init__ import cogs
 import re
@@ -89,7 +88,7 @@ def create_bot(config):
     intents.members = True
     intents.presences = True
 
-    bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
+    bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None, chunk_guilds_at_startup=False)
     
     # Store config in the bot for easy access
     bot.config = config
@@ -107,7 +106,6 @@ def create_bot(config):
     }
     
     # Set up resource monitoring
-    bot.resource_monitor = ResourceMonitor()
     bot.log_manager = LogManager()
     
     # Set up event handlers
@@ -118,7 +116,6 @@ def create_bot(config):
         # --- Set bot's user ID in chatbot_manager ---
         # from utils.chatbot_manager import chatbot_manager # Already imported above
         chatbot_manager.set_bot_user_id(bot.user.id)
-        logger.info(f"ChatbotManager bot_user_id set to {bot.user.id}")
         # --- END NEW ---
 
         # Get worker count from config (default to 2 workers if not specified)
@@ -128,9 +125,6 @@ def create_bot(config):
         # Start multiple OCR workers
         for i in range(worker_count):
             asyncio.create_task(ocr_worker(bot, worker_id=i+1))
-        
-        # Start resource monitoring
-        bot.resource_monitor.start()
         
         # Schedule log cleanup task to run daily
         async def cleanup_logs_task():
@@ -533,21 +527,10 @@ async def handle_chatbot_response(bot, message):
             logger.error("LLMCommands cog not found for chatbot response")
             return
 
-        # Check if LLM is online (uses the LLMCommands cog's check logic)
-        # Pass guild_id to check_llm_status if it's a local LLM
-        current_llm_config = llm_cog.get_llm_config(guild_id) # Get LLM config for this guild
-        current_provider = current_llm_config.get("provider", "local")
-
-        is_online = False
-        if current_provider == "local":
-             is_online = await llm_cog.check_llm_status(guild_id) # Check local LLM status
-        elif current_provider == "google_ai":
-             is_online = llm_cog.is_online # Check Google AI status held by the cog instance
-
-        if not is_online:
-            logger.debug(f"LLM not online for chatbot response in channel {channel_id}. Skipping response.")
-            # await message.reply("I'm sorry, but my AI brain is currently offline. Please try again later.") # Avoid spamming offline message
-            return
+        # Check if any provider is online
+        if not llm_cog.provider_status or not any(llm_cog.provider_status.values()):
+             logger.warning(f"No LLM providers online for chatbot response in channel {channel_id}. Skipping.")
+             return
 
         # Apply response delay
         if channel_config.response_delay_seconds > 0:
@@ -601,10 +584,9 @@ async def handle_chatbot_response(bot, message):
 
 
                 response_text, performance_metrics = await llm_cog.make_llm_request(
-                    #prompt=user_prompt_content,  # The current user's message content
-                    system_prompt=system_prompt_for_llm, # The loaded system prompt
-                    context=full_context_string, # The combined dynamic context
-                    max_tokens=min(channel_config.max_response_length, 2000), # Limit response length (Discord limit is 2000)
+                    system_prompt=system_prompt_for_llm,
+                    context=full_context_string,
+                    max_tokens=min(channel_config.max_response_length, 2000),
                     guild_id=guild_id
                 )
 

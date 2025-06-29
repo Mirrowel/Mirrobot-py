@@ -1,7 +1,6 @@
 import re
 import discord
 from discord.ext import commands
-import aiohttp
 import asyncio
 import json
 import time
@@ -11,208 +10,57 @@ from typing import Optional, Dict, Any, Tuple, List
 from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from utils.embed_helper import create_embed_response, create_llm_response
-import google.generativeai as genai
-from google.generativeai.types.generation_types import StopCandidateException
-from google.generativeai.types import HarmCategory, HarmBlockThreshold # Import for safety settings
+from lib.rotator_library import RotatingClient
+from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env
 
 logger = get_logger()
 
 class LLMCommands(commands.Cog):
-    """Commands for interacting with a locally hosted Large Language Model"""
+    """Commands for interacting with Large Language Models via a rotating key client."""
     
     def __init__(self, bot):
         self.bot = bot
-        self.session: Optional[aiohttp.ClientSession] = None
-        self.is_online = False
-        self.last_check_time = 0
-        self.check_interval = 30  # Check every 30 seconds
-        self.current_model = None  # Store the actual model name
-        self.preferred_model = None  # Store user's preferred model (for local)
-        self.gemini_client: Optional[genai.GenerativeModel] = None  # Store the Google AI client GenerativeModel instance
-        self.llm_provider = "local"  # Can be "local" or "google_ai"
-        
+        self.llm_config = load_llm_config()
+        self.api_keys = load_api_keys_from_env()
+        self.llm_client = RotatingClient(
+            api_keys=self.api_keys,
+            max_retries=self.llm_config.get("max_retries", 2)
+        )
+        self.current_model = self.llm_config.get("preferred_model")
+        self.provider_status: Dict[str, bool] = {}
+
     async def cog_load(self):
-        """Initialize the HTTP session when the cog loads"""
-        self.session = aiohttp.ClientSession()
-        
-        # Try to load configuration from LLM config manager
-        try:
-            from config.llm_config_manager import load_llm_config
-            llm_config = load_llm_config()
-            
-            # Load preferred model from config
-            if "default_model" in llm_config:
-                self.preferred_model = llm_config.get("default_model")
-            else:
-                # Get server-specific model if available (this only applies to local LLM)
-                guild_id = self.bot.guilds[0].id if self.bot.guilds else None
-                if guild_id and str(guild_id) in llm_config.get("servers", {}):
-                    self.preferred_model = llm_config["servers"][str(guild_id)].get("preferred_model")
-            
-            # Load provider from LLM config
-            self.llm_provider = llm_config.get("provider", "local")
-            
-            # Initialize Google AI client if using google_ai provider
-            if self.llm_provider == "google_ai":
-                self._init_google_ai(llm_config)
-        except ImportError:
-            logger.warning("LLM config manager not available, falling back to legacy config")
-            # Fall back to old config method
-            
-            # Load preferred model from bot config
-            config = self.get_llm_config() # This gets the global config for preferred model if no guild_id
-            self.preferred_model = config.get('preferred_model', None)
-            
-            # Load provider from chatbot config
-            from utils.chatbot_manager import chatbot_manager
-            global_config = chatbot_manager.config_cache.get("global", {})
-            self.llm_provider = global_config.get("llm_provider", "local")
-            
-            # Initialize Google AI client if using google_ai provider
-            if self.llm_provider == "google_ai":
-                self._init_google_ai(global_config)
-        
-        # Check if LLM is online at startup and get model name
-        # For Google AI, this is done in _init_google_ai
-        # For local, it checks status and populates current_model
-        if self.llm_provider == "local":
-            await self.check_llm_status(self.bot.guilds[0].id if self.bot.guilds else None) # Pass guild_id
-        
+        """Initialize the LLM client and check provider status on cog load."""
+        logger.info("LLMCommands cog loaded. Initializing client and checking providers.")
+        await self.check_all_providers_status()
+
     async def cog_unload(self):
-        """Clean up the HTTP session when the cog unloads"""
-        if self.session:
-            await self.session.close()
+        """Clean up any resources when the cog unloads."""
+        if self.llm_client and hasattr(self.llm_client, 'http_client'):
+            await self.llm_client.http_client.aclose()
+        logger.info("LLMCommands cog unloaded.")
 
     def get_llm_config(self, guild_id: Optional[int] = None) -> Dict[str, Any]:
-        """Get LLM configuration from LLM config or fallback to bot config for a specific server"""
-        try:
-            # First try to use the new LLM config system
-            from config.llm_config_manager import load_llm_config
-            
-            # Load the global LLM config
-            llm_config = load_llm_config()
-            
-            # Base configuration (global settings)
-            base_config = {
-                "base_url": llm_config.get("base_url", "http://localhost:1234"),
-                "timeout": llm_config.get("timeout", 120),
-                "max_retries": llm_config.get("max_retries", 3),
-                "retry_delay": llm_config.get("retry_delay", 2),
-                "provider": llm_config.get("provider", "local"),
-                "google_ai_api_key": llm_config.get("google_ai_api_key"),
-                "google_ai_model_name": llm_config.get("google_ai_model_name", "gemma-3-27b-it")
-            }
-            
-            # If a guild ID is provided, get server-specific config
-            if guild_id:
-                server_id_str = str(guild_id)
-                if "servers" in llm_config and server_id_str in llm_config["servers"]:
-                    server_config = llm_config["servers"][server_id_str]
-                    # Merge global and server configs
-                    config = {**base_config, **server_config}
-                    return config
-            
-            # Return base config with default enabled status if no server config or no guild specified
-            return {**base_config, "enabled": True} # Default to enabled if no specific guild config to disable
-            
-        except ImportError:
-            # Fall back to using the old bot config system
-            logger.debug("LLM config manager not available, falling back to bot config")
-            
-            # Global default config from bot config
-            global_config = self.bot.config.get('llm_global', {
-                "base_url": "http://localhost:1234",
-                "timeout": 120,
-                "max_retries": 3,
-                "retry_delay": 2
-            })
-            
-            # Server-specific config
-            if guild_id:
-                server_configs = self.bot.config.get('llm_servers', {})
-                server_config = server_configs.get(str(guild_id), {
-                    "enabled": False, # Old config had disabled by default per server
-                    "preferred_model": None,
-                    "last_used_model": None
-                })
-                
-                # Merge global and server configs
-                config = {**global_config, **server_config}
-                return config
-            
-            # Return global config if no guild specified
-            return {**global_config, "enabled": False} # Default to disabled for global in old config
+        """
+        Get LLM configuration. Now primarily loads from the central config manager.
+        Guild-specific settings can be added here if needed in the future.
+        """
+        # The main config is now loaded in __init__
+        # This function can be adapted if server-specific overrides are needed later.
+        return self.llm_config
 
     async def save_model_to_config(self, model_name: str, guild_id: Optional[int] = None):
-        """Save the selected model to config (only for local LLM preferences)"""
-        guild_id_str = str(guild_id) if guild_id else "global"
-        logger.debug(f"Saving model {model_name} to config for guild {guild_id_str}")
+        """Save the selected model to the global config."""
+        logger.debug(f"Saving preferred model '{model_name}' to config.")
         
-        try:
-            # Try to use the new LLM config system
-            from config.llm_config_manager import load_llm_config, save_llm_config
-            
-            # Load the current LLM config
-            llm_config = load_llm_config()
-            
-            # Update server-specific config
-            if guild_id:
-                # Make sure servers dict exists
-                if "servers" not in llm_config:
-                    llm_config["servers"] = {}
-                
-                # Make sure this server exists in config
-                if guild_id_str not in llm_config["servers"]:
-                    # Create default entry for new guild if it doesn't exist
-                    llm_config["servers"][guild_id_str] = {
-                        "enabled": True,
-                        "preferred_model": None,
-                        "last_used_model": None
-                    }
-                
-                # Update the model preferences
-                llm_config["servers"][guild_id_str]["preferred_model"] = model_name
-                llm_config["servers"][guild_id_str]["last_used_model"] = model_name
-                
-                # Save the config
-                save_llm_config(llm_config)
-            else:
-                # If no guild_id, save as default model (for global local LLM)
-                llm_config["default_model"] = model_name
-                save_llm_config(llm_config)
-            
-            logger.info(f"Saved model {model_name} to LLM config for guild {guild_id_str}")
-            return
-        except ImportError:
-            # Fall back to the old config system
-            logger.warning("LLM config manager not available, falling back to bot config")
+        # Configuration is now global, not per-guild for model selection
+        self.llm_config["preferred_model"] = model_name
+        self.current_model = model_name
         
-        # Legacy path using bot config
-        # Ensure llm_servers exists in config
-        if 'llm_servers' not in self.bot.config:
-            self.bot.config['llm_servers'] = {}
-        
-        # Ensure guild config exists
-        if guild_id_str not in self.bot.config['llm_servers']:
-            self.bot.config['llm_servers'][guild_id_str] = {
-                "enabled": True,
-                "preferred_model": None,
-                "last_used_model": None
-            }
-        
-        # Update the model preferences
-        self.bot.config['llm_servers'][guild_id_str]['preferred_model'] = model_name
-        self.bot.config['llm_servers'][guild_id_str]['last_used_model'] = model_name
-        
-        # Import and use save_config
-        try:
-            from config.config_manager import save_config
-            save_config(self.bot.config)
-            logger.info(f"Saved model {model_name} to bot config for guild {guild_id_str}")
-        except ImportError:
-            logger.warning("Could not import save_config - model preference not saved")
-        except Exception as e:
-            logger.error(f"Failed to save config: {e}")
+        if save_llm_config(self.llm_config):
+            logger.info(f"Saved preferred model '{model_name}' to llm_config.json")
+        else:
+            logger.error("Failed to save preferred model to config file.")
     
     def get_llm_data_path(self, guild_id: Optional[int] = None) -> str:
         """Get the path to the LLM data directory for a guild"""
@@ -338,166 +186,32 @@ class LLMCommands(commands.Cog):
             logger.error(f"Failed to save context: {e}")
             return False
     
-    async def get_available_models(self, guild_id: Optional[int] = None, verbose_logging: bool = False) -> list:
-        """Get list of available models from the LLM server"""
-        config = self.get_llm_config(guild_id)
-        models = []
-        
-        logger.debug(f"Getting available models for guild {guild_id}, verbose={verbose_logging}")
-        
-        # Try LM Studio/OpenAI compatible models endpoint
+    async def check_provider_status(self, provider: str) -> bool:
+        """Check the status of a single provider by trying to list its models."""
         try:
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with self.session.get(
-                f"{config['base_url']}/v1/models",
-                timeout=timeout
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if 'data' in result and result['data']:
-                        models = [model.get('id', 'unknown') for model in result['data']]
-                        if verbose_logging:
-                            logger.info(f"Found OpenAI-compatible models: {models}")
-                        else:
-                            logger.debug(f"Found {len(models)} OpenAI-compatible models")
-                        return models
-        except Exception as e:
-            if verbose_logging:
-                logger.error(f"Failed to get models from /v1/models: {e}")
+            models = await self.llm_client.get_available_models(provider)
+            is_online = bool(models)
+            self.provider_status[provider] = is_online
+            if is_online:
+                logger.info(f"Provider '{provider}' is online. Found {len(models)} models.")
             else:
-                logger.debug(f"Failed to get models from /v1/models: {e}")
-        
-        # Try Ollama models endpoint
-        try:
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with self.session.get(
-                f"{config['base_url']}/api/tags",
-                timeout=timeout
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if 'models' in result and result['models']:
-                        models = [model.get('name', 'unknown') for model in result['models']]
-                        if verbose_logging:
-                            logger.info(f"Found Ollama models: {models}")
-                        else:
-                            logger.debug(f"Found {len(models)} Ollama models")
-                        return models
+                logger.warning(f"Provider '{provider}' is offline or has no models.")
+            return is_online
         except Exception as e:
-            if verbose_logging:
-                logger.error(f"Failed to get models from /api/tags: {e}")
-            else:
-                logger.debug(f"Failed to get models from /api/tags: {e}")
-        
-        # Return empty list if no models found
-        logger.debug("No models found from any endpoint")
-        return models
-    
-    async def get_current_model(self, guild_id: Optional[int] = None) -> Optional[str]:
-        """Get the currently loaded model name (primarily for local LLM)"""
-        logger.debug(f"Getting current model for guild {guild_id}")
-        
-        # If using Google AI, use its configured model name
-        if self.llm_provider == "google_ai":
-            config = self.get_llm_config(guild_id)
-            return config.get("google_ai_model_name", "gemma-3-27b-it")
-            
-        # For local LLM, try to get from available models or fallback
-        models = await self.get_available_models(guild_id, verbose_logging=False)
-        if models:
-            # If we have a preferred model and it's available, use it
-            if self.preferred_model and self.preferred_model in models:
-                logger.debug(f"Using preferred local model: {self.preferred_model}")
-                return self.preferred_model
-            # Otherwise return the first available model
-            logger.debug(f"Using first available local model: {models[0]}")
-            return models[0]
-        
-        # Fallback to configured model name if no models found (for local LLM)
-        config = self.get_llm_config(guild_id)
-        fallback_model = config.get('last_used_model', 'local-model')
-        logger.debug(f"Using fallback local model: {fallback_model}")
-        return fallback_model
-    
-    async def check_llm_status(self, guild_id: Optional[int] = None) -> bool:
-        """Check if the LLM is online and responding (for local LLM)"""
-        config = self.get_llm_config(guild_id)
-        logger.debug(f"Checking LLM status for guild {guild_id}")
-        
-        if not config.get('enabled', False) and self.llm_provider == "local":
-            self.is_online = False
-            logger.debug("Local LLM is disabled in configuration")
+            logger.error(f"Failed to check status for provider '{provider}': {e}")
+            self.provider_status[provider] = False
             return False
+
+    async def check_all_providers_status(self):
+        """Check the status of all configured providers."""
+        logger.info("Checking status of all configured LLM providers...")
+        providers = list(self.api_keys.keys())
+        # Add 'local' provider if base_url is configured
+        if self.llm_config.get("base_url"):
+            providers.append("local")
         
-        if self.llm_provider == "google_ai":
-            # For Google AI, status is determined by _init_google_ai
-            return self.is_online
-            
-        # For local LLM:
-        # Try health check endpoints (prioritize official endpoints)
-        health_endpoints = ["/v1/models", "/api/tags"]
-        for endpoint in health_endpoints:
-            try:
-                timeout = aiohttp.ClientTimeout(total=5)
-                async with self.session.get(
-                    f"{config['base_url']}{endpoint}",
-                    timeout=timeout
-                ) as response:
-                    if response.status == 200:
-                        self.is_online = True
-                        logger.debug(f"Local LLM health check successful via {endpoint}")
-                        
-                        # Try to extract model name from models endpoint
-                        if endpoint == "/v1/models" and not self.current_model:
-                            try:
-                                result = await response.json()
-                                if 'data' in result and result['data']:
-                                    available_models = [model.get('id', 'unknown') for model in result['data']]
-                                    if self.preferred_model and self.preferred_model in available_models:
-                                        self.current_model = self.preferred_model
-                                    elif available_models:
-                                        self.current_model = available_models[0]
-                                    logger.debug(f"Set current local model to {self.current_model} from health check")
-                            except Exception as e:
-                                logger.debug(f"Failed to extract model from health check: {e}")
-                        
-                        return True
-            except Exception as e:
-                logger.debug(f"Local LLM health check failed for {endpoint}: {e}")
-        
-        # If health endpoints don't work, try a simple completion request
-        try:
-            # We don't want to trigger full make_llm_request which involves full prompt preparation
-            # Instead, do a minimal mock request
-            temp_model = self.current_model or "test-model" # Use current model if available, else a dummy
-            
-            payload = {
-                "model": temp_model,
-                "messages": [{"role": "user", "content": "test"}],
-                "max_tokens": 1,
-                "temperature": 0
-            }
-            timeout = aiohttp.ClientTimeout(total=5)
-            url = f"{config['base_url']}/v1/chat/completions"
-            
-            async with self.session.post(
-                url,
-                json=payload,
-                timeout=timeout,
-                headers={"Content-Type": "application/json"}
-            ) as response:
-                if response.status == 200:
-                    self.is_online = True
-                    logger.debug(f"Local LLM health check successful via test completion")
-                    return True
-                else:
-                    logger.debug(f"Local LLM test request returned status {response.status}")
-                    self.is_online = False
-                    return False
-        except Exception as e:
-            logger.debug(f"Local LLM test request failed: {e}")
-            self.is_online = False
-            return False
+        status_checks = [self.check_provider_status(provider) for provider in providers]
+        await asyncio.gather(*status_checks)
     
     async def make_llm_request(
         self, 
@@ -507,45 +221,71 @@ class LLMCommands(commands.Cog):
         temperature: float = 0.7,
         guild_id: Optional[int] = None,
         system_prompt: Optional[str] = None,
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        model: Optional[str] = None
     ) -> Tuple[str, Dict[str, Any]]:
-        """Make a request to the LLM API and return response with performance metrics.
-        Automatically detects which provider to use (local or Google AI) based on configuration."""
+        """
+        Make a request to the LLM API using the RotatingClient and return the response
+        with performance metrics.
+        """
         start_time = time.time()
         
-        # Try to get provider from LLM config first, if available
-        try:
-            from config.llm_config_manager import load_llm_config
-            llm_config = load_llm_config()
-            self.llm_provider = llm_config.get("provider", "local")
-        except ImportError:
-            # Fall back to chatbot_manager config if LLM config is not available
-            from utils.chatbot_manager import chatbot_manager
-            global_config = chatbot_manager.config_cache.get("global", {})
-            self.llm_provider = global_config.get("llm_provider", "local")
-        
-        # Common preparation of system prompt and context
+        # Determine the model to use
+        target_model = model or self.current_model
+        if not target_model:
+            raise ValueError("No model specified and no preferred model configured.")
+
+        # Prepare prompts
         system_prompt, context = self._prepare_prompts(system_prompt, context, thinking, guild_id)
+        messages = self._build_messages_list(system_prompt, context, prompt)
         
-        # Route to appropriate provider
-        if self.llm_provider == "google_ai":
-            # Get config for Google AI (it's a global config for Google AI)
-            try:
-                from config.llm_config_manager import load_llm_config
-                config_for_request = load_llm_config()
-            except ImportError:
-                from utils.chatbot_manager import chatbot_manager
-                config_for_request = chatbot_manager.config_cache.get("global", {})
-                
-            return await self._make_google_ai_request(
-                prompt, system_prompt, context, max_tokens, temperature,
-                config_for_request, guild_id, start_time
-            )
-        else: # "local" provider
-            return await self._make_local_llm_request(
-                prompt, system_prompt, context, max_tokens, temperature,
-                guild_id, start_time
-            )
+        # Prepare kwargs for the rotating client
+        request_kwargs = {
+            "model": target_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "timeout": self.llm_config.get("timeout", 120)
+        }
+
+        # Handle local provider by setting api_base
+        if target_model.startswith("local/"):
+            request_kwargs["api_base"] = self.llm_config.get("base_url")
+            # The rotator client expects the format `provider/model_name`, but for local
+            # models litellm might just need the model name itself.
+            # Let's adjust this based on how the rotator/litellm handles it.
+            # For now, we assume litellm needs the full `local/model_name` string.
+
+        self._save_debug_request(request_kwargs, "RotatingClient", target_model.split('/')[0])
+
+        try:
+            response = await self.llm_client.acompletion(**request_kwargs)
+            
+            # Save the raw response for debugging
+            self._save_debug_response(response, target_model.split('/')[0])
+            
+            # The rotator client returns the litellm response object directly for non-streaming
+            content = response.choices[0].message.content
+            usage = response.usage
+            
+            performance_metrics = self._calculate_performance_metrics(start_time, content, usage)
+            
+            if performance_metrics.get('has_token_data', False):
+                logger.debug(f"LLM request to '{target_model}' completed in {performance_metrics['elapsed_time']:.2f}s, "
+                           f"{performance_metrics['tokens_per_sec']:.1f} tokens/s "
+                           f"({performance_metrics['completion_tokens']} tokens)")
+            else:
+                logger.debug(f"LLM request to '{target_model}' completed in {performance_metrics['elapsed_time']:.2f}s, "
+                           f"{performance_metrics['chars_per_sec']:.1f} chars/s")
+
+            # Convert text patterns to Discord format
+            content = self.convert_text_to_discord_format(content, guild_id)
+            
+            return content, performance_metrics
+
+        except Exception as e:
+            logger.error(f"Error making LLM request via RotatingClient to model {target_model}: {e}", exc_info=True)
+            raise  # Re-raise the exception to be handled by the command
 
     def _prepare_prompts(self, system_prompt: Optional[str], context: Optional[str],
                         thinking: bool, guild_id: Optional[int]) -> Tuple[str, Optional[str]]:
@@ -561,13 +301,13 @@ class LLMCommands(commands.Cog):
             
         return system_prompt, context
 
-    def _save_debug_payload(self, payload: dict, endpoint: str, provider: str):
-        """Save debug payload to file for debugging purposes"""
+    def _save_debug_request(self, payload: dict, endpoint: str, provider: str):
+        """Save debug request payload to file for debugging purposes"""
         try:
             debug_dir = os.path.join("llm_data", "debug_prompts")
             os.makedirs(debug_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            debug_filename = f"llm_payload_{provider}.json"
+            debug_filename = f"llm_request_{provider}.json"
             debug_filepath = os.path.join(debug_dir, debug_filename)
             
             with open(debug_filepath, 'w', encoding='utf-8') as f:
@@ -575,33 +315,56 @@ class LLMCommands(commands.Cog):
                 f.write(f"// Provider: {provider}\n")
                 f.write(f"// Endpoint: {endpoint}\n")
                 f.write(f"// Timestamp: {timestamp}\n")
-                f.write("// PAYLOAD:\n")
+                f.write("// REQUEST PAYLOAD:\n")
                 # Use json.dumps from standard library
                 f.write(json.dumps(payload, indent=2, ensure_ascii=False))
-            logger.debug(f"Saved debug payload to {debug_filepath}")
+            logger.debug(f"Saved debug request payload to {debug_filepath}")
         except Exception as e:
-            logger.warning(f"Failed to save debug payload: {e}")
+            logger.warning(f"Failed to save debug request payload: {e}")
+
+    def _save_debug_response(self, response: Any, provider: str):
+        """Save debug response to file for debugging purposes"""
+        try:
+            debug_dir = os.path.join("llm_data", "debug_prompts")
+            os.makedirs(debug_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            debug_filename = f"llm_response_{provider}.json"
+            debug_filepath = os.path.join(debug_dir, debug_filename)
+            
+            response_data = {}
+            if hasattr(response, 'dict'):
+                response_data = response.dict()
+            else:
+                # For non-pydantic objects, just convert to string
+                response_data = str(response)
+
+            with open(debug_filepath, 'w', encoding='utf-8') as f:
+                f.write(f"// filepath: {debug_filepath}\n")
+                f.write(f"// Provider: {provider}\n")
+                f.write(f"// Timestamp: {timestamp}\n")
+                f.write("// RESPONSE:\n")
+                f.write(json.dumps(response_data, indent=2, ensure_ascii=False))
+            logger.debug(f"Saved debug response to {debug_filepath}")
+        except Exception as e:
+            logger.warning(f"Failed to save debug response: {e}")
 
     def _calculate_performance_metrics(self, start_time: float, content: str,
-                                     usage: Optional[dict] = None) -> Dict[str, Any]:
-        """Calculate performance metrics for LLM response"""
+                                     usage: Optional[Any] = None) -> Dict[str, Any]:
+        """Calculate performance metrics for LLM response."""
         end_time = time.time()
         elapsed_time = end_time - start_time
         char_count = len(content) if content else 0
         chars_per_sec = char_count / elapsed_time if elapsed_time > 0 else 0
         
-        # Extract token usage if available
-        prompt_tokens = usage.get('prompt_tokens', 0) if usage else 0
-        completion_tokens = usage.get('completion_tokens', 0) if usage else 0
-        total_tokens = usage.get('total_tokens', 0) if usage else 0
+        prompt_tokens = getattr(usage, 'prompt_tokens', 0) if usage else 0
+        completion_tokens = getattr(usage, 'completion_tokens', 0) if usage else 0
+        total_tokens = getattr(usage, 'total_tokens', 0) if usage else 0
         
-        # Calculate tokens per second
-        # If exact token data isn't available, estimate using a common factor (e.g., 4 chars/token)
         tokens_per_sec = 0
-        if completion_tokens > 0:
-            tokens_per_sec = completion_tokens / elapsed_time if elapsed_time > 0 else 0
-        elif char_count > 0: # Fallback estimation if no token usage
-            tokens_per_sec = chars_per_sec / 4  # Rough estimation
+        if completion_tokens > 0 and elapsed_time > 0:
+            tokens_per_sec = completion_tokens / elapsed_time
+        elif char_count > 0 and elapsed_time > 0:
+            tokens_per_sec = (char_count / 4) / elapsed_time  # Rough estimation
 
         return {
             'elapsed_time': elapsed_time,
@@ -611,264 +374,8 @@ class LLMCommands(commands.Cog):
             'prompt_tokens': prompt_tokens,
             'completion_tokens': completion_tokens,
             'total_tokens': total_tokens,
-            'has_token_data': total_tokens > 0 # Indicates if token data came from API or was estimated
+            'has_token_data': total_tokens > 0
         }
-
-    async def _make_google_ai_request(self, prompt: Optional[str], system_prompt: str,
-                                    context: Optional[str], max_tokens: int,
-                                    temperature: float, global_config: dict,
-                                    guild_id: Optional[int], start_time: float) -> Tuple[str, Dict[str, Any]]:
-        """Handle Google AI (Gemini) requests, supporting system instructions and Gemma-specific formats."""
-
-        model_name = global_config.get("google_ai_model_name", "gemma-3-27b-it")
-        self.current_model = model_name  # Update current model for status/logging
-
-        # Check if model requires Gemma-specific system prompt handling
-        gemma_model_prefixes = ("gemma", "gemma-")
-        is_gemma_family = model_name.lower().startswith(gemma_model_prefixes)
-
-        # Decide how to pass the system_prompt
-        system_instruction_for_model_init = None
-        # Gemma models do not support system_instruction parameter, it must be part of the first user turn.
-        # Other Gemini models (like gemini-pro) can use system_instruction.
-        if not is_gemma_family:
-            system_instruction_for_model_init = system_prompt
-            logger.debug(f"Google AI: Non-Gemma model '{model_name}'. Using system_instruction parameter.")
-        else:
-            logger.debug(f"Google AI: Gemma model '{model_name}' detected. System instruction will be prepended to the first user message.")
-
-        # Initialize the GenerativeModel instance.
-        # We need to re-initialize if the model name changes, or if the system_instruction content changes
-        # for non-Gemma models (as it's a constructor argument).
-        # For Gemma, system_instruction_for_model_init is None, so we don't check it.
-        # We also want to re-init if the *type* of system instruction handling changes (Gemma vs. non-Gemma).
-        
-        # Placeholder for previous system instruction used for non-Gemma models
-        previous_system_instruction = getattr(self.gemini_client, '_system_instruction', None) if self.gemini_client else None
-
-        if self.gemini_client is None or \
-           self.gemini_client._model_name != model_name or \
-           (not is_gemma_family and previous_system_instruction != system_instruction_for_model_init) or \
-           (is_gemma_family and previous_system_instruction is not None): # If it was non-Gemma with system_instruction, and now it's Gemma
-            try:
-                self.gemini_client = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=system_instruction_for_model_init # Will be None for Gemma
-                )
-                logger.debug(f"Google AI GenerativeModel re-initialized for model '{model_name}'. System instruction used: {system_instruction_for_model_init is not None}")
-            except Exception as e:
-                logger.error(f"Failed to initialize Google AI GenerativeModel for {model_name}: {e}")
-                self.is_online = False
-                raise Exception(f"Failed to initialize Google AI model: {str(e)}")
-
-        if not self.is_online: # Check connectivity from _init_google_ai
-            raise Exception("Google AI API is not available or failed to initialize.")
-
-        # Build the initial list of messages.
-        raw_messages_for_gemini = self._build_messages_list(system_prompt, context, prompt)
-
-        # --- Transform raw_messages_for_gemini into Gemini's expected 'contents' list ---
-        contents_for_api = []
-        gemma_prepended_system_content = None
-
-        # Extract the system message if it exists (it's always the first if present from _build_messages_list)
-        if raw_messages_for_gemini and raw_messages_for_gemini[0]['role'] == 'system':
-            initial_system_message = raw_messages_for_gemini.pop(0) # Remove system message from the list
-            if is_gemma_family: # If it's a Gemma model, we'll prepend this content later
-                gemma_prepended_system_content = initial_system_message['content']
-                logger.debug("Gemma: Stored system instruction content for prepending.")
-            # If not Gemma, the system_instruction_for_model_init was already handled at model initialization.
-
-        first_user_message_found = False
-        for msg_dict in raw_messages_for_gemini:
-            # Map roles: 'user' -> 'user', 'assistant' -> 'model'
-            gemini_role = "user" if msg_dict['role'] == "user" else "model"
-            current_content = msg_dict['content']
-
-            # For Gemma models, prepend the system instruction to the first user message
-            if is_gemma_family and gemini_role == "user" and gemma_prepended_system_content and not first_user_message_found:
-                current_content = f"{gemma_prepended_system_content}\n\n{current_content}"
-                gemma_prepended_system_content = None # Ensure it's only prepended once
-                first_user_message_found = True
-                logger.debug("Gemma: Prepending system instruction to first user message content.")
-            
-            # Append the message in Gemini's 'contents' format
-            contents_for_api.append({
-                'role': gemini_role,
-                'parts': [{'text': current_content}]
-            })
-
-        # Final check for Gemma: If there was a system instruction but no user message was found
-        # to prepend it to (e.g., only bot messages in context or empty history + system_prompt only).
-        # In this rare case, add the system instruction as a standalone user message.
-        if is_gemma_family and gemma_prepended_system_content:
-            contents_for_api.append({
-                'role': 'user',
-                'parts': [{'text': gemma_prepended_system_content}]
-            })
-            logger.warning("Gemma: System instruction was added as a standalone user message (no existing user turn found to prepend).")
-
-        # Configure generation parameters
-        generation_config = {
-            "temperature": temperature,
-            "max_output_tokens": max_tokens,
-            "top_p": 0.95,
-            "top_k": 0 # Default value for many Gemini models, or can be set dynamically
-        }
-
-        # Define safety settings (optional, but good practice for public bots)
-        safety_settings = [
-            {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
-            {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_NONE},
-            {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmBlockThreshold.BLOCK_NONE},
-            {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
-        ]
-
-        # Debug payload for the actual API call
-        debug_payload = {
-            "model": model_name,
-            "contents": contents_for_api, # This is the actual structure sent
-            "generation_config": generation_config,
-            "safety_settings": [str(s) for s in safety_settings], # Convert enum to string for logging
-            "system_instruction_param_used": system_instruction_for_model_init is not None # For debug clarity
-        }
-        self._save_debug_payload(debug_payload, "Google AI API", "google_ai")
-
-        try:
-            # Make the request using the prepared client and contents list
-            response = self.gemini_client.generate_content(
-                contents=contents_for_api, # Pass the list of messages
-                generation_config=generation_config,
-                safety_settings=safety_settings
-            )
-
-            # Extract the response text
-            content = response.text
-            
-            # Google AI's generate_content result objects typically don't
-            # have a direct 'usage' attribute like OpenAI/local LLMs for exact token counts.
-            # We'll rely on character counts and approximate token counts for now.
-            performance_metrics = self._calculate_performance_metrics(start_time, content)
-            performance_metrics['has_token_data'] = False # Indicate no exact token data from API
-
-            # Approximate prompt token counts based on char_count (rough estimate of 4 chars per token)
-            approx_prompt_chars = sum(len(part['text']) for msg in contents_for_api for part in msg['parts'])
-            performance_metrics['prompt_tokens'] = approx_prompt_chars // 4
-            performance_metrics['completion_tokens'] = len(content) // 4
-            performance_metrics['total_tokens'] = performance_metrics['prompt_tokens'] + performance_metrics['completion_tokens']
-
-
-            logger.debug(f"Google AI request completed in {performance_metrics['elapsed_time']:.2f}s, "
-                        f"{performance_metrics['chars_per_sec']:.1f} chars/s "
-                        f"(~{performance_metrics['tokens_per_sec']:.1f} tokens/s)")
-
-            # Convert text patterns to Discord format
-            content = self.convert_text_to_discord_format(content, guild_id)
-
-            return content, performance_metrics
-
-        except StopCandidateException as e:
-            # Handle safety filter
-            safety_ratings = getattr(e.candidate, "safety_ratings", [])
-            safety_info = ", ".join(f"{rating.category}: {rating.probability}" for rating in safety_ratings) if safety_ratings else "unknown"
-            error_msg = f"Google AI safety filter triggered: {safety_info}. Rejection reason: {e.response.prompt_feedback.block_reason}"
-            logger.warning(error_msg)
-            raise Exception(f"Safety filter triggered: {error_msg}. Please rephrase your query or adjust bot's safety settings.")
-
-        except Exception as e:
-            logger.error(f"Error making Google AI request: {e}", exc_info=True)
-            raise Exception(f"Failed to get response from Google AI: {str(e)}")
-
-    async def _make_local_llm_request(self, prompt: Optional[str], system_prompt: str,
-                                    context: Optional[str], max_tokens: int,
-                                    temperature: float, guild_id: Optional[int],
-                                    start_time: float) -> Tuple[str, Dict[str, Any]]:
-        """Handle local LLM requests"""
-        config = self.get_llm_config(guild_id)
-        
-        if not config.get('enabled', False):
-            raise Exception("LLM is not enabled in configuration")
-        
-        # Check if we need to verify status
-        current_time = asyncio.get_event_loop().time()
-        if current_time - self.last_check_time > self.check_interval:
-            await self.check_llm_status(guild_id)
-            self.last_check_time = current_time
-        
-        if not self.is_online:
-            # Try to reconnect
-            logger.info("Attempting to reconnect to local LLM...")
-            if not await self.check_llm_status(guild_id):
-                raise Exception("Local LLM appears to be offline")
-
-        # Use the detected model name or fallback to config
-        model_name = self.current_model or config.get('model', 'local-model')
-        
-        # Build messages list as expected by local LLM (OpenAI-compatible)
-        messages = self._build_messages_list(system_prompt, context, prompt)
-        
-        # Create payload
-        payload = {
-            "model": model_name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": False
-        }
-        
-        # Try different API endpoints (mostly for compatibility with LM Studio/Ollama)
-        endpoints = ["/v1/chat/completions"]
-        
-        for endpoint in endpoints:
-            try:
-                timeout = aiohttp.ClientTimeout(total=config.get('timeout', 120))
-                url = f"{config['base_url']}{endpoint}"
-                
-                # Save debug payload
-                self._save_debug_payload(payload, url, "local")
-                
-                async with self.session.post(
-                    url,
-                    json=payload,
-                    timeout=timeout,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        content = self._extract_content_from_response(result)
-                        
-                        if content:
-                            # Extract model name from response if available
-                            response_model = result.get('model')
-                            if response_model and response_model != self.current_model:
-                                logger.debug(f"Updating current local model from response: {response_model}")
-                                self.current_model = response_model
-                            
-                            # Calculate performance metrics
-                            usage = result.get('usage', {})
-                            performance_metrics = self._calculate_performance_metrics(start_time, content, usage)
-                            
-                            if performance_metrics['has_token_data']:
-                                logger.debug(f"LLM request completed in {performance_metrics['elapsed_time']:.2f}s, "
-                                           f"{performance_metrics['tokens_per_sec']:.1f} tokens/s "
-                                           f"({performance_metrics['completion_tokens']} tokens)")
-                            else:
-                                logger.debug(f"LLM request completed in {performance_metrics['elapsed_time']:.2f}s, "
-                                           f"{performance_metrics['chars_per_sec']:.1f} chars/s "
-                                           f"(~{performance_metrics['tokens_per_sec']:.1f} tokens/s)")
-                            
-                            # Convert text patterns to Discord format
-                            content = self.convert_text_to_discord_format(content, guild_id)
-                            
-                            return content, performance_metrics
-                        
-            except Exception as e:
-                logger.debug(f"Local LLM request failed for {endpoint}: {e}", exc_info=True)
-                continue
-        
-        # If all attempts failed, mark as offline and raise error
-        self.is_online = False
-        raise Exception("Failed to get response from LLM after trying multiple formats")
 
     def _build_messages_list(self, system_prompt: str, context: Optional[str],
                           prompt: Optional[str]) -> List[Dict[str, str]]:
@@ -1282,849 +789,331 @@ class LLMCommands(commands.Cog):
             logger.error(f"Error converting text to Discord format: {e}", exc_info=True)
             # If something goes wrong, just return the original content
             return content
-        
-    def _init_google_ai(self, config):
-        """Initialize the Google AI client and its GenerativeModel instance."""
-        try:
-            # Try to get API key from environment first, then from config
-            api_key = os.environ.get("GOOGLE_AI_API_KEY") or config.get("google_ai_api_key")
-            
-            if api_key:
-                # Configure the Gemini API with the API key
-                genai.configure(api_key=api_key)
-                logger.info("Google AI client configured successfully.")
-                
-                # List models to verify connectivity and get available models
-                models = self._get_google_ai_models(apply_default_filter=False) # Get unfiltered list for init check
-                if models:
-                    self.is_online = True
-                    logger.info(f"Google AI API connected successfully. Available models: {models}")
-                    
-                    # Set current model to preferred or first available
-                    model_name = config.get("google_ai_model_name", "gemma-3-27b-it")
-                    if model_name in models:
-                        self.current_model = model_name
-                    elif models: # If preferred model not found, use first available
-                        self.current_model = models[0]
-                    else: # Fallback if no models are found (shouldn't happen if API is connected)
-                        self.current_model = "gemini-pro"
-                    
-                    logger.debug(f"Set current Google AI model to: {self.current_model}")
-
-                    # Initialize the GenerativeModel instance.
-                    # Note: system_instruction is NOT passed here, it's dynamic per request in _make_google_ai_request
-                    self.gemini_client = genai.GenerativeModel(model_name=self.current_model)
-                    logger.info(f"Initialized Google AI GenerativeModel instance for model: {self.current_model}")
-                else:
-                    self.is_online = False
-                    logger.warning("No Google AI models available or failed to list models. Cloud models will not be available.")
-            else:
-                logger.warning("Google AI API key not found - Cloud models will not be available.")
-                self.is_online = False
-        except Exception as e:
-            logger.error(f"Error initializing Google AI client: {e}", exc_info=True)
-            self.is_online = False
-    
-    def _get_google_ai_models(self, apply_default_filter: bool = True, include_all_gemini_pro_vision_tts: bool = False) -> List[str]:
-        """
-        Get list of available Google AI models, with filtering options.
-
-        Args:
-            apply_default_filter (bool): If True, applies the strict default filter (gemma and 2.5 flash).
-                                         If False, returns all supported models.
-            include_all_gemini_pro_vision_tts (bool): If True, and apply_default_filter is also True,
-                                                    expands the default filter to include all 'pro',
-                                                    'vision', 'tts' models. This parameter is ignored if
-                                                    apply_default_filter is False.
-        Returns:
-            List[str]: Filtered list of model names.
-        """
-        try:
-            # List available models that support generateContent method
-            all_models = [model.name.split('/')[-1] for model in genai.list_models() if 'generateContent' in model.supported_generation_methods]
-            
-            if not apply_default_filter:
-                return sorted(all_models) # Return all models if no default filter requested
-            
-            filtered_models = set() # Use a set to avoid duplicates
-            
-            # Filter 1: Gemma models
-            for model_name in all_models:
-                if model_name.lower().startswith("gemma-"):
-                    filtered_models.add(model_name)
-            
-            # Filter 2: Gemini 2.5 Flash models (excluding TTS variants)
-            for model_name in all_models:
-                if model_name.lower().startswith("gemini-2.5-flash-") and "tts" not in model_name.lower():
-                    filtered_models.add(model_name)
-                    
-            # Filter 3 (Conditional): Include all 'pro', 'vision', 'tts' models if requested
-            if include_all_gemini_pro_vision_tts:
-                for model_name in all_models:
-                    model_lower = model_name.lower()
-                    # Only add if it contains 'pro', 'vision', or 'tts' and is a 'gemini' or 'gemma' model
-                    if ("pro" in model_lower or "vision" in model_lower or "tts" in model_lower) and \
-                       (model_lower.startswith("gemini-") or model_lower.startswith("gemma-")):
-                         filtered_models.add(model_name)
-            
-            # Sort the final list for consistent display
-            return sorted(list(filtered_models))
-        except Exception as e:
-            logger.error(f"Error getting Google AI models: {e}", exc_info=True)
-            return []
 
     @commands.command(name='ask', help='Ask the LLM a question')
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
     async def ask_llm(self, ctx, *, question: str):
-        """Ask the LLM a question without showing thinking process"""
-        logger.info(f"User {ctx.author} asking LLM question in {ctx.guild.name if ctx.guild else 'DM'}: {question[:100]}{'...' if len(question) > 100 else ''}")
-        config = self.get_llm_config(ctx.guild.id if ctx.guild else None)
-        
-        provider = config.get("provider", "local") # Get provider from the loaded LLM config
-        
-        if provider == "local" and not config.get('enabled', False):
-            logger.warning(f"Local LLM request denied - feature disabled for guild {ctx.guild.id if ctx.guild else 'DM'}")
-            await create_embed_response(
-                ctx,
-                "The local LLM feature is not enabled. Please ask an administrator to enable it in the bot configuration.",
-                title="LLM Disabled",
-                color=discord.Color.red()
-            )
-            return
-        
-        # For Google AI, check if it's initialized and online
-        if provider == "google_ai" and not self.is_online:
-            logger.warning(f"Google AI LLM request denied - API not initialized or offline.")
-            await create_embed_response(
-                ctx,
-                "The Google AI LLM is not available. Please ensure your API key is set and valid (`!llm_set_api_key`).",
-                title="Google AI Offline",
-                color=discord.Color.red()
-            )
+        """Ask the LLM a question without showing thinking process."""
+        logger.info(f"User {ctx.author} asking LLM: {question[:100]}")
+
+        if not self.api_keys and not self.llm_config.get("base_url"):
+            await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-
-        # Send typing indicator
         async with ctx.typing():
             try:
-                logger.debug(f"Making LLM request for user {ctx.author}")
-                response, performance_metrics = await self.make_llm_request(question, thinking=False, guild_id=ctx.guild.id if ctx.guild else None)
+                response, performance_metrics = await self.make_llm_request(
+                    prompt=question,
+                    thinking=False,
+                    guild_id=ctx.guild.id if ctx.guild else None
+                )
                 cleaned_response, _ = self.strip_thinking_tokens(response)
                 await self.send_llm_response(ctx, cleaned_response, question, thinking=False, performance_metrics=performance_metrics)
-                logger.info(f"Successfully processed LLM request for user {ctx.author}")
-                    
             except Exception as e:
-                error_msg = str(e)
-                logger.error(f"LLM request failed for user {ctx.author}: {e}", exc_info=True)
-                if "offline" in error_msg.lower():
-                    await create_embed_response(
-                        ctx,
-                        f"The LLM appears to be offline. Please check that your local LLM server is running at `{config.get('base_url', 'http://localhost:1234')}`.\n\nTrying to reconnect...",
-                        title="LLM Offline",
-                        color=discord.Color.orange()
-                    )
-                else:
-                    await create_embed_response(
-                        ctx,
-                        f"An error occurred while communicating with the LLM:\n```{error_msg}```",
-                        title="LLM Error",
-                        color=discord.Color.red()
-                    )
+                await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
-    @commands.command(name='think', help='Ask the LLM a question and show its thinking process\nArguments: display_thinking - Show thinking tokens (default: False), question - The question to ask\nExample: !think true What is 2+2?')
+    @commands.command(name='think', help='Ask the LLM a question and show its thinking process.')
     @has_command_permission('manage_guild')
     @command_category("AI Assistant")
     async def think_llm(self, ctx, display_thinking: Optional[bool] = False, *, question: str):
-        """Ask the LLM a question and show the thinking process"""
-        logger.info(f"User {ctx.author} using think command in {ctx.guild.name if ctx.guild else 'DM'}: {question[:100]}{'...' if len(question) > 100 else ''}")
-        
-        config = self.get_llm_config(ctx.guild.id if ctx.guild else None)        # Check LLM provider and then check if enabled accordingly
-        # Get current provider from chatbot_manager
-        from utils.chatbot_manager import chatbot_manager, DEFAULT_CHATBOT_CONFIG
-        global_config = chatbot_manager.config_cache.get("global", DEFAULT_CHATBOT_CONFIG)
-        provider = global_config.get("llm_provider", "local")
+        """Ask the LLM a question and show the thinking process."""
+        logger.info(f"User {ctx.author} using think command: {question[:100]}")
 
-        if provider == "local" and not config.get('enabled', False):
-            logger.warning(f"Local LLM think request denied - feature disabled for guild {ctx.guild.id if ctx.guild else 'DM'}")
-            await create_embed_response(
-                ctx,
-                "The local LLM feature is not enabled. Please ask an administrator to enable it in the bot configuration.",
-                title="LLM Disabled",
-                color=discord.Color.red()
-            )
-            return
-        
-        # For Google AI, check if it's initialized and online
-        if provider == "google_ai" and not self.is_online:
-            logger.warning(f"Google AI LLM think request denied - API not initialized or offline.")
-            await create_embed_response(
-                ctx,
-                "The Google AI LLM is not available. Please ensure your API key is set and valid (`!llm_set_api_key`).",
-                title="Google AI Offline",
-                color=discord.Color.red()
-            )
+        if not self.api_keys and not self.llm_config.get("base_url"):
+            await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        # Send typing indicator
         async with ctx.typing():
             try:
-                logger.debug(f"Making LLM thinking request for user {ctx.author}")
-                response, performance_metrics = await self.make_llm_request(question, thinking=True, guild_id=ctx.guild.id if ctx.guild else None)
-                # Strip thinking tokens if display_thinking is False
+                response, performance_metrics = await self.make_llm_request(
+                    prompt=question,
+                    thinking=True,
+                    guild_id=ctx.guild.id if ctx.guild else None
+                )
+                
                 if not display_thinking:
                     cleaned_response, _ = self.strip_thinking_tokens(response)
-                    response = cleaned_response
-                
-                await self.send_llm_response(ctx, response, question, thinking=True, performance_metrics=performance_metrics)
-                logger.info(f"Successfully processed LLM thinking request for user {ctx.author}")
-                    
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"LLM thinking request failed for user {ctx.author}: {e}", exc_info=True)
-                if "offline" in error_msg.lower():
-                    await create_embed_response(
-                        ctx,
-                        f"The LLM appears to be offline. Please check that your local LLM server is running at `{config.get('base_url', 'http://localhost:1234')}`.\n\nTrying to reconnect...",
-                        title="LLM Offline",
-                        color=discord.Color.orange()
-                    )
+                    await self.send_llm_response(ctx, cleaned_response, question, thinking=False, performance_metrics=performance_metrics)
                 else:
-                    await create_embed_response(
-                        ctx,
-                        f"An error occurred while processing your request: {error_msg}",
-                        title="LLM Error",
-                        color=discord.Color.red()
-                    )
+                    await self.send_llm_response(ctx, response, question, thinking=True, performance_metrics=performance_metrics)
+            except Exception as e:
+                await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
-    @commands.command(name='llm_status', help='Check the status of the LLM connection')
+    @commands.command(name='llm_status', help='Check the status of all configured LLM providers.')
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
     async def llm_status(self, ctx):
-        """Check the status of the LLM connection"""
-        logger.info(f"User {ctx.author} checking LLM status in {ctx.guild.name if ctx.guild else 'DM'}")
+        """Checks the status of all configured LLM providers."""
+        logger.info(f"User {ctx.author} checking LLM provider status.")
+        await ctx.typing()
         
-        config = self.get_llm_config(ctx.guild.id if ctx.guild else None)
-        provider = config.get("provider", "local") # Get provider from the loaded LLM config
+        await self.check_all_providers_status()
         
-        status_emoji = "❓"
-        status_text = "Unknown"
-        color = discord.Color.greyple()
-        model_display = self.current_model or "Not configured"
+        embed = discord.Embed(title="LLM Provider Status", color=discord.Color.blue())
         
-        if provider == "local":
-            if not config.get('enabled', False):
-                logger.debug(f"LLM status check - local LLM disabled for guild {ctx.guild.id if ctx.guild else 'DM'}")
-                await create_embed_response(
-                    ctx,
-                    "❌ Local LLM is disabled in configuration.",
-                    title="LLM Status",
-                    color=discord.Color.red()
-                )
-                return
+        if not self.provider_status:
+            embed.description = "No providers configured or checked."
+            await ctx.send(embed=embed)
+            return
 
-            # Force a status check for local LLM
-            logger.debug("Performing local LLM status check")
-            is_online = await self.check_llm_status(ctx.guild.id if ctx.guild else None)
-            
+        for provider, is_online in self.provider_status.items():
             status_emoji = "✅" if is_online else "❌"
             status_text = "Online" if is_online else "Offline"
-            color = discord.Color.green() if is_online else discord.Color.red()
-            model_display = self.current_model or config.get('model', 'Not configured')
+            embed.add_field(name=f"{status_emoji} {provider.title()}", value=status_text, inline=True)
             
-            await create_embed_response(
-                ctx,
-                f"{status_emoji} **Status**: {status_text}\n"
-                f"🌐 **Provider**: Local LLM at `{config.get('base_url', 'Not configured')}`\n"
-                f"🤖 **Model**: `{model_display}`\n"
-                f"⏱️ **Timeout**: {config.get('timeout', 120)} seconds",
-                title="LLM Status",
-                color=color
-            )
-        elif provider == "google_ai":
-            # For Google AI, status is determined by _init_google_ai
-            is_online = self.is_online
-            status_emoji = "✅" if is_online else "❌"
-            status_text = "Online" if is_online else "Offline"
-            color = discord.Color.green() if is_online else discord.Color.red()
-            
-            model_display = self.current_model or config.get("google_ai_model_name", "gemma-3-27b-it")
-            
-            await create_embed_response(
-                ctx,
-                f"{status_emoji} **Status**: {status_text}\n"
-                f"🌐 **Provider**: Google AI (Cloud)\n"
-                f"🤖 **Model**: `{model_display}`\n"
-                f"🔑 **API Key Status**: {'Configured' if config.get('google_ai_api_key') else 'Not Set'}",
-                title="LLM Status",
-                color=color
-            )
-        
-        logger.info(f"LLM status check result: {status_text}, model: {model_display}")
+        embed.add_field(name="Preferred Model", value=f"`{self.current_model}`", inline=False)
+
+        await ctx.send(embed=embed)
     
-    @commands.command(name='llm_models', help='List available models for the current LLM provider (local or Google AI)\nArguments: filters - "all", "pro_vision_tts", or leave empty for default (gemma/2.5-flash)\nExample: !llm_models pro_vision_tts')
+    def load_model_filters(self) -> Dict[str, Any]:
+        """Load model filters from data/model_filters.json"""
+        filters_path = "data/model_filters.json"
+        if os.path.exists(filters_path):
+            try:
+                with open(filters_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load model filters from {filters_path}: {e}")
+        return {}
+
+    @commands.command(name='llm_models', help='List available models from providers with filtering.')
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
-    async def list_models(self, ctx, filters: Optional[str] = None):
-        """List all available models for the current LLM provider with optional filters"""
-        logger.info(f"User {ctx.author} requesting model list in {ctx.guild.name if ctx.guild else 'DM'} with filters: {filters}")
-        
-        config = self.get_llm_config(ctx.guild.id if ctx.guild else None)        # Get current provider from chatbot_manager
-        provider = config.get("provider", "local")
-        
-        # For local provider, check if LLM is enabled
-        config = self.get_llm_config(ctx.guild.id if ctx.guild else None)
-        if provider == "local" and not config.get('enabled', False):
-            logger.warning(f"Model list request denied - local LLM feature disabled for guild {ctx.guild.id if ctx.guild else 'DM'}")
-            await create_embed_response(
-                ctx,
-                "The local LLM feature is not enabled. Please ask an administrator to enable it in the bot configuration.",
-                title="LLM Disabled",
-                color=discord.Color.red()
-            )
-            return
-        
-        async with ctx.typing():
-            try:
-                # Determine filtering parameters for _get_google_ai_models
-                apply_default_filter = True
-                include_all_gemini_pro_vision_tts = False
-                filter_description = "gemma and 2.5 flash variants"
+    async def list_models(self, ctx, *args):
+        """
+        List available models with advanced filtering.
+        Usage: !llm_models [provider] [filter] [file]
+        - No args: List all providers with default filters.
+        - [provider]: List models for a specific provider.
+        - [provider] [filter]: Apply a text filter to a provider's models.
+        - [filter]: Apply a text filter to all providers.
+        - "all" as filter: Disables default filters.
+        - "file": Outputs the list to a file.
+        """
+        # Parse arguments
+        provider_filter = None
+        text_filter = None
+        output_to_file = False
 
-                if filters:
-                    filters_lower = filters.lower()
-                    if filters_lower == "all":
-                        apply_default_filter = False
-                        filter_description = "all supported models"
-                    elif filters_lower == "pro_vision_tts":
-                        apply_default_filter = True # Still applies default filter but expands it
-                        include_all_gemini_pro_vision_tts = True
-                        filter_description = "pro, vision, tts, gemma, and 2.5 flash models"
-                    else:
-                        await create_embed_response(
-                            ctx,
-                            f"Invalid filter option: `{filters}`. Use `all`, `pro_vision_tts`, or leave empty for default.",
-                            title="Invalid Filter",
-                            color=discord.Color.orange()
-                        )
-                        return
+        # This logic is complex because arguments are optional and positional
+        # A simple state machine to parse args
+        possible_args = list(args)
+        if possible_args:
+            # Check for 'file' keyword anywhere
+            if "file" in [arg.lower() for arg in possible_args]:
+                output_to_file = True
+                possible_args = [arg for arg in possible_args if arg.lower() != "file"]
+
+            # First argument could be a provider or a filter
+            if possible_args:
+                first_arg = possible_args.pop(0)
+                # Check if it's a known provider
+                all_providers = list(self.api_keys.keys())
+                if self.llm_config.get("base_url"):
+                    all_providers.append("local")
                 
-                # Get models based on provider
-                if provider == "google_ai":
-                    models = self._get_google_ai_models(apply_default_filter=apply_default_filter,
-                                                        include_all_gemini_pro_vision_tts=include_all_gemini_pro_vision_tts)
-                    provider_name = "Google AI"
-                    current_model = config.get("google_ai_model_name", "gemma-3-27b-it")
-                    provider_info = "Google AI (cloud)"
-                else: # local provider
-                    models = await self.get_available_models(ctx.guild.id if ctx.guild else None, verbose_logging=True)
-                    provider_name = "Local LLM"
-                    current_model = self.current_model # This should reflect the model chosen by cog_load or a previous select
-                    filter_description = "all local models" # Filters don't apply to local models
-                    provider_info = f"local server at `{config.get('base_url', 'http://localhost:1234')}`"
-                
-                if not models:
-                    logger.warning(f"No models found for {provider} provider for guild {ctx.guild.id if ctx.guild else 'DM'}")
-                    
-                    if provider == "google_ai":
-                        error_message = "No Google AI models found. Please check your API key with `!llm_set_api_key` and ensure connectivity."
-                    else:
-                        error_message = f"No models found on the local LLM server at `{config.get('base_url', 'http://localhost:1234')}`. Please check that the server is running and has models loaded."
-                    
-                    await create_embed_response(
-                        ctx,
-                        error_message,
-                        title="No Models Found",
-                        color=discord.Color.orange()
-                    )
+                if first_arg.lower() in [p.lower() for p in all_providers]:
+                    provider_filter = first_arg
+                    # If there's another argument, it's the text filter
+                    if possible_args:
+                        text_filter = possible_args.pop(0)
+                else:
+                    # It's a text filter
+                    text_filter = first_arg
+
+        logger.info(f"User {ctx.author} requesting model list. Provider: {provider_filter}, Filter: {text_filter}, File: {output_to_file}")
+        await ctx.typing()
+
+        try:
+            all_models = await self.llm_client.get_all_available_models(grouped=True)
+            if self.llm_config.get("base_url"):
+                try:
+                    local_models = await self.llm_client.get_available_models("local")
+                    if local_models:
+                        all_models["local"] = local_models
+                except Exception as e:
+                    logger.warning(f"Could not fetch local models: {e}")
+
+            if not all_models:
+                await create_embed_response(ctx, "No models found for any provider.", title="No Models Found", color=discord.Color.orange())
+                return
+
+            model_filters = self.load_model_filters()
+            
+            sections = []
+            total_model_count = 0
+            
+            providers_to_show = sorted(all_models.keys())
+            if provider_filter:
+                providers_to_show = [p for p in providers_to_show if provider_filter.lower() == p.lower()]
+                if not providers_to_show:
+                    await create_embed_response(ctx, f"Provider '{provider_filter}' not found or has no models.", title="Provider Not Found", color=discord.Color.orange())
                     return
-                
-                # Format the models list
-                model_list = []
-                for i, model in enumerate(models, 1):
-                    # Mark current model with an indicator
-                    indicator = "🟢 " if model == current_model else "⚪ "
-                    
-                    preferred_mark = ""
-                    if provider == "local":
-                        # For local LLM, we save a preferred model in server config
-                        server_config = self.get_llm_config(ctx.guild.id if ctx.guild else None)
-                        if model == server_config.get("preferred_model"):
-                            preferred_mark = " (preferred for this server)"
-                    elif provider == "google_ai":
-                        # For Google AI, the selected model is global
-                        if model == config.get("google_ai_model_name"):
-                            preferred_mark = " (selected)"
 
-                    model_list.append(f"{indicator}{i}. `{model}`{preferred_mark}")
+            for provider in providers_to_show:
+                models = all_models.get(provider, [])
+                if not models:
+                    continue
+
+                # Apply default filters
+                filtered_models = models
+                use_default_filter = text_filter is None or text_filter.lower() != 'all'
                 
-                description = f"Available {provider_name} models ({filter_description}) on {provider_info}:\n\n"
-                description += "\n".join(model_list)
-                description += f"\n\n🟢 = Currently active/selected model\nUse `!llm_select <model_name>` or `!llm_select <number>` to select a different model"
+                if use_default_filter and provider in model_filters:
+                    filter_config = model_filters[provider]
+                    if filter_config.get("type") == "exact_match":
+                        # This keeps only the models listed in the filter file
+                        filtered_models = [m for m in models if m in filter_config.get("models", [])]
+
+                # Apply user's text filter
+                if text_filter and text_filter.lower() != 'all':
+                    filtered_models = [m for m in filtered_models if text_filter.lower() in m.lower()]
+
+                if filtered_models:
+                    model_lines = []
+                    for model in sorted(filtered_models):
+                        indicator = "🟢" if model == self.current_model else "⚪️"
+                        model_lines.append(f"{indicator} `{model}`")
+                    
+                    sections.append({
+                        "name": f"{provider.upper()} ({len(filtered_models)} models)",
+                        "content": "\n".join(model_lines),
+                        "inline": False
+                    })
+                    total_model_count += len(filtered_models)
+
+            if not sections:
+                await create_embed_response(ctx, "No models match the specified criteria.", title="No Models Found", color=discord.Color.orange())
+                return
+
+            # Prepare for output
+            title = "Available LLM Models"
+            description = f"Found **{total_model_count}** models matching your criteria.\nCurrently selected: `{self.current_model}`"
+            
+            if output_to_file:
+                file_content = f"{title}\n{description}\n\n"
+                for section in sections:
+                    file_content += f"--- {section['name']} ---\n"
+                    # We need to clean up the content for the text file
+                    clean_content = section['content'].replace('`', '').replace('🟢', '->').replace('⚪️', '  ')
+                    file_content += f"{clean_content}\n\n"
                 
-                logger.info(f"Successfully retrieved {len(models)} models for user {ctx.author}")
+                file_content += "Use `!llm_select <model_name>` to choose a model."
+                
+                with open("model_list.txt", "w", encoding="utf-8") as f:
+                    f.write(file_content)
+                await ctx.send("Here is the list of models as a file:", file=discord.File("model_list.txt"))
+                os.remove("model_list.txt")
+            else:
                 await create_embed_response(
                     ctx,
-                    description,
-                    title="Available LLM Models",
+                    description=description,
+                    sections=sections,
+                    title=title,
+                    footer_text="Use `!llm_select <model_name>` to choose a model.",
                     color=discord.Color.blue()
                 )
-                
-            except Exception as e:
-                logger.error(f"Failed to retrieve models for user {ctx.author}: {e}", exc_info=True)
-                await create_embed_response(
-                    ctx,
-                    f"Failed to retrieve models from the LLM server: {str(e)}",
-                    title="Error",
-                    color=discord.Color.red()
-                )
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve models: {e}", exc_info=True)
+            await create_embed_response(ctx, f"An error occurred: {e}", title="Error", color=discord.Color.red())
     
-    @commands.command(name='llm_select', help='Select a specific model to use for LLM requests (works with both local and Google AI models)\nArguments: model_name - The name or number of the model to select\nExample: !llm_select gpt-3.5-turbo OR !llm_select 2 OR !llm_select gemini-pro')
+    @commands.command(name='llm_select', help='Select a preferred model to use for LLM requests.')
     @has_command_permission('manage_guild')
     @command_category("AI Assistant")
     async def select_model(self, ctx, *, model_input: str):
-        """Select a specific model for LLM requests for both local and Google AI providers"""
-        logger.info(f"User {ctx.author} attempting to select model '{model_input}' in {ctx.guild.name if ctx.guild else 'DM'}")
-        
-        config = self.get_llm_config(ctx.guild.id if ctx.guild else None)        # Get the global configuration to check the provider
-        provider = config.get("provider", "local")
-        
-        # Get the appropriate config based on provider
-        
-        if not config.get('enabled', False) and provider == "local":
-            logger.warning(f"Model selection denied - feature disabled for guild {ctx.guild.id if ctx.guild else 'DM'}")
-            await create_embed_response(
-                ctx,
-                "The LLM feature is not enabled. Please ask an administrator to enable it in the bot configuration.",
-                title="LLM Disabled",
-                color=discord.Color.red()
-            )
+        """
+        Select a preferred model for all LLM requests.
+        Usage: !llm_select [model_name]
+               !llm_select manual [model_name]
+        """
+        logger.info(f"User {ctx.author} attempting to select model '{model_input}'.")
+        await ctx.typing()
+
+        model_parts = model_input.strip().split()
+        is_manual_set = False
+        model_name_to_set = ""
+
+        if len(model_parts) > 1 and model_parts[0].lower() == 'manual':
+            is_manual_set = True
+            model_name_to_set = model_parts[1]
+        else:
+            model_name_to_set = model_input.strip()
+
+        if is_manual_set:
+            await self.save_model_to_config(model_name_to_set)
+            await create_embed_response(ctx, f"Manually set preferred model to:\n`{model_name_to_set}`", title="Model Set Manually", color=discord.Color.green())
+            logger.info(f"Manually set model to '{model_name_to_set}' by user {ctx.author}.")
             return
-        
-        async with ctx.typing():
-            try:
-                # Get ALL available models for validation (both by name and number)
-                models = []
-                if provider == "google_ai":
-                    models = self._get_google_ai_models(apply_default_filter=False) # Get unfiltered list for selection
-                    if not models:
-                        await create_embed_response(
-                            ctx,
-                            f"Failed to get available Google AI models.\nPlease check your API key with `!llm_set_api_key`.",
-                            title="Error",
-                            color=discord.Color.red()
-                        )
-                        return
-                else:  # local provider
-                    models = await self.get_available_models(ctx.guild.id if ctx.guild else None, verbose_logging=True)
-                    
-                    if not models:
-                        logger.warning(f"No models available for selection in guild {ctx.guild.id if ctx.guild else 'DM'}")
-                        await create_embed_response(
-                            ctx,
-                            f"No models found on the LLM server. Please check that the server is running.",
-                            title="No Models Available",
-                            color=discord.Color.orange()
-                        )
-                        return
-                
-                # Check if user provided a number instead of a model name
-                model_name = model_input.strip()
-                try:
-                    model_number = int(model_input.strip())
-                    # If input is a valid number and within range, convert to model name
-                    if 1 <= model_number <= len(models):
-                        model_name = models[model_number - 1]
-                        logger.debug(f"Converted model number {model_number} to model name '{model_name}'")
-                    else:
-                        await create_embed_response(
-                            ctx,
-                            f"Model number {model_number} is out of range. Available models are numbered from 1 to {len(models)}.",
-                            title="Invalid Model Number",
-                            color=discord.Color.orange()
-                        )
-                        return
-                except ValueError:
-                    # Input was not a number, continue with model name
-                    pass
-                
-                # Check if the requested model is available
-                if model_name not in models:
-                    logger.info(f"Model '{model_name}' not found, looking for partial matches")
-                    # Try to find a partial match
-                    partial_matches = [m for m in models if model_name.lower() in m.lower()]
-                    
-                    # If exactly one partial match, auto-select it
-                    if len(partial_matches) == 1:
-                        model_name = partial_matches[0]
-                        logger.info(f"Auto-selecting the only matching model: {model_name}")
-                    elif partial_matches:
-                        suggestion = f"\n\nDid you mean one of these?\n" + "\n".join([f"• `{m}`" for m in partial_matches[:5]])
-                        await create_embed_response(
-                            ctx,
-                            f"Model `{model_name}` not found.{suggestion}",
-                            title="Model Not Found",
-                            color=discord.Color.orange()
-                        )
-                        return
-                    else:
-                        suggestion = f"\n\nAvailable models:\n" + "\n".join([f"• `{m}`" for m in models[:10]])
-                        await create_embed_response(
-                            ctx,
-                            f"Model `{model_name}` not found.{suggestion}",
-                            title="Model Not Found",
-                            color=discord.Color.orange()
-                        )
-                        return
-                
-                # Handle model selection based on provider
-                if provider == "google_ai":
-                    # Update model in the global config
-                    old_model = config.get("google_ai_model_name", "gemma-3-27b-it")
-                    # Save the updated model name to the LLM config file
-                    try:
-                        from config.llm_config_manager import load_llm_config, save_llm_config
-                        
-                        # Load the actual LLM config
-                        llm_config_to_save = load_llm_config()
-                        
-                        # Update the model name
-                        llm_config_to_save["google_ai_model_name"] = model_name
-                        
-                        # Save the updated config
-                        success = save_llm_config(llm_config_to_save)
-                        config_for_init = llm_config_to_save # Use this config for re-initialization
-                        
-                    except ImportError:
-                        # Fallback to chatbot_manager if llm_config_manager is not available
-                        logger.warning("LLM config manager not available for saving Google AI model, falling back to chatbot_manager")
-                        from utils.chatbot_manager import chatbot_manager, DEFAULT_CHATBOT_CONFIG
-                        global_config = chatbot_manager.config_cache.get("global", DEFAULT_CHATBOT_CONFIG)
-                        
-                        # Update API key in the config
-                        global_config["google_ai_model_name"] = model_name
-                        
-                        # Save the config
-                        chatbot_manager.config_cache["global"] = global_config
-                        success = chatbot_manager.save_config()
-                        config_for_init = global_config # Use this config for re-initialization
-                    
-                    if not success:
-                        await create_embed_response(
-                            ctx,
-                            f"Failed to save configuration. Model not changed.",
-                            title="Error",
-                            color=discord.Color.red()
-                        )
-                        return
-                    
-                    # Update current model and re-initialize Google AI client for new model
-                    self.current_model = model_name
-                    self._init_google_ai(config_for_init) # Re-init the client with the saved config
-                    
-                    if not self.is_online:
-                        await create_embed_response(
-                            ctx,
-                            f"Successfully set Google AI model to `{model_name}`, but failed to connect.\nPlease check your API key with `!llm_set_api_key`.",
-                            title="Model Updated - Connection Failed",
-                            color=discord.Color.orange()
-                        )
-                        return
 
-                    await create_embed_response(
-                        ctx,
-                        f"Successfully set Google AI model to `{model_name}`. This model will now be used globally.",
-                        title="Model Updated",
-                        color=discord.Color.green()
-                    )
-                    
-                    logger.info(f"Google AI model changed from {old_model} to {model_name} by {ctx.author}")
-                else:  # local provider
-                    # Update preferred model and save to config
-                    old_model = self.preferred_model
-                    self.preferred_model = model_name
-                    self.current_model = model_name # Set current model here immediately
-                    logger.debug(f"Updated current local model from '{old_model}' to '{model_name}'")
-                    
-                    # Save to config
-                    await self.save_model_to_config(model_name, ctx.guild.id if ctx.guild else None)
-                    
-                    # Test the model by making a simple request
-                    try:
-                        logger.debug(f"Testing local model '{model_name}' with simple request")
-                        _, _ = await self.make_llm_request("Hello", max_tokens=10, guild_id=ctx.guild.id if ctx.guild else None)
-                        
-                        logger.info(f"Successfully selected and tested local model '{model_name}' for user {ctx.author}")
-                        await create_embed_response(
-                            ctx,
-                            f"Successfully selected local model: `{model_name}`\n\nThis model will now be used for all local LLM requests and will be remembered for future sessions.",
-                            title="Model Selected",
-                            color=discord.Color.green()
-                        )
-                        
-                    except Exception as test_error:
-                        # Revert to old model if test fails
-                        logger.warning(f"Local model test failed for '{model_name}', reverting to '{old_model}': {test_error}")
-                        self.preferred_model = old_model
-                        self.current_model = old_model
-                        
-                        await create_embed_response(
-                            ctx,
-                            f"Failed to connect to local model `{model_name}`: {str(test_error)}\n\nModel selection reverted to previous model.",
-                            title="Model Test Failed",
-                            color=discord.Color.red()
-                        )
-                    
-            except Exception as e:
-                logger.error(f"Failed to select model '{model_name}' for user {ctx.author}: {e}", exc_info=True)
-                await create_embed_response(
-                    ctx,
-                    f"Failed to select model: {str(e)}",
-                    title="Error",
-                    color=discord.Color.red()
-                )    
-    
-    @commands.command(name='llm_provider', help='Switch between locally hosted LLM and Google AI (cloud)\nArguments: provider - "local" or "google_ai"\nExample: !llm_provider google_ai')
-    @has_command_permission('manage_guild')
-    @command_category("AI Assistant")
-    async def set_llm_provider(self, ctx, provider: str):
-        """Set the LLM provider to use (local or google_ai)"""
-        logger.info(f"User {ctx.author} attempting to set LLM provider to '{provider}' in {ctx.guild.name if ctx.guild else 'DM'}")
-        
-        provider = provider.lower()
-        if provider not in ["local", "google_ai"]:
-            await create_embed_response(
-                ctx,
-                f"Invalid provider: '{provider}'. Valid options are 'local' or 'google_ai'.",
-                title="Invalid Provider",
-                color=discord.Color.red()
-            )
-            return
-        
-        async with ctx.typing():
-            try:
-                from config.llm_config_manager import load_llm_config, save_llm_config
-                
-                # Load current config
-                llm_config = load_llm_config()
-                old_provider = llm_config.get("provider", "local")
-                
-                # Update provider in the config
-                llm_config["provider"] = provider
-                
-                # Save the config
-                success = save_llm_config(llm_config)
-                
-                if not success:
-                    await create_embed_response(
-                        ctx,
-                        f"Failed to save configuration. Provider not changed.",
-                        title="Error",
-                        color=discord.Color.red()
-                    )
-                    return
-            except ImportError:
-                # Fallback to chatbot_manager if llm_config_manager is not available
-                logger.warning("LLM config manager not available, falling back to chatbot_manager")
-                from utils.chatbot_manager import chatbot_manager, DEFAULT_CHATBOT_CONFIG
-                global_config = chatbot_manager.config_cache.get("global", DEFAULT_CHATBOT_CONFIG)
-                old_provider = global_config.get("llm_provider", "local")
-                
-                # Update provider in the config
-                global_config["llm_provider"] = provider
-                
-                # Save the config
-                chatbot_manager.config_cache["global"] = global_config
-                success = chatbot_manager.save_config()
-                
-                if not success:
-                    await create_embed_response(
-                        ctx,
-                        f"Failed to save configuration. Provider not changed.",
-                        title="Error",
-                        color=discord.Color.red()
-                    )
-                    return
-            
-            # Update current provider in instance
-            self.llm_provider = provider
-            
-            # Get config for provider initialization
-            try:
-                from config.llm_config_manager import load_llm_config
-                config_for_init = load_llm_config()
-            except ImportError:
-                from utils.chatbot_manager import chatbot_manager
-                config_for_init = chatbot_manager.config_cache.get("global", {})
-            
-            # Initialize provider-specific components
-            if provider == "google_ai":
-                # Try to initialize Google AI client
-                self._init_google_ai(config_for_init)
-                
-                if not self.is_online:
-                    # If we can't initialize, provide detailed error
-                    await create_embed_response(
-                        ctx,
-                        f"Failed to connect to Google AI API. Please check your API key with `!llm_set_api_key`.\n\nProvider changed to {provider}, but connection failed.",
-                        title="Connection Failed",
-                        color=discord.Color.orange()
-                    )
-                    return
-                
-                await create_embed_response(
-                    ctx,
-                    f"Successfully switched to Google AI provider.\n\nUse `!llm_models` to see available models and `!llm_select` to select one.",
-                    title="Provider Changed",
-                    color=discord.Color.green()
-                )
-                
-            else:  # local
-                # Check if the local LLM is online
-                await self.check_llm_status()
-                
-                if not self.is_online:
-                    await create_embed_response(
-                        ctx,
-                        f"Provider changed to {provider}, but local LLM appears to be offline.\nMake sure your local LLM server is running.",
-                        title="Provider Changed - Warning",
-                        color=discord.Color.orange()
-                    )
-                    return
-                    
-                await create_embed_response(
-                    ctx,
-                    f"Successfully switched to local LLM provider.\n\nUse `!llm_models` to see available models and `!llm_select` to select one.",
-                    title="Provider Changed",
-                    color=discord.Color.green()
-                )
-            
-            logger.info(f"LLM provider changed from {old_provider} to {provider} by {ctx.author}")
-            
-
-
-    @commands.command(name='llm_set_api_key', help='Set Google AI API key for cloud LLM\nArguments: api_key - Your Google AI API key\nExample: !llm_set_api_key YOUR_API_KEY')
-    @has_command_permission('manage_guild')
-    @command_category("AI Assistant")
-    async def set_google_ai_api_key(self, ctx, api_key: str):
-        """Set the Google AI API key for cloud LLM"""
-        logger.info(f"User {ctx.author} attempting to set Google AI API key in {ctx.guild.name if ctx.guild else 'DM'}")
-        
-        # Delete the user's message to protect the API key
         try:
-            await ctx.message.delete()
-        except Exception as e:
-            logger.warning(f"Could not delete message with API key: {e}")
-        
-        async with ctx.typing():
+            all_models_grouped = await self.llm_client.get_all_available_models(grouped=True)
+            all_models_flat = [model for models in all_models_grouped.values() for model in models]
+
+            if not all_models_flat:
+                await create_embed_response(ctx, "No models available to select.", title="Error", color=discord.Color.red())
+                return
+
+            # Handle selection by number
             try:
-                # Use the new LLM config system
-                from config.llm_config_manager import load_llm_config, save_llm_config
-                
-                # Load current config
-                llm_config = load_llm_config()
-                
-                # Update API key in the config
-                llm_config["google_ai_api_key"] = api_key
-                
-                # Save the config
-                success = save_llm_config(llm_config)
-            except ImportError:
-                # Fall back to chatbot_manager if llm_config_manager is not available
-                logger.warning("LLM config manager not available, falling back to chatbot_manager")
-                from utils.chatbot_manager import chatbot_manager, DEFAULT_CHATBOT_CONFIG
-                global_config = chatbot_manager.config_cache.get("global", DEFAULT_CHATBOT_CONFIG)
-                
-                # Update API key in the config
-                global_config["google_ai_api_key"] = api_key
-                
-                # Save the config
-                chatbot_manager.config_cache["global"] = global_config
-                success = chatbot_manager.save_config()
-            
-            if not success:
-                await create_embed_response(
-                    ctx,
-                    f"Failed to save configuration. API key not updated.",
-                    title="Error",
-                    color=discord.Color.red()
-                )
-                return
-            
-            # Try to initialize Google AI client with the new key
-            # Pass the updated config, which now includes the new API key
-            self._init_google_ai(llm_config) # Use llm_config here as it's updated
-            
-            if not self.is_online:
-                await create_embed_response(
-                    ctx,
-                    f"API key saved, but failed to connect to Google AI API.\nPlease check that the key is valid and you have models available.",
-                    title="API Key Saved - Connection Failed",
-                    color=discord.Color.orange()
-                )
-                return
-                
-            await create_embed_response(
-                ctx,
-                f"API key saved successfully and connection verified.\n\nUse `!llm_provider google_ai` to switch to Google AI provider.",
-                title="API Key Saved",
-                color=discord.Color.green()
-            )
-            
-            logger.info(f"Google AI API key updated by {ctx.author}")
+                model_number = int(model_name_to_set)
+                if 1 <= model_number <= len(all_models_flat):
+                    model_name_to_set = all_models_flat[model_number - 1]
+                else:
+                    await create_embed_response(ctx, f"Invalid number. Please choose between 1 and {len(all_models_flat)}.", title="Error", color=discord.Color.orange())
+                    return
+            except ValueError:
+                pass # Input is not a number, treat as a name
+
+            # Validate model name
+            if model_name_to_set not in all_models_flat:
+                # Try partial match
+                partial_matches = [m for m in all_models_flat if model_name_to_set.lower() in m.lower()]
+                if len(partial_matches) == 1:
+                    model_name_to_set = partial_matches[0]
+                else:
+                    suggestions = "\n".join(f"- `{m}`" for m in partial_matches[:5])
+                    msg = f"Model `{model_name_to_set}` not found."
+                    if suggestions:
+                        msg += f"\n\nDid you mean one of these?\n{suggestions}"
+                    await create_embed_response(ctx, msg, title="Model Not Found", color=discord.Color.orange())
+                    return
+
+            # Save the selected model
+            await self.save_model_to_config(model_name_to_set)
+            await create_embed_response(ctx, f"Preferred model set to:\n`{model_name_to_set}`", title="Model Selected", color=discord.Color.green())
+
+        except Exception as e:
+            logger.error(f"Failed to select model: {e}", exc_info=True)
+            await create_embed_response(ctx, f"An error occurred: {e}", title="Error", color=discord.Color.red())
+    
+    # Note: The llm_provider and llm_set_api_key commands are now obsolete,
+    # as the provider is determined by the model name and keys are loaded from .env.
+    # They are removed to avoid confusion.
     
     @commands.command(name='chatbot_enable')
     @has_command_permission("chatbot_enable")
     @command_category("AI Assistant")
     async def chatbot_enable(self, ctx):
-        """Enable chatbot mode for this channel"""
+        """Enable chatbot mode for this channel."""
         try:
             from utils.chatbot_manager import chatbot_manager
             
-            guild_id = ctx.guild.id if ctx.guild else None
-            channel_id = ctx.channel.id
-            
+            guild_id = ctx.guild.id
             if not guild_id:
-                await create_embed_response(
-                    ctx,
-                    "Chatbot mode can only be enabled in server channels, not in DMs.",
-                    title="Error",
-                    color=discord.Color.red()
-                )
-                return
-            
-            # Check if LLM is configured and online for the current provider
-            current_llm_config = self.get_llm_config(guild_id)
-            current_provider = current_llm_config.get("provider", "local")
-
-            is_online = False
-            if current_provider == "local":
-                is_online = await self.check_llm_status(guild_id)
-            elif current_provider == "google_ai":
-                is_online = self.is_online # Status is set by _init_google_ai
-
-            if not is_online:
-                provider_name = "LLM service"
-                if current_provider == "local":
-                    provider_name = f"Local LLM server at `{current_llm_config.get('base_url', 'http://localhost:1234')}`"
-                elif current_provider == "google_ai":
-                    provider_name = "Google AI API"
-                    if not current_llm_config.get('google_ai_api_key'):
-                        provider_name += " (API key not set)"
-
-                await create_embed_response(
-                    ctx,
-                    f"The {provider_name} is not available. Please ensure it is running and accessible.",
-                    title="LLM Service Unavailable",
-                    color=discord.Color.red()
-                )
+                await create_embed_response(ctx, "Chatbot mode can only be enabled in server channels.", title="Error", color=discord.Color.red())
                 return
 
-            # Pass guild and channel objects to enable_chatbot for indexing
-            success = await chatbot_manager.enable_chatbot(guild_id, channel_id, ctx.guild, ctx.channel)
+            # Check if any LLM provider is online
+            await self.check_all_providers_status()
+            if not any(self.provider_status.values()):
+                await create_embed_response(ctx, "No LLM providers are online. Cannot enable chatbot mode.", title="LLM Service Unavailable", color=discord.Color.red())
+                return
 
+            success = await chatbot_manager.enable_chatbot(guild_id, ctx.channel.id, ctx.guild, ctx.channel)
             if success:
-                channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
+                channel_config = chatbot_manager.get_channel_config(guild_id, ctx.channel.id)
                 await create_embed_response(
                     ctx,
                     f"✅ Chatbot mode enabled for {ctx.channel.mention}\n\n"
@@ -2133,28 +1122,15 @@ class LLMCommands(commands.Cog):
                     f"• Responds to replies: {'Yes' if channel_config.auto_respond_to_replies else 'No'}\n"
                     f"• Context window: {channel_config.context_window_hours} hours\n"
                     f"• Max context messages: {channel_config.max_context_messages}\n"
-                    f"• Max user context messages: {channel_config.max_user_context_messages}\n\n"
-                    f"The bot will now respond when mentioned or when users reply to its messages in this channel.",
+                    f"• Max user context messages: {channel_config.max_user_context_messages}",
                     title="Chatbot Mode Enabled",
                     color=discord.Color.green()
                 )
-                logger.info(f"Chatbot mode enabled for channel {ctx.channel.name} ({channel_id}) in guild {ctx.guild.name} ({guild_id}) by {ctx.author}")
             else:
-                await create_embed_response(
-                    ctx,
-                    "Failed to enable chatbot mode. Please try again.",
-                    title="Error",
-                    color=discord.Color.red()
-                )
-                
+                await create_embed_response(ctx, "Failed to enable chatbot mode.", title="Error", color=discord.Color.red())
         except Exception as e:
             logger.error(f"Error enabling chatbot mode: {e}", exc_info=True)
-            await create_embed_response(
-                ctx,
-                f"An error occurred while enabling chatbot mode: {str(e)}",
-                title="Error",
-                color=discord.Color.red()
-            )   
+            await create_embed_response(ctx, f"An error occurred: {str(e)}", title="Error", color=discord.Color.red())
     
     @commands.command(name='chatbot_disable')
     @has_command_permission("chatbot_disable")
