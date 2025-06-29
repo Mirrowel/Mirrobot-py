@@ -104,8 +104,13 @@ class ConversationManager:
             multimodal_content = []
             if cleaned_content:
                 multimodal_content.append(ContentPart(type="text", text=cleaned_content))
+            
+            IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
             for url in image_urls:
-                multimodal_content.append(ContentPart(type="image_url", image_url={"url": url}))
+                if any(url.lower().endswith(ext) for ext in IMAGE_EXTENSIONS):
+                    multimodal_content.append(ContentPart(type="image_url", image_url={"url": url}))
+                else:
+                    multimodal_content.append(ContentPart(type="document_url", document_url={"url": url}))
 
             temp_conv_message = ConversationMessage(
                 user_id=message.author.id,
@@ -204,21 +209,40 @@ class ConversationManager:
     def _process_discord_message_for_context(self, message: discord.Message) -> Tuple[str, List[str], List[str]]:
         """Processes a discord.Message to extract content, filter media, and prepare for context."""
         cleaned_content = message.content
-        image_urls, video_urls, embed_urls = [], [], []
+        media_urls, video_urls, embed_urls = [], [], []
 
-        # Extract image URLs from message content
+        # Supported extensions
+        IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
+        TEXT_EXTENSIONS = ['.pdf', '.txt', '.log', '.ini', '.json', '.xml', '.csv', '.md']
+        
+        # Extract media URLs from message content
         url_pattern = re.compile(r'https?://\S+')
-        found_urls = url_pattern.findall(cleaned_content)
-        for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                image_urls.append(url)
-                cleaned_content = cleaned_content.replace(url, '').strip()
+        urls_to_remove = []
+        for url in url_pattern.findall(cleaned_content):
+            path = url.split('?')[0]
+            
+            # Clean trailing punctuation
+            cleaned_url = url
+            cleaned_path = path
+            if cleaned_path.endswith(('.', ',', '!', '?')):
+                cleaned_path = cleaned_path[:-1]
+                cleaned_url = cleaned_url[:-1]
+
+            if any(cleaned_path.lower().endswith(ext) for ext in IMAGE_EXTENSIONS + TEXT_EXTENSIONS):
+                if cleaned_url not in media_urls:
+                    media_urls.append(cleaned_url)
+                urls_to_remove.append(url)
+
+        for url in urls_to_remove:
+            cleaned_content = cleaned_content.replace(url, '').strip()
 
         for attachment in message.attachments:
-            if attachment.content_type.startswith('image/'):
-                image_urls.append(attachment.url)
-                if attachment.url in cleaned_content:
-                    cleaned_content = cleaned_content.replace(attachment.url, '').strip()
+            if attachment.content_type and attachment.content_type.startswith('image/'):
+                if attachment.url not in media_urls:
+                    media_urls.append(attachment.url)
+            elif any(attachment.filename.lower().endswith(ext) for ext in IMAGE_EXTENSIONS + TEXT_EXTENSIONS):
+                if attachment.url not in media_urls:
+                    media_urls.append(attachment.url)
             elif attachment.content_type.startswith(('video/', 'image/gif')) or \
                  (attachment.content_type in ['application/x-discord-application', 'application/octet-stream'] and \
                   attachment.filename.lower().endswith(('.mp4', '.mov', '.webm', '.gif'))):
@@ -228,8 +252,9 @@ class ConversationManager:
                 logger.debug(f"Filtered out video/gif attachment URL: {attachment.url}")
 
         for embed in message.embeds:
-            if embed.type == 'image' and embed.url and any(ext in embed.url.lower() for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                image_urls.append(embed.url)
+            if embed.type == 'image' and embed.url and any(ext in embed.url.lower() for ext in IMAGE_EXTENSIONS):
+                if embed.url not in media_urls:
+                    media_urls.append(embed.url)
                 if embed.url in cleaned_content:
                     cleaned_content = cleaned_content.replace(embed.url, '').strip()
             elif embed.type in ['video', 'gifv'] and (embed.url or (embed.video and embed.video.url)):
@@ -242,7 +267,7 @@ class ConversationManager:
             elif embed.url:
                 embed_urls.append(embed.url)
         
-        return re.sub(r'\s+', ' ', cleaned_content).strip(), image_urls, embed_urls
+        return re.sub(r'\s+', ' ', cleaned_content).strip(), media_urls, embed_urls
 
     def check_duplicate_message(self, guild_id: int, channel_id: int, message_id: int) -> bool:
         """Check if a message is already in the conversation history"""
