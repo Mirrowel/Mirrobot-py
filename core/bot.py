@@ -586,6 +586,7 @@ async def handle_chatbot_response(bot, message):
                 response_text, performance_metrics = await llm_cog.make_llm_request(
                     system_prompt=system_prompt_for_llm,
                     context=full_context_string,
+                    model_type="chatbot",
                     max_tokens=min(channel_config.max_response_length, 2000),
                     guild_id=guild_id
                 )

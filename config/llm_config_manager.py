@@ -10,7 +10,12 @@ DEFAULT_LLM_CONFIG = {
     "timeout": 120,
     "max_retries": 2,
     "retry_delay": 5,
-    "preferred_model": "google/gemma-3-27b-it",
+    "models": {
+        "default": "chutes/deepseek-ai/DeepSeek-V3-0324",
+        "chatbot": "chutes/deepseek-ai/DeepSeek-V3-0324",
+        "ask": "chutes/deepseek-ai/DeepSeek-V3-0324",
+        "think": "chutes/deepseek-ai/DeepSeek-R1-0528"
+    },
     "servers": {}
 }
 
@@ -47,7 +52,7 @@ def validate_llm_config(config):
         "timeout": int,
         "max_retries": int,
         "retry_delay": int,
-        "preferred_model": str
+        "models": dict
     }
     
     for field, field_type in required_fields.items():
@@ -55,6 +60,15 @@ def validate_llm_config(config):
             errors.append(f"Missing required LLM field: {field}")
         elif not isinstance(config[field], field_type):
             errors.append(f"LLM field {field} should be of type {field_type.__name__}, got {type(config[field]).__name__}")
+
+    if "models" in config and isinstance(config["models"], dict):
+        for model_type in ["default", "chatbot", "ask", "think"]:
+            if model_type not in config["models"]:
+                errors.append(f"Missing required model type in global 'models': {model_type}")
+            elif not isinstance(config["models"][model_type], str):
+                errors.append(f"Global model for '{model_type}' should be a string.")
+    else:
+        errors.append("Global 'models' field must be a dictionary.")
     
     # Validate server configurations if present
     if "servers" in config and isinstance(config["servers"], dict):
@@ -63,11 +77,17 @@ def validate_llm_config(config):
                 errors.append(f"LLM server config for {server_id} should be a dictionary")
                 continue
             
-            # These fields are now optional or deprecated, but we can check them if they exist
-            # for key in ["enabled", "preferred_model", "last_used_model"]:
-            #     if key not in server_config:
-            #         errors.append(f"Missing field {key} in server config for {server_id}")
-    
+            if "models" not in server_config:
+                errors.append(f"Missing 'models' object in server config for {server_id}")
+            elif not isinstance(server_config["models"], dict):
+                errors.append(f"'models' in server config for {server_id} should be a dictionary")
+            else:
+                for model_type in ["default", "chatbot", "ask", "think"]:
+                    if model_type not in server_config["models"]:
+                        errors.append(f"Missing required model type in 'models' for server {server_id}: {model_type}")
+                    elif not isinstance(server_config["models"][model_type], str):
+                        errors.append(f"Model for '{model_type}' in server {server_id} should be a string.")
+
     if errors:
         for error in errors:
             logger.error(f"LLM config validation error: {error}")
@@ -127,32 +147,6 @@ def save_llm_config(config):
     except Exception as e:
         logger.error(f"Error saving LLM configuration: {e}")
         return False
-
-def get_server_config(config, server_id):
-    """Get server-specific LLM configuration"""
-    servers = config.get("servers", {})
-    server_id_str = str(server_id)
-    
-    if server_id_str in servers:
-        server_config = servers[server_id_str]
-    else:
-        # Create default server config
-        server_config = {
-            "enabled": False,
-            "preferred_model": None,
-            "last_used_model": None
-        }
-    
-    return server_config
-
-def update_server_config(config, server_id, server_config):
-    """Update server-specific LLM configuration"""
-    if "servers" not in config:
-        config["servers"] = {}
-    
-    server_id_str = str(server_id)
-    config["servers"][server_id_str] = server_config
-    return save_llm_config(config)
 
 # This function is now obsolete as configuration is simplified.
 # It can be removed or left for historical purposes if needed.

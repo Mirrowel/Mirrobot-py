@@ -26,7 +26,8 @@ class LLMCommands(commands.Cog):
             api_keys=self.api_keys,
             max_retries=self.llm_config.get("max_retries", 2)
         )
-        self.current_model = self.llm_config.get("preferred_model")
+        # Global default models
+        self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
 
     async def cog_load(self):
@@ -49,18 +50,30 @@ class LLMCommands(commands.Cog):
         # This function can be adapted if server-specific overrides are needed later.
         return self.llm_config
 
-    async def save_model_to_config(self, model_name: str, guild_id: Optional[int] = None):
-        """Save the selected model to the global config."""
-        logger.debug(f"Saving preferred model '{model_name}' to config.")
+    def get_model_for_guild(self, guild_id: Optional[int], model_type: str) -> str:
+        """Get the configured model for a specific type, falling back to globals."""
+        if guild_id:
+            server_config = self.llm_config.get("servers", {}).get(str(guild_id))
+            if server_config and model_type in server_config.get("models", {}):
+                return server_config["models"][model_type]
         
-        # Configuration is now global, not per-guild for model selection
-        self.llm_config["preferred_model"] = model_name
-        self.current_model = model_name
+        # Fallback to global model
+        return self.global_models.get(model_type, self.global_models.get("default"))
+
+    async def save_model_to_config(self, guild_id: int, model_name: str, model_type: str = "default"):
+        """Save the selected model for a specific type to the server's config."""
+        logger.debug(f"Saving model '{model_name}' for type '{model_type}' for guild {guild_id}.")
+        
+        servers = self.llm_config.setdefault("servers", {})
+        server_config = servers.setdefault(str(guild_id), {})
+        server_models = server_config.setdefault("models", self.global_models.copy())
+        
+        server_models[model_type] = model_name
         
         if save_llm_config(self.llm_config):
-            logger.info(f"Saved preferred model '{model_name}' to llm_config.json")
+            logger.info(f"Saved model '{model_name}' for type '{model_type}' for guild {guild_id} to llm_config.json")
         else:
-            logger.error("Failed to save preferred model to config file.")
+            logger.error(f"Failed to save model for guild {guild_id}.")
     
     def get_llm_data_path(self, guild_id: Optional[int] = None) -> str:
         """Get the path to the LLM data directory for a guild"""
@@ -216,7 +229,7 @@ class LLMCommands(commands.Cog):
     async def make_llm_request(
         self, 
         prompt: Optional[str] = None,
-        thinking: bool = False,
+        model_type: str = "default",
         max_tokens: int = 2000,
         temperature: float = 0.7,
         guild_id: Optional[int] = None,
@@ -231,9 +244,10 @@ class LLMCommands(commands.Cog):
         start_time = time.time()
         
         # Determine the model to use
-        target_model = model or self.current_model
+        thinking = model_type == "think"
+        target_model = model or self.get_model_for_guild(guild_id, model_type)
         if not target_model:
-            raise ValueError("No model specified and no preferred model configured.")
+            raise ValueError("No model specified and no default model configured.")
 
         # Prepare prompts
         system_prompt, context = self._prepare_prompts(system_prompt, context, thinking, guild_id)
@@ -529,10 +543,12 @@ class LLMCommands(commands.Cog):
             
         return None
     
-    async def send_llm_response(self, ctx, response: str, question: str, thinking: bool = False, performance_metrics: Optional[Dict[str, Any]] = None):
+    async def send_llm_response(self, ctx, response: str, question: str, model_type: str = "default", performance_metrics: Optional[Dict[str, Any]] = None):
         """Helper function to send LLM response using the new unified embed system"""
-        logger.debug(f"Sending LLM response for thinking={thinking}")
-        model_name = self.current_model or "Unknown Model"
+        thinking = model_type == "think"
+        logger.debug(f"Sending LLM response for model_type={model_type}")
+        guild_id = ctx.guild.id if ctx.guild else None
+        model_name = self.get_model_for_guild(guild_id, model_type) or "Unknown Model"
         
         # Choose color and title based on thinking mode
         color = discord.Color.purple() if thinking else discord.Color.blue()
@@ -805,11 +821,11 @@ class LLMCommands(commands.Cog):
             try:
                 response, performance_metrics = await self.make_llm_request(
                     prompt=question,
-                    thinking=False,
+                    model_type="ask",
                     guild_id=ctx.guild.id if ctx.guild else None
                 )
                 cleaned_response, _ = self.strip_thinking_tokens(response)
-                await self.send_llm_response(ctx, cleaned_response, question, thinking=False, performance_metrics=performance_metrics)
+                await self.send_llm_response(ctx, cleaned_response, question, model_type="ask", performance_metrics=performance_metrics)
             except Exception as e:
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
@@ -828,15 +844,15 @@ class LLMCommands(commands.Cog):
             try:
                 response, performance_metrics = await self.make_llm_request(
                     prompt=question,
-                    thinking=True,
+                    model_type="think",
                     guild_id=ctx.guild.id if ctx.guild else None
                 )
                 
                 if not display_thinking:
                     cleaned_response, _ = self.strip_thinking_tokens(response)
-                    await self.send_llm_response(ctx, cleaned_response, question, thinking=False, performance_metrics=performance_metrics)
+                    await self.send_llm_response(ctx, cleaned_response, question, model_type="ask", performance_metrics=performance_metrics)
                 else:
-                    await self.send_llm_response(ctx, response, question, thinking=True, performance_metrics=performance_metrics)
+                    await self.send_llm_response(ctx, response, question, model_type="think", performance_metrics=performance_metrics)
             except Exception as e:
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
@@ -861,8 +877,14 @@ class LLMCommands(commands.Cog):
             status_emoji = "✅" if is_online else "❌"
             status_text = "Online" if is_online else "Offline"
             embed.add_field(name=f"{status_emoji} {provider.title()}", value=status_text, inline=True)
-            
-        embed.add_field(name="Preferred Model", value=f"`{self.current_model}`", inline=False)
+        
+        guild_id = ctx.guild.id if ctx.guild else None
+        models_info = []
+        for model_type in ["default", "chatbot", "ask", "think"]:
+            model_name = self.get_model_for_guild(guild_id, model_type)
+            models_info.append(f"**{model_type.title()}**: `{model_name}`")
+        
+        embed.add_field(name="Configured Models for this Server", value="\n".join(models_info), inline=False)
 
         await ctx.send(embed=embed)
     
@@ -972,9 +994,20 @@ class LLMCommands(commands.Cog):
 
                 if filtered_models:
                     model_lines = []
+                    guild_id = ctx.guild.id if ctx.guild else None
                     for model in sorted(filtered_models):
-                        indicator = "🟢" if model == self.current_model else "⚪️"
-                        model_lines.append(f"{indicator} `{model}`")
+                        indicators = []
+                        for model_type in ["default", "chatbot", "ask", "think"]:
+                            if model == self.get_model_for_guild(guild_id, model_type):
+                                indicators.append(model_type.title())
+                        
+                        indicator_str = ""
+                        if indicators:
+                            indicator_str = f"🟢 ({', '.join(indicators)})"
+                        else:
+                            indicator_str = "⚪️"
+                            
+                        model_lines.append(f"{indicator_str} `{model}`")
                     
                     sections.append({
                         "name": f"{provider.upper()} ({len(filtered_models)} models)",
@@ -989,7 +1022,14 @@ class LLMCommands(commands.Cog):
 
             # Prepare for output
             title = "Available LLM Models"
-            description = f"Found **{total_model_count}** models matching your criteria.\nCurrently selected: `{self.current_model}`"
+            
+            guild_id = ctx.guild.id if ctx.guild else None
+            models_info = []
+            for model_type in ["default", "chatbot", "ask", "think"]:
+                model_name = self.get_model_for_guild(guild_id, model_type)
+                models_info.append(f"**{model_type.title()}**: `{model_name}`")
+
+            description = f"Found **{total_model_count}** models matching your criteria.\n\n**Models for this Server:**\n" + "\n".join(models_info)
             
             if output_to_file:
                 file_content = f"{title}\n{description}\n\n"
@@ -999,7 +1039,7 @@ class LLMCommands(commands.Cog):
                     clean_content = section['content'].replace('`', '').replace('🟢', '->').replace('⚪️', '  ')
                     file_content += f"{clean_content}\n\n"
                 
-                file_content += "Use `!llm_select <model_name>` to choose a model."
+                file_content += "Use `!llm_select [type] <model_name>` to choose a model (e.g., `!llm_select think <model>`)."
                 
                 with open("model_list.txt", "w", encoding="utf-8") as f:
                     f.write(file_content)
@@ -1011,7 +1051,7 @@ class LLMCommands(commands.Cog):
                     description=description,
                     sections=sections,
                     title=title,
-                    footer_text="Use `!llm_select <model_name>` to choose a model.",
+                    footer_text="Use `!llm_select [type] <model_name>` to choose a model (e.g., `!llm_select think <model>`).",
                     color=discord.Color.blue()
                 )
 
@@ -1019,70 +1059,71 @@ class LLMCommands(commands.Cog):
             logger.error(f"Failed to retrieve models: {e}", exc_info=True)
             await create_embed_response(ctx, f"An error occurred: {e}", title="Error", color=discord.Color.red())
     
-    @commands.command(name='llm_select', help='Select a preferred model to use for LLM requests.')
+    @commands.command(name='llm_select', help='Select a preferred model to use for LLM requests. Usage: `!llm_select [manual] [type] <model_name>`')
     @has_command_permission('manage_guild')
     @command_category("AI Assistant")
-    async def select_model(self, ctx, *, model_input: str):
+    async def select_model(self, ctx, *args):
         """
-        Select a preferred model for all LLM requests.
-        Usage: !llm_select [model_name]
-               !llm_select manual [model_name]
+        Select a preferred model for a specific type (chatbot, ask, think) or default for this server.
+        Usage: !llm_select [manual] [type] <model_name>
+               !llm_select [manual] <model_name> (sets default for this server)
         """
-        logger.info(f"User {ctx.author} attempting to select model '{model_input}'.")
-        await ctx.typing()
-
-        model_parts = model_input.strip().split()
-        is_manual_set = False
-        model_name_to_set = ""
-
-        if len(model_parts) > 1 and model_parts[0].lower() == 'manual':
-            is_manual_set = True
-            model_name_to_set = model_parts[1]
-        else:
-            model_name_to_set = model_input.strip()
-
-        if is_manual_set:
-            await self.save_model_to_config(model_name_to_set)
-            await create_embed_response(ctx, f"Manually set preferred model to:\n`{model_name_to_set}`", title="Model Set Manually", color=discord.Color.green())
-            logger.info(f"Manually set model to '{model_name_to_set}' by user {ctx.author}.")
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
             return
 
+        is_manual = False
+        model_type = "default"
+        
+        arg_list = list(args)
+
+        if arg_list and arg_list[0].lower() == "manual":
+            is_manual = True
+            arg_list.pop(0)
+
+        valid_types = ["default", "chatbot", "ask", "think"]
+        if arg_list and arg_list[0].lower() in valid_types:
+            model_type = arg_list.pop(0).lower()
+        
+        model_name = " ".join(arg_list)
+
+        logger.info(f"User {ctx.author} in guild {ctx.guild.id} attempting to select model. Type: {model_type}, Name: {model_name}, Manual: {is_manual}")
+        await ctx.typing()
+
+        if not model_name:
+            await create_embed_response(ctx, "You must provide a model name.", title="Missing Model Name", color=discord.Color.orange())
+            return
+        
+        # model_type is already validated by the `valid_types` check above.
+
         try:
-            all_models_grouped = await self.llm_client.get_all_available_models(grouped=True)
-            all_models_flat = [model for models in all_models_grouped.values() for model in models]
+            if not is_manual:
+                all_models_grouped = await self.llm_client.get_all_available_models(grouped=True)
+                all_models_flat = [model for models in all_models_grouped.values() for model in models]
 
-            if not all_models_flat:
-                await create_embed_response(ctx, "No models available to select.", title="Error", color=discord.Color.red())
-                return
-
-            # Handle selection by number
-            try:
-                model_number = int(model_name_to_set)
-                if 1 <= model_number <= len(all_models_flat):
-                    model_name_to_set = all_models_flat[model_number - 1]
-                else:
-                    await create_embed_response(ctx, f"Invalid number. Please choose between 1 and {len(all_models_flat)}.", title="Error", color=discord.Color.orange())
-                    return
-            except ValueError:
-                pass # Input is not a number, treat as a name
-
-            # Validate model name
-            if model_name_to_set not in all_models_flat:
-                # Try partial match
-                partial_matches = [m for m in all_models_flat if model_name_to_set.lower() in m.lower()]
-                if len(partial_matches) == 1:
-                    model_name_to_set = partial_matches[0]
-                else:
-                    suggestions = "\n".join(f"- `{m}`" for m in partial_matches[:5])
-                    msg = f"Model `{model_name_to_set}` not found."
-                    if suggestions:
-                        msg += f"\n\nDid you mean one of these?\n{suggestions}"
-                    await create_embed_response(ctx, msg, title="Model Not Found", color=discord.Color.orange())
+                if not all_models_flat:
+                    await create_embed_response(ctx, "No models available to select.", title="Error", color=discord.Color.red())
                     return
 
-            # Save the selected model
-            await self.save_model_to_config(model_name_to_set)
-            await create_embed_response(ctx, f"Preferred model set to:\n`{model_name_to_set}`", title="Model Selected", color=discord.Color.green())
+                if model_name not in all_models_flat:
+                    partial_matches = [m for m in all_models_flat if model_name.lower() in m.lower()]
+                    if len(partial_matches) == 1:
+                        model_name = partial_matches[0]
+                    else:
+                        suggestions = "\n".join(f"- `{m}`" for m in partial_matches[:5])
+                        msg = f"Model `{model_name}` not found."
+                        if suggestions:
+                            msg += f"\n\nDid you mean one of these?\n{suggestions}"
+                        await create_embed_response(ctx, msg, title="Model Not Found", color=discord.Color.orange())
+                        return
+
+            await self.save_model_to_config(ctx.guild.id, model_name, model_type)
+            
+            response_msg = f"Set **{model_type}** model for this server to:\n`{model_name}`"
+            if is_manual:
+                response_msg += "\n*(Manual selection: Model was set regardless of availability check.)*"
+            
+            await create_embed_response(ctx, response_msg, title="Model Selected", color=discord.Color.green())
 
         except Exception as e:
             logger.error(f"Failed to select model: {e}", exc_info=True)
