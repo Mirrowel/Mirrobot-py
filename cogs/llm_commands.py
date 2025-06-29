@@ -830,6 +830,14 @@ class LLMCommands(commands.Cog):
             return
 
         image_urls = [att.url for att in ctx.message.attachments if att.content_type.startswith('image/')]
+        
+        # Extract image URLs from message content
+        url_pattern = re.compile(r'https?://\S+')
+        found_urls = url_pattern.findall(question)
+        for url in found_urls:
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                image_urls.append(url)
+                question = question.replace(url, '').strip()
 
         async with ctx.typing():
             try:
@@ -863,6 +871,14 @@ class LLMCommands(commands.Cog):
             return
 
         image_urls = [att.url for att in ctx.message.attachments if att.content_type.startswith('image/')]
+
+        # Extract image URLs from message content
+        url_pattern = re.compile(r'https?://\S+')
+        found_urls = url_pattern.findall(question)
+        for url in found_urls:
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                image_urls.append(url)
+                question = question.replace(url, '').strip()
 
         async with ctx.typing():
             try:
