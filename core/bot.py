@@ -497,15 +497,16 @@ async def process_chatbot_message(bot, message):
         if not chatbot_manager.is_chatbot_enabled(guild_id, channel_id):
             return
         
-        # Always add the message to conversation history if chatbot is enabled
-        chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
-        
         # Check if we should respond to this message
         if chatbot_manager.should_respond_to_message(guild_id, channel_id, message, bot.user.id):
             logger.debug(f"Processing chatbot response for message {message.id} in channel {channel_id}")
             
             # Create a task to handle the response asynchronously
+            # Pass the message to the handler, which will be responsible for adding it to history
             asyncio.create_task(handle_chatbot_response(bot, message))
+        else:
+            # If not responding, just add the message to the history for context
+            chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
         
     except Exception as e:
         logger.error(f"Error processing chatbot message: {e}")
@@ -541,7 +542,7 @@ async def handle_chatbot_response(bot, message):
         # Show typing indicator
         async with message.channel.typing():
             try:
-                # Get prioritized context messages
+                # Get prioritized context messages. This history does NOT include the current message.
                 context_messages = chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
                 # Format all context (channel info, user info, conversation history, pinned messages) into a single string
                 full_context_string = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
@@ -549,46 +550,37 @@ async def handle_chatbot_response(bot, message):
                 # Load system prompt (this loads from file and applies thinking mode if configured)
                 system_prompt_for_llm = llm_cog.load_system_prompt(guild_id) # Chatbot typically doesn't show thinking
                 
-                # The raw user message content
-                user_prompt_content = message.content
-                
-                # Remove bot mention from the user's prompt if present, so LLM doesn't see it as part of the query
-                # This helps prevent the LLM from talking *about* being mentioned.
-                # Re-implementing this here specifically for the *current* prompt being sent to make_llm_request.
-                # The history already has mentions processed by _convert_discord_format_to_llm_readable.
-                if bot.user and bot.user.mentioned_in(message):
-                     # Use a regex to remove all mentions of the bot itself
-                     bot_mention_pattern = re.compile(r'<@!?' + str(bot.user.id) + r'>')
-                     user_prompt_content = bot_mention_pattern.sub('', user_prompt_content).strip()
-                     logger.debug(f"Removed bot mention from user's prompt: '{user_prompt_content[:50]}...'")
+                # Use the new standardized function to process the message for history
+                cleaned_content, image_urls, other_urls = chatbot_manager.conversation_manager._process_discord_message_for_context(message)
 
-                image_urls = []
+                # For the immediate prompt, process non-image files separately
                 extracted_text = []
-
-                # Process attachments
+                # Check attachments for non-image files that aren't in other_urls
                 for attachment in message.attachments:
-                    if attachment.content_type.startswith('image/'):
-                        image_urls.append(attachment.url)
-                    else:
+                    if attachment.url in other_urls and not (attachment.content_type and attachment.content_type.startswith('image/')):
                         text = await extract_text_from_attachment(attachment)
                         if text:
                             extracted_text.append(text)
-
-                # Process URLs in the question
-                url_pattern = re.compile(r'https?://\S+')
-                found_urls = url_pattern.findall(user_prompt_content)
-                for url in found_urls:
-                    if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                        image_urls.append(url)
-                        user_prompt_content = user_prompt_content.replace(url, '').strip()
-                    elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
+                
+                # Check other_urls for processable text files
+                for url in other_urls:
+                    if any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
                         text = await extract_text_from_url(url)
                         if text:
                             extracted_text.append(text)
-                        user_prompt_content = user_prompt_content.replace(url, '').strip()
 
+                # Prepend extracted text to the cleaned content for the prompt
+                prompt_text = cleaned_content
                 if extracted_text:
-                    user_prompt_content = f"{' '.join(extracted_text)}\n\n{user_prompt_content}"
+                    prompt_text = f"{' '.join(extracted_text)}\n\n{prompt_text}"
+
+                # Final prompt includes the author's name
+                user_prompt_content = f"{message.author.display_name}: {prompt_text}"
+
+                # --- Save user's message to history BEFORE making the LLM request ---
+                # This prevents data loss if the LLM call fails and solves the duplication issue.
+                chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
+                # ---
 
                 # Debug: Output the prompts to a file for inspection
                 debug_dir = "llm_data/debug_prompts"

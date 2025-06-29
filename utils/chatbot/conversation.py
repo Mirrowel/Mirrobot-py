@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import asdict
 from typing import List, Tuple
+from urllib.parse import urlparse
 
 import discord
 from utils.chatbot.config import ConfigManager
@@ -201,48 +202,66 @@ class ConversationManager:
             logger.error(f"Error validating context message from {msg.username}: {e}", exc_info=True)
             return True, debug_steps
 
+    def _is_image_url(self, url: str) -> bool:
+        """Check if a URL points to an image by checking the path extension."""
+        try:
+            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']
+            parsed_url = urlparse(url)
+            return any(parsed_url.path.lower().endswith(ext) for ext in image_extensions)
+        except Exception:
+            return False
+
     def _process_discord_message_for_context(self, message: discord.Message) -> Tuple[str, List[str], List[str]]:
-        """Processes a discord.Message to extract content, filter media, and prepare for context."""
-        cleaned_content = message.content
-        image_urls, video_urls, embed_urls = [], [], []
+        """
+        Processes a discord.Message to extract content, filter media, and prepare for context.
+        This is the standardized function for media extraction.
+        """
+        content = message.content
+        image_urls = set()
+        other_urls = set()
 
-        # Extract image URLs from message content
-        url_pattern = re.compile(r'https?://\S+')
-        found_urls = url_pattern.findall(cleaned_content)
-        for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                image_urls.append(url)
-                cleaned_content = cleaned_content.replace(url, '').strip()
-
+        # 1. Process Attachments
         for attachment in message.attachments:
-            if attachment.content_type.startswith('image/'):
-                image_urls.append(attachment.url)
-                if attachment.url in cleaned_content:
-                    cleaned_content = cleaned_content.replace(attachment.url, '').strip()
-            elif attachment.content_type.startswith(('video/', 'image/gif')) or \
-                 (attachment.content_type in ['application/x-discord-application', 'application/octet-stream'] and \
-                  attachment.filename.lower().endswith(('.mp4', '.mov', '.webm', '.gif'))):
-                video_urls.append(attachment.url)
-                if attachment.url in cleaned_content:
-                    cleaned_content = cleaned_content.replace(attachment.url, '').strip()
-                logger.debug(f"Filtered out video/gif attachment URL: {attachment.url}")
+            if attachment.content_type and attachment.content_type.startswith('image/'):
+                image_urls.add(attachment.url)
+            else:
+                other_urls.add(attachment.url)
 
+        # 2. Process Embeds
         for embed in message.embeds:
-            if embed.type == 'image' and embed.url and any(ext in embed.url.lower() for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                image_urls.append(embed.url)
-                if embed.url in cleaned_content:
-                    cleaned_content = cleaned_content.replace(embed.url, '').strip()
-            elif embed.type in ['video', 'gifv'] and (embed.url or (embed.video and embed.video.url)):
-                url_to_filter = embed.url or (embed.video.url if embed.video else None)
-                if url_to_filter:
-                    video_urls.append(url_to_filter)
-                    if url_to_filter in cleaned_content:
-                        cleaned_content = cleaned_content.replace(url_to_filter, '').strip()
-                    logger.debug(f"Filtered out video/gif embed URL: {url_to_filter}")
-            elif embed.url:
-                embed_urls.append(embed.url)
+            if embed.type == 'image' and embed.url:
+                image_urls.add(embed.url)
+            if embed.thumbnail and embed.thumbnail.url:
+                image_urls.add(embed.thumbnail.url)
+            if embed.image and embed.image.url:
+                image_urls.add(embed.image.url)
+            
+            # Add other URLs from embeds to be filtered from content
+            if embed.url and embed.type not in ['image', 'gifv']:
+                other_urls.add(embed.url)
+            if embed.video and embed.video.url:
+                other_urls.add(embed.video.url)
+
+        # 3. Process URLs in the message content
+        url_pattern = re.compile(r'https?://\S+')
+        found_urls = url_pattern.findall(content)
+        for url in found_urls:
+            if self._is_image_url(url):
+                image_urls.add(url)
+            # All URLs found in content should be considered for stripping
+            other_urls.add(url)
+
+        # 4. Clean the message content by removing all identified URLs
+        all_urls_to_strip = image_urls.union(other_urls)
+        cleaned_content = content
+        for url in all_urls_to_strip:
+            cleaned_content = cleaned_content.replace(url, '')
+
+        # Final cleanup of whitespace
+        cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
         
-        return re.sub(r'\s+', ' ', cleaned_content).strip(), image_urls, embed_urls
+        # Return cleaned content, a list of unique image URLs, and a list of other URLs
+        return cleaned_content, list(image_urls), list(other_urls)
 
     def check_duplicate_message(self, guild_id: int, channel_id: int, message_id: int) -> bool:
         """Check if a message is already in the conversation history"""
