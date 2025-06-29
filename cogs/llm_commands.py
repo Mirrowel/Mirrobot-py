@@ -13,6 +13,7 @@ from utils.embed_helper import create_embed_response, create_llm_response
 from lib.rotator_library import RotatingClient
 from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env
 from utils.chatbot.manager import chatbot_manager
+from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 
 logger = get_logger()
 
@@ -387,57 +388,6 @@ class LLMCommands(commands.Cog):
             'total_tokens': total_tokens,
             'has_token_data': total_tokens > 0
         }
-
-    def _extract_media_urls(self, message: discord.Message, content: str) -> Tuple[List[str], str]:
-        """Extracts image and text-compatible file URLs from a message and its content."""
-        media_urls = []
-        
-        # Supported extensions
-        IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
-        TEXT_EXTENSIONS = ['.pdf', '.txt', '.log', '.ini', '.json', '.xml', '.csv', '.md']
-        
-        # Process attachments
-        for att in message.attachments:
-            # Check by content type first
-            if att.content_type and att.content_type.startswith('image/'):
-                if att.url not in media_urls:
-                    media_urls.append(att.url)
-                    logger.debug(f"Extracted image URL from attachment: {att.url}")
-                continue
-
-            # Fallback to checking file extension for both images and text files
-            if any(att.filename.lower().endswith(ext) for ext in IMAGE_EXTENSIONS + TEXT_EXTENSIONS):
-                if att.url not in media_urls:
-                    media_urls.append(att.url)
-                    logger.debug(f"Extracted media URL from attachment: {att.url}")
-
-        # Process URLs in message content
-        url_pattern = re.compile(r'https?://\S+')
-        
-        urls_to_remove = []
-        for url in url_pattern.findall(content):
-            path = url.split('?')[0]
-            
-            # Clean trailing punctuation
-            cleaned_url = url
-            cleaned_path = path
-            if cleaned_path.endswith(('.', ',', '!', '?')):
-                cleaned_path = cleaned_path[:-1]
-                cleaned_url = cleaned_url[:-1]
-
-            if any(cleaned_path.lower().endswith(ext) for ext in IMAGE_EXTENSIONS + TEXT_EXTENSIONS):
-                if cleaned_url not in media_urls:
-                    media_urls.append(cleaned_url)
-                    logger.debug(f"Extracted media URL from content: {cleaned_url}")
-                urls_to_remove.append(url) # remove original url with punctuation
-        
-        remaining_content = content
-        for url in urls_to_remove:
-            remaining_content = remaining_content.replace(url, '')
-        
-        remaining_content = " ".join(remaining_content.split()) # clean up whitespace
-                
-        return media_urls, remaining_content
 
     def _build_messages_list(self, system_prompt: str, context: Optional[str],
                           prompt: Optional[str], image_urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -880,16 +830,40 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        image_urls, question = self._extract_media_urls(ctx.message, question)
-        if image_urls:
-            logger.info(f"Extracted media URLs for 'ask' command: {image_urls}")
-        
+        image_urls = []
+        extracted_text = []
+
+        # Process attachments
+        for attachment in ctx.message.attachments:
+            if attachment.content_type.startswith('image/'):
+                image_urls.append(attachment.url)
+            else:
+                text = await extract_text_from_attachment(attachment)
+                if text:
+                    extracted_text.append(text)
+
+        # Process URLs in the question
+        url_pattern = re.compile(r'https?://\S+')
+        found_urls = url_pattern.findall(question)
+        for url in found_urls:
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                image_urls.append(url)
+                question = question.replace(url, '').strip()
+            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
+                text = await extract_text_from_url(url)
+                if text:
+                    extracted_text.append(text)
+                question = question.replace(url, '').strip()
+
         async with ctx.typing():
             try:
                 guild_id = ctx.guild.id if ctx.guild else None
                 channel_context = chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
                 user_context = chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
+
+                if extracted_text:
+                    question = f"{' '.join(extracted_text)}\n\n{question}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
@@ -915,9 +889,30 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        image_urls, question = self._extract_media_urls(ctx.message, question)
-        if image_urls:
-            logger.info(f"Extracted media URLs for 'think' command: {image_urls}")
+        image_urls = []
+        extracted_text = []
+
+        # Process attachments
+        for attachment in ctx.message.attachments:
+            if attachment.content_type.startswith('image/'):
+                image_urls.append(attachment.url)
+            else:
+                text = await extract_text_from_attachment(attachment)
+                if text:
+                    extracted_text.append(text)
+
+        # Process URLs in the question
+        url_pattern = re.compile(r'https?://\S+')
+        found_urls = url_pattern.findall(question)
+        for url in found_urls:
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                image_urls.append(url)
+                question = question.replace(url, '').strip()
+            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
+                text = await extract_text_from_url(url)
+                if text:
+                    extracted_text.append(text)
+                question = question.replace(url, '').strip()
 
         async with ctx.typing():
             try:
@@ -925,6 +920,9 @@ class LLMCommands(commands.Cog):
                 channel_context = chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
                 user_context = chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
+
+                if extracted_text:
+                    question = f"{' '.join(extracted_text)}\n\n{question}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
@@ -937,7 +935,7 @@ class LLMCommands(commands.Cog):
                 
                 if not display_thinking:
                     cleaned_response, _ = self.strip_thinking_tokens(response)
-                    await self.send_llm_response(ctx, cleaned_response, question, model_type="think", performance_metrics=performance_metrics)
+                    await self.send_llm_response(ctx, cleaned_response, question, model_type="ask", performance_metrics=performance_metrics)
                 else:
                     await self.send_llm_response(ctx, response, question, model_type="think", performance_metrics=performance_metrics)
             except Exception as e:

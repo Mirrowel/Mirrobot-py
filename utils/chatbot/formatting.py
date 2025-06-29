@@ -102,13 +102,6 @@ class LLMContextFormatter:
                                 text_segments = []
                             # Add the image URL in the desired format
                             line_parts.append(f"(Image: {part.image_url['url']})")
-                        elif part.type == "document_url" and part.document_url and part.document_url.get("url"):
-                            # If there's pending text, join and add it first
-                            if text_segments:
-                                line_parts.append(" ".join(text_segments))
-                                text_segments = []
-                            # Add the document URL in the desired format
-                            line_parts.append(f"(Document: {part.document_url['url']})")
                     
                     # Add any remaining text segments
                     if text_segments:

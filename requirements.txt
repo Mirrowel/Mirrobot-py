@@ -17,3 +17,5 @@ python-dotenv>=1.0.0
 
 # Add these lines to your existing requirements.txt
 psutil>=5.9.0
+pdfplumber
+chardet>=5.2.0

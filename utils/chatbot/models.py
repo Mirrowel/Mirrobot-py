@@ -8,14 +8,12 @@ from typing import List, Optional, Dict, Any, Union
 
 @dataclass
 class ContentPart:
-    """Represents a part of a message's content, which can be text, an image, or a document."""
-    type: str  # "text", "image_url", or "document_url"
+    """Represents a part of a message's content, which can be text or an image."""
+    type: str  # "text" or "image_url"
     # for text type
     text: Optional[str] = None
     # for image_url type
     image_url: Optional[Dict[str, Any]] = None
-    # for document_url type
-    document_url: Optional[Dict[str, Any]] = None
 
 @dataclass
 class ConversationMessage:
@@ -35,14 +33,7 @@ class ConversationMessage:
     def __post_init__(self):
         """Ensure multimodal_content is a list of ContentPart objects."""
         if self.multimodal_content and isinstance(self.multimodal_content[0], dict):
-            self.multimodal_content = []
-            for part in self.multimodal_content:
-                if part.get("type") == "image_url":
-                    self.multimodal_content.append(ContentPart(type="image_url", image_url=part.get("image_url")))
-                elif part.get("type") == "document_url":
-                    self.multimodal_content.append(ContentPart(type="document_url", document_url=part.get("document_url")))
-                else:
-                    self.multimodal_content.append(ContentPart(type="text", text=part.get("text")))
+            self.multimodal_content = [ContentPart(**part) for part in self.multimodal_content]
 
 @dataclass
 class PinnedMessage:

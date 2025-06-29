@@ -12,6 +12,7 @@ import re
 # Import chatbot_manager directly here for config access
 from utils.chatbot.manager import chatbot_manager
 from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
+from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 
 logger = get_logger()
 
@@ -561,6 +562,33 @@ async def handle_chatbot_response(bot, message):
                      user_prompt_content = bot_mention_pattern.sub('', user_prompt_content).strip()
                      logger.debug(f"Removed bot mention from user's prompt: '{user_prompt_content[:50]}...'")
 
+                image_urls = []
+                extracted_text = []
+
+                # Process attachments
+                for attachment in message.attachments:
+                    if attachment.content_type.startswith('image/'):
+                        image_urls.append(attachment.url)
+                    else:
+                        text = await extract_text_from_attachment(attachment)
+                        if text:
+                            extracted_text.append(text)
+
+                # Process URLs in the question
+                url_pattern = re.compile(r'https?://\S+')
+                found_urls = url_pattern.findall(user_prompt_content)
+                for url in found_urls:
+                    if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                        image_urls.append(url)
+                        user_prompt_content = user_prompt_content.replace(url, '').strip()
+                    elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
+                        text = await extract_text_from_url(url)
+                        if text:
+                            extracted_text.append(text)
+                        user_prompt_content = user_prompt_content.replace(url, '').strip()
+
+                if extracted_text:
+                    user_prompt_content = f"{' '.join(extracted_text)}\n\n{user_prompt_content}"
 
                 # Debug: Output the prompts to a file for inspection
                 debug_dir = "llm_data/debug_prompts"
@@ -585,11 +613,13 @@ async def handle_chatbot_response(bot, message):
 
 
                 response_text, performance_metrics = await llm_cog.make_llm_request(
+                    prompt=user_prompt_content,
                     system_prompt=system_prompt_for_llm,
                     context=full_context_string,
                     model_type="chat",
                     max_tokens=min(channel_config.max_response_length, 2000),
-                    guild_id=guild_id
+                    guild_id=guild_id,
+                    image_urls=image_urls
                 )
 
                 if response_text:
