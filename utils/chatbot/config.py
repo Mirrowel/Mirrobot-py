@@ -14,9 +14,9 @@ logger = get_logger()
 CHATBOT_CONFIG_FILE = "data/chatbot_config.json"
 
 DEFAULT_CHATBOT_CONFIG = {
-    "max_context_messages": 100,
-    "max_user_context_messages": 20,
-    "context_window_hours": 6,
+    "max_context_messages": 400,
+    "max_user_context_messages": 100,
+    "context_window_hours": 48,
     "response_delay_seconds": 1,
     "max_response_length": 2000,
     "auto_prune_enabled": True,
