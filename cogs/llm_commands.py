@@ -248,9 +248,9 @@ class LLMCommands(commands.Cog):
         # Prepare prompts
         system_prompt, context = self._prepare_prompts(system_prompt, context, model_type, guild_id)
         
-        is_multimodal = any(keyword in target_model for keyword in self.multimodal_models_whitelist) and image_urls
+        is_multimodal = any(keyword in target_model for keyword in self.multimodal_models_whitelist)
         
-        messages = self._build_messages_list(system_prompt, context, prompt, image_urls if is_multimodal else None)
+        messages = self._build_messages_list(system_prompt, context, prompt, image_urls, is_multimodal)
         
         # Prepare kwargs for the rotating client
         request_kwargs = {
@@ -391,7 +391,7 @@ class LLMCommands(commands.Cog):
         }
 
     def _build_messages_list(self, system_prompt: str, context: Optional[str],
-                          prompt: Optional[str], image_urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                          prompt: Optional[str], image_urls: Optional[List[str]] = None, is_multimodal: bool = False) -> List[Dict[str, Any]]:
         """Build messages list with roles: 'system', 'user', 'assistant'"""
         messages = []
 
@@ -452,13 +452,13 @@ class LLMCommands(commands.Cog):
 
             # Add the actual conversation history
             if conversation_history_text:
-                messages.extend(self._parse_conversation_history_block(conversation_history_text))
+                messages.extend(self._parse_conversation_history_block(conversation_history_text, is_multimodal))
         
         # Add the actual current user prompt
         if prompt:
             content_parts = [{"type": "text", "text": prompt}]
-            if image_urls:
-                logger.info(f"Adding {len(image_urls)} image URLs to user message")
+            if image_urls and is_multimodal:
+                logger.info(f"Adding {len(image_urls)} image URLs to user message for multimodal model")
                 for url in image_urls:
                     content_parts.append({"type": "image_url", "image_url": {"url": url}})
             
@@ -466,7 +466,7 @@ class LLMCommands(commands.Cog):
             
         return messages
 
-    def _parse_conversation_history_block(self, conversation_text: str) -> List[Dict[str, any]]:
+    def _parse_conversation_history_block(self, conversation_text: str, is_multimodal: bool = False) -> List[Dict[str, any]]:
         """Parse raw conversation history text into messages list with 'user' and 'assistant' roles."""
         messages = []
         
@@ -504,9 +504,10 @@ class LLMCommands(commands.Cog):
 
             # Process the rest of the parts (image_url, text pairs)
             for i in range(1, len(text_parts), 2):
-                # Add the image part
-                image_url = text_parts[i]
-                final_content.append({"type": "image_url", "image_url": {"url": image_url}})
+                if is_multimodal:
+                    # Add the image part
+                    image_url = text_parts[i]
+                    final_content.append({"type": "image_url", "image_url": {"url": image_url}})
                 
                 # Add the subsequent text part if it exists and is not empty
                 if i + 1 < len(text_parts) and text_parts[i+1].strip():
