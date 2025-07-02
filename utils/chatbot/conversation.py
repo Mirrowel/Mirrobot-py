@@ -205,7 +205,7 @@ class ConversationManager:
     def _is_image_url(self, url: str) -> bool:
         """Check if a URL points to an image by checking the path extension."""
         try:
-            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']
+            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
             parsed_url = urlparse(url)
             return any(parsed_url.path.lower().endswith(ext) for ext in image_extensions)
         except Exception:
@@ -222,18 +222,20 @@ class ConversationManager:
 
         # 1. Process Attachments
         for attachment in message.attachments:
-            if attachment.content_type and attachment.content_type.startswith('image/'):
-                image_urls.add(attachment.url)
+            # Exclude GIFs and ensure it's a valid image type
+            if attachment.content_type and attachment.content_type.startswith('image/') and 'gif' not in attachment.content_type:
+                if self._is_image_url(attachment.url):
+                    image_urls.add(attachment.url)
             else:
                 other_urls.add(attachment.url)
 
         # 2. Process Embeds
         for embed in message.embeds:
-            if embed.type == 'image' and embed.url:
+            if embed.url and self._is_image_url(embed.url):
                 image_urls.add(embed.url)
-            if embed.thumbnail and embed.thumbnail.url:
+            if embed.thumbnail and embed.thumbnail.url and self._is_image_url(embed.thumbnail.url):
                 image_urls.add(embed.thumbnail.url)
-            if embed.image and embed.image.url:
+            if embed.image and embed.image.url and self._is_image_url(embed.image.url):
                 image_urls.add(embed.image.url)
             
             # Add other URLs from embeds to be filtered from content

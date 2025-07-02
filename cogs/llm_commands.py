@@ -31,7 +31,8 @@ class LLMCommands(commands.Cog):
         # Global default models
         self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
-        self.multimodal_models_whitelist = ["gemini", "gemma"]
+        #self.multimodal_models_whitelist = ["gemini", "gemma"]
+        self.multimodal_models_whitelist = ["big", "balls"]
 
     async def cog_load(self):
         """Initialize the LLM client and check provider status on cog load."""
@@ -457,6 +458,7 @@ class LLMCommands(commands.Cog):
         if prompt:
             content_parts = [{"type": "text", "text": prompt}]
             if image_urls:
+                logger.info(f"Adding {len(image_urls)} image URLs to user message")
                 for url in image_urls:
                     content_parts.append({"type": "image_url", "image_url": {"url": url}})
             
@@ -846,7 +848,7 @@ class LLMCommands(commands.Cog):
         url_pattern = re.compile(r'https?://\S+')
         found_urls = url_pattern.findall(question)
         for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
                 image_urls.append(url)
                 question = question.replace(url, '').strip()
             elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
@@ -905,7 +907,7 @@ class LLMCommands(commands.Cog):
         url_pattern = re.compile(r'https?://\S+')
         found_urls = url_pattern.findall(question)
         for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
                 image_urls.append(url)
                 question = question.replace(url, '').strip()
             elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
@@ -935,7 +937,7 @@ class LLMCommands(commands.Cog):
                 
                 if not display_thinking:
                     cleaned_response, _ = self.strip_thinking_tokens(response)
-                    await self.send_llm_response(ctx, cleaned_response, question, model_type="ask", performance_metrics=performance_metrics)
+                    await self.send_llm_response(ctx, cleaned_response, question, model_type="think", performance_metrics=performance_metrics)
                 else:
                     await self.send_llm_response(ctx, response, question, model_type="think", performance_metrics=performance_metrics)
             except Exception as e:
