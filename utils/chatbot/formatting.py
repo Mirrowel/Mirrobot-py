@@ -135,8 +135,8 @@ class LLMContextFormatter:
             return f"@{user.username}" if user else match.group(0)
 
         processed_content = re.sub(r'<@!?(\d+)>', replace_mention, content)
-        processed_content = re.sub(r'<a?:(\w+):(\d+)>', r'(\1 emoji)', processed_content)
-        processed_content = re.sub(r'\b\d{10,20}\b', '', processed_content)
+        #processed_content = re.sub(r'<a?:(\w+):(\d+)>', r'(\1 emoji)', processed_content)
+        #processed_content = re.sub(r'\b\d{10,20}\b', '', processed_content)
         processed_content = re.sub(r'(?<=\s):(\d+\.?)\s*$', '', processed_content, flags=re.MULTILINE)
         processed_content = re.sub(r'\s+', ' ', processed_content).strip()
         processed_content = re.sub(r'\s+([.,!?:;])', r'\1', processed_content)
