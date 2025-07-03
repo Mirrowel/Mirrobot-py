@@ -752,6 +752,41 @@ class SystemCommandsCog(commands.Cog):
 
     from core.bot import get_ocr_queue_stats
 
+    @commands.command(name='about', aliases=['botinfo'], help='Display detailed information about the bot.\nNo arguments required.\nExample: !about')
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @has_command_permission()
+    @command_category("System")
+    async def about(self, ctx):
+        """Display detailed information about the bot."""
+        description = (
+            f"{BOT_NAME} is an open-source Discord bot developed by **@{AUTHOR_NAME}**, focused on AI integration and tech support. "
+            "It leverages Large Language Models (LLMs) to provide intelligent responses, answer questions, and assist with server administration."
+        )
+
+        fields = [
+            {"name": "Version", "value": f"`{BOT_VERSION}`", "inline": True},
+            {"name": "Author", "value": f"[{AUTHOR_NAME}]({AUTHOR_URL})", "inline": True},
+            {"name": "Uptime", "value": get_uptime(), "inline": False},
+            {"name": "🧠 AI-Powered Assistance", "value": "Get detailed answers, code examples, and explanations. Use `ask` for direct responses or `think` to see the bot's step-by-step reasoning process.", "inline": False},
+            {"name": "💬 Interactive Chatbot", "value": "Enable the bot in support channels for context-aware assistance. It automatically joins conversations when mentioned or replied to, providing relevant help.", "inline": False},
+            {"name": "🖼️ Multimodal Support", "value": "The bot can analyze and understand images included in your questions, allowing for more comprehensive and accurate support.", "inline": False},
+            {"name": "Source Code", "value": f"[GitHub Repository]({REPO_URL})", "inline": False},
+        ]
+
+        await create_embed_response(
+            ctx=ctx,
+            title=f"About {BOT_NAME}",
+            description=description,
+            fields=fields,
+            url=REPO_URL,
+            author_name=AUTHOR_NAME,
+            author_url=AUTHOR_URL,
+            author_icon_url=AUTHOR_ICON_URL,
+            footer_text=f"{BOT_NAME} v{BOT_VERSION}",
+            footer_icon_url=GITHUB_ICON_URL,
+            color=discord.Color.purple()
+        )
+
     @commands.command(name='status', help='Display bot status, uptime, and statistics.\nNo additional arguments required.\nExample: !status')
     @has_command_permission()
     @commands.bot_has_permissions(embed_links=True)
