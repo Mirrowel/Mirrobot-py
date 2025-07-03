@@ -94,8 +94,8 @@ class ChannelChatbotConfig:
     def __post_init__(self):
         # Handle cases where config might have old values or missing fields
         # Ensure numerical values are within bounds
-        self.max_context_messages = max(10, min(self.max_context_messages, 200))
-        self.max_user_context_messages = max(5, min(self.max_user_context_messages, 50))
+        self.max_context_messages = max(10, min(self.max_context_messages, 1000))
+        self.max_user_context_messages = max(5, min(self.max_user_context_messages, 500))
         self.context_window_hours = max(1, min(self.context_window_hours, 168))
         self.response_delay_seconds = max(0, min(self.response_delay_seconds, 10))
         self.max_response_length = max(100, min(self.max_response_length, 4000))
