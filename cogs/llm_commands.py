@@ -1711,7 +1711,7 @@ class LLMCommands(commands.Cog):
             )
 
     @commands.command(name='debug_message_filter', aliases=['dbg_filter'])
-    @commands.has_permissions(administrator=True)
+    @has_command_permission()
     async def debug_message_filter(self, ctx, *, test_message: str):
         """Test a message through the filter system (dev only)
         
@@ -1816,7 +1816,7 @@ class LLMCommands(commands.Cog):
             )
 
     @commands.command(name='debug_full_context', aliases=['dbg_full'])
-    @commands.has_permissions(administrator=True)
+    @has_command_permission()
     async def debug_full_context(self, ctx, channel: Optional[discord.abc.Messageable] = None, user_id: int = None):
         """Export the complete LLM context to a file (dev only)
         
