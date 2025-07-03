@@ -1,6 +1,8 @@
 import json
 import os
+from typing import Dict, Any, List, Optional
 from utils.logging_setup import get_logger
+from utils.chatbot.manager import chatbot_manager
 
 logger = get_logger()
 
@@ -15,6 +17,12 @@ DEFAULT_LLM_CONFIG = {
         "chat": "chutes/deepseek-ai/DeepSeek-V3-0324",
         "ask": "chutes/deepseek-ai/DeepSeek-V3-0324",
         "think": "chutes/deepseek-ai/DeepSeek-R1-0528"
+    },
+    "safety_settings": {
+        "harassment": "BLOCK_MEDIUM_AND_ABOVE",
+        "hate_speech": "BLOCK_MEDIUM_AND_ABOVE",
+        "sexually_explicit": "BLOCK_MEDIUM_AND_ABOVE",
+        "dangerous_content": "BLOCK_MEDIUM_AND_ABOVE"
     },
     "servers": {}
 }
@@ -125,6 +133,33 @@ def load_llm_config():
     except Exception as e:
         logger.error(f"Error loading LLM configuration: {e}")
         return DEFAULT_LLM_CONFIG
+
+def get_safety_settings(guild_id: Optional[int] = None, channel_id: Optional[int] = None) -> Dict[str, str]:
+    """
+    Get safety settings with channel > server > global fallback.
+    """
+    llm_config = load_llm_config()
+
+    # 1. Check for channel-specific settings
+    if guild_id and channel_id:
+        channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
+        if channel_config and channel_config.safety_settings:
+            return channel_config.safety_settings
+
+    # 2. Check for server-specific settings
+    if guild_id:
+        server_config = llm_config.get("servers", {}).get(str(guild_id))
+        if server_config and "safety_settings" in server_config:
+            return server_config["safety_settings"]
+
+    # 3. Fallback to global settings
+    return llm_config.get("safety_settings", DEFAULT_LLM_CONFIG["safety_settings"])
+
+def save_server_safety_settings(guild_id: int, settings: Dict[str, str]) -> bool:
+    """Save safety settings for a specific server."""
+    config = load_llm_config()
+    config.setdefault("servers", {}).setdefault(str(guild_id), {})["safety_settings"] = settings
+    return save_llm_config(config)
 
 def save_llm_config(config):
     """Save LLM configuration to file"""

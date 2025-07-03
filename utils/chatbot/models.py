@@ -90,6 +90,7 @@ class ChannelChatbotConfig:
     prune_interval_hours: int = 6
     auto_respond_to_mentions: bool = True
     auto_respond_to_replies: bool = True
+    safety_settings: Optional[Dict[str, str]] = None
     
     def __post_init__(self):
         # Handle cases where config might have old values or missing fields

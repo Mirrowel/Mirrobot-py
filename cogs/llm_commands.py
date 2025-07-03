@@ -11,7 +11,7 @@ from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from utils.embed_helper import create_embed_response, create_llm_response
 from lib.rotator_library import RotatingClient
-from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env
+from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env, get_safety_settings, save_server_safety_settings
 from utils.chatbot.manager import chatbot_manager
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 
@@ -229,6 +229,7 @@ class LLMCommands(commands.Cog):
         max_tokens: int = 2000,
         temperature: float = 0.7,
         guild_id: Optional[int] = None,
+        channel_id: Optional[int] = None,
         system_prompt: Optional[str] = None,
         context: Optional[str] = None,
         model: Optional[str] = None,
@@ -258,7 +259,8 @@ class LLMCommands(commands.Cog):
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "timeout": self.llm_config.get("timeout", 120)
+            "timeout": self.llm_config.get("timeout", 120),
+            "safety_settings": get_safety_settings(guild_id, channel_id)
         }
 
         # Handle local provider by setting api_base
@@ -873,6 +875,7 @@ class LLMCommands(commands.Cog):
                     prompt=formatted_prompt,
                     model_type="ask",
                     guild_id=guild_id,
+                    channel_id=ctx.channel.id,
                     image_urls=image_urls,
                     context=context
                 )
@@ -932,6 +935,7 @@ class LLMCommands(commands.Cog):
                     prompt=formatted_prompt,
                     model_type="think",
                     guild_id=guild_id,
+                    channel_id=ctx.channel.id,
                     image_urls=image_urls,
                     context=context
                 )
@@ -1992,6 +1996,128 @@ class LLMCommands(commands.Cog):
                 title="Error",
                 color=discord.Color.red()
             )
+
+    @commands.group(name='llm_safety', invoke_without_command=True, help="""View or configure LLM safety settings.
+
+    This command group allows you to manage content safety settings for the LLM.
+    You can view and set safety thresholds for different harm categories at both the server and channel level.
+    
+    Use `!llm_safety view` to see the current settings.
+    Use `!llm_safety set` to change the settings.
+    
+    If no subcommand is given, this help message will be shown.
+    """)
+    @has_command_permission('manage_guild')
+    @command_category("AI Assistant")
+    async def llm_safety(self, ctx):
+        """View or configure LLM safety settings for this server/channel."""
+        if ctx.invoked_subcommand is None:
+            help_command = self.bot.get_command('help')
+            if help_command:
+                await ctx.invoke(help_command, command=ctx.command.name)
+            else:
+                await ctx.send("Help command not found.")
+
+    @llm_safety.command(name='view', help="""View the current safety settings.
+
+    Shows the safety settings for the current channel, a specific channel, or the server.
+    The settings shown are the result of the channel > server > global hierarchy.
+    
+    Usage:
+    - `!llm_safety view`: Shows settings for the current channel.
+    - `!llm_safety view #other-channel`: Shows settings for a specific channel.
+    """)
+    async def view_safety_settings(self, ctx, channel: Optional[discord.TextChannel] = None):
+        """View the current safety settings for the server or a specific channel."""
+        target_channel = channel or ctx.channel
+        guild_id = ctx.guild.id
+        
+        server_settings = get_safety_settings(guild_id)
+        channel_settings = get_safety_settings(guild_id, target_channel.id)
+
+        sections = []
+        server_fields = []
+        for category, threshold in server_settings.items():
+            server_fields.append(f"**{category.replace('_', ' ').title()}:** `{threshold}`")
+        sections.append({
+            "name": "Server Settings",
+            "content": "\n".join(server_fields),
+            "inline": True
+        })
+
+        channel_specific_fields = []
+        channel_config = chatbot_manager.get_channel_config(guild_id, target_channel.id)
+        if channel_config and channel_config.safety_settings:
+            for category, threshold in channel_settings.items():
+                channel_specific_fields.append(f"**{category.replace('_', ' ').title()}:** `{threshold}`")
+            sections.append({
+                "name": f"#{target_channel.name} Settings (Overrides Server)",
+                "content": "\n".join(channel_specific_fields),
+                "inline": True
+            })
+        else:
+            sections.append({
+                "name": f"#{target_channel.name} Settings",
+                "content": "Inherits all settings from the server.",
+                "inline": True
+            })
+
+        await create_embed_response(
+            ctx,
+            title=f"Safety Settings Overview",
+            sections=sections,
+            color=discord.Color.blue()
+        )
+
+    @llm_safety.command(name='set', help="""Set a safety setting for the server or a channel.
+
+    Usage: `!llm_safety set <level> <category> <threshold> [channel]`
+
+    Arguments:
+    - `level`: `server` or `channel`.
+    - `category`: `harassment`, `hate_speech`, `sexually_explicit`, `dangerous_content`.
+    - `threshold`: `block_none`, `block_low_and_above`, `block_medium_and_above`, `block_only_high`.
+    - `[channel]`: Optional channel mention. Required if level is `channel` and you want to set it for a different channel.
+
+    Examples:
+    - `!llm_safety set server harassment block_none`
+    - `!llm_safety set channel hate_speech block_medium_and_above #general`
+    """)
+    async def set_safety_settings(self, ctx, level: str, category: str, threshold: str, channel: Optional[discord.TextChannel] = None):
+        """Set a safety setting for the server or a specific channel."""
+        level = level.lower()
+        if level not in ['server', 'channel']:
+            await create_embed_response(ctx, "Invalid level. Use 'server' or 'channel'.", title="Error", color=discord.Color.red())
+            return
+
+        if level == 'channel' and not channel:
+            channel = ctx.channel
+
+        valid_categories = ["harassment", "hate_speech", "sexually_explicit", "dangerous_content"]
+        if category.lower() not in valid_categories:
+            await create_embed_response(ctx, f"Invalid category. Use one of: {', '.join(valid_categories)}", title="Error", color=discord.Color.red())
+            return
+
+        valid_thresholds = ["block_none", "block_low_and_above", "block_medium_and_above", "block_only_high"]
+        if threshold.lower() not in valid_thresholds:
+            await create_embed_response(ctx, f"Invalid threshold. Use one of: {', '.join(valid_thresholds)}", title="Error", color=discord.Color.red())
+            return
+
+        guild_id = ctx.guild.id
+        
+        if level == 'server':
+            settings = get_safety_settings(guild_id)
+            settings[category.lower()] = threshold.lower()
+            save_server_safety_settings(guild_id, settings)
+            await create_embed_response(ctx, f"Server safety setting for `{category}` updated to `{threshold}`.", title="✅ Success", color=discord.Color.green())
+        else: # channel
+            channel_config = chatbot_manager.get_channel_config(guild_id, channel.id)
+            if not channel_config.safety_settings:
+                channel_config.safety_settings = get_safety_settings(guild_id, channel.id)
+            
+            channel_config.safety_settings[category.lower()] = threshold.lower()
+            chatbot_manager.set_channel_config(guild_id, channel.id, channel_config)
+            await create_embed_response(ctx, f"Channel safety setting for `{category}` in #{channel.name} updated to `{threshold}`.", title="✅ Success", color=discord.Color.green())
 
 async def setup(bot):
     """Setup function to add the cog to the bot"""
