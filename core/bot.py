@@ -550,7 +550,19 @@ async def handle_chatbot_response(bot, message):
                 # Load system prompt (this loads from file and applies thinking mode if configured)
                 system_prompt_for_llm = llm_cog.load_system_prompt(guild_id) # Chatbot typically doesn't show thinking
                 
-                # Use the new standardized function to process the message for history
+                # --- Start of Refactored Logic ---
+
+                # 1. Ensure the original message object has a mention for history and prompt consistency
+                bot_mention_pattern = f'<@!?{bot.user.id}>'
+                if not re.search(bot_mention_pattern, message.content):
+                    message.content = f'<@{bot.user.id}> {message.content}'
+                    logger.debug(f"Prepended bot mention to message {message.id} for history and prompt.")
+
+                # 2. Save the (now modified) message to history
+                chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
+
+                # 3. Prepare the prompt for the LLM
+                # Get the cleaned content from the (now modified) message
                 cleaned_content, image_urls, other_urls = chatbot_manager.conversation_manager._process_discord_message_for_context(message)
 
                 # For the immediate prompt, process non-image files separately
@@ -574,13 +586,13 @@ async def handle_chatbot_response(bot, message):
                 if extracted_text:
                     prompt_text = f"{' '.join(extracted_text)}\n\n{prompt_text}"
 
-                # Final prompt includes the author's name
-                user_prompt_content = f"{message.author.name}: {prompt_text}"
+                # Apply the same formatting to the prompt as the rest of the history
+                formatted_prompt_text = chatbot_manager.formatter._convert_discord_format_to_llm_readable(prompt_text, guild_id)
 
-                # --- Save user's message to history BEFORE making the LLM request ---
-                # This prevents data loss if the LLM call fails and solves the duplication issue.
-                chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
-                # ---
+                # Final prompt includes the author's name
+                user_prompt_content = f"{message.author.name}: {formatted_prompt_text}"
+
+                # --- End of Refactored Logic ---
 
                 # Debug: Output the prompts to a file for inspection
                 debug_dir = "llm_data/debug_prompts"
