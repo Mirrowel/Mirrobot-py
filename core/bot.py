@@ -575,7 +575,7 @@ async def handle_chatbot_response(bot, message):
                     prompt_text = f"{' '.join(extracted_text)}\n\n{prompt_text}"
 
                 # Final prompt includes the author's name
-                user_prompt_content = f"{message.author.display_name}: {prompt_text}"
+                user_prompt_content = f"{message.author.name}: {prompt_text}"
 
                 # --- Save user's message to history BEFORE making the LLM request ---
                 # This prevents data loss if the LLM call fails and solves the duplication issue.
