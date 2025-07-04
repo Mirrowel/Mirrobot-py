@@ -156,85 +156,85 @@ def create_bot(config):
         # Auto-index chatbot-enabled channels on bot restart
         async def auto_index_on_restart():
             try:
-                # from utils.chatbot.manager import chatbot_manager # Already imported above
-
                 config_data = chatbot_manager.config_cache.get("global", {})
-                if config_data.get("auto_index_on_restart", True):
-                    logger.info("Starting chatbot channel re-indexing on bot restart...")
-
-                    # Get enabled channels directly from config file structure
-                    # Use the loaded config cache
-                    enabled_channels_config = chatbot_manager.config_cache.get("channels", {})
-
-                    if not enabled_channels_config:
-                        logger.info("No chatbot-enabled channels found in config for re-indexing")
-                        return
-
-                    total_channels_indexed = 0
-                    total_users_cleaned = 0 # This cleanup is done guild-wide after all channels in a guild are indexed
-                    total_pins_indexed = 0 # For pins
-
-                    # Iterate through all guilds the bot is in
-                    for guild in bot.guilds:
-                        guild_id = guild.id
-                        guild_key = str(guild_id)
-
-                        # Check if this guild has any channels enabled in the config
-                        if guild_key in enabled_channels_config:
-                            enabled_channel_ids_in_config = set(int(cid) for cid, data in enabled_channels_config[guild_key].items() if data.get("enabled", False))
-
-                            if not enabled_channel_ids_in_config:
-                                logger.debug(f"No enabled channels found in config for guild {guild.name} ({guild_id})")
-                                continue
-
-                            guild_channels_indexed = 0
-
-                            # Get all channels and threads in the guild
-                            # Fetch threads separately as guild.channels only gets top-level channels
-                            # guild.threads is a list of all threads the bot is currently aware of in the guild
-                            all_guild_channels_and_threads = list(guild.channels) + list(guild.threads)
-
-
-                            # Iterate through all channels and threads to find the enabled ones
-                            for channel_object in all_guild_channels_and_threads:
-                                # Ensure it's a type we can index (TextChannel or Thread) and is in the enabled list
-                                # discord.Thread objects inherit from discord.TextChannel as of discord.py 2.0+
-                                if isinstance(channel_object, (discord.TextChannel, discord.Thread)) and channel_object.id in enabled_channel_ids_in_config:
-                                    try:
-                                        logger.debug(f"Indexing enabled channel/thread #{channel_object.name} ({channel_object.id}) in guild {guild.name} ({guild_id})")
-                                        success = await chatbot_manager.index_chatbot_channel(guild_id, channel_object.id, channel_object)
-                                        if success:
-                                            # Index pinned messages if applicable (TextChannel and Thread objects both have .pins())
-                                            indexed_pins = await chatbot_manager.index_pinned_messages(guild_id, channel_object.id, channel_object)
-                                            total_pins_indexed += indexed_pins
-
-                                            guild_channels_indexed += 1
-                                            # Increment total count outside the inner loop
-                                            # total_channels_indexed += 1 # This line should be outside the inner loop, moved below
-                                            logger.debug(f"Re-indexed chatbot channel/thread and pins (if applicable) #{channel_object.name} in {guild.name}")
-                                    except Exception as e:
-                                        logger.error(f"Error indexing channel/thread {channel_object.id} in guild {guild.name}: {e}", exc_info=True)
-
-                            # Increment total channels indexed by the number of channels/threads indexed in this guild
-                            total_channels_indexed += guild_channels_indexed
-
-                            # Perform cleanup of users not in current context for this guild
-                            try:
-                                # This should ideally be done after all *relevant* channels in a guild are processed,
-                                # or as a separate periodic task. Doing it per guild after its channels are processed
-                                # seems reasonable for startup.
-                                cleaned_users = chatbot_manager.cleanup_stale_users(guild_id)
-                                total_users_cleaned += cleaned_users
-                                if cleaned_users > 0:
-                                    logger.debug(f"Cleaned up {cleaned_users} stale users in guild {guild.name}")
-                            except Exception as e:
-                                logger.error(f"Error cleaning up users in guild {guild.name}: {e}")
-
-                    logger.info(f"Chatbot re-indexing on restart complete: {total_channels_indexed} channels/threads indexed, {total_pins_indexed} pinned messages indexed, {total_users_cleaned} stale users cleaned across guilds with enabled channels")
-                else:
+                if not config_data.get("auto_index_on_restart", True):
                     logger.debug("Auto-indexing on restart is disabled")
+                    return
+
+                logger.info("Starting concurrent chatbot channel re-indexing...")
+                
+                enabled_channels_config = chatbot_manager.config_cache.get("channels", {})
+                if not enabled_channels_config:
+                    logger.info("No chatbot-enabled channels found in config for re-indexing.")
+                    return
+
+                tasks = []
+                guilds_with_indexed_channels = set()
+
+                async def index_channel_and_pins(guild, channel):
+                    """Helper function to index a channel and its pins, returning results."""
+                    try:
+                        logger.debug(f"Starting indexing for #{channel.name} in {guild.name}")
+                        # Index channel history
+                        history_success = await chatbot_manager.index_chatbot_channel(guild.id, channel.id, channel)
+                        
+                        # Index pinned messages
+                        pins_indexed = 0
+                        if history_success and isinstance(channel, (discord.TextChannel, discord.Thread)):
+                            pins_indexed = await chatbot_manager.index_pinned_messages(guild.id, channel.id, channel)
+                        
+                        logger.debug(f"Finished indexing for #{channel.name}. Success: {history_success}, Pins: {pins_indexed}")
+                        return {"success": history_success, "pins": pins_indexed, "guild_id": guild.id}
+                    except Exception as e:
+                        logger.error(f"Error in indexing task for channel {channel.id} in guild {guild.id}: {e}", exc_info=True)
+                        return {"success": False, "pins": 0, "guild_id": guild.id, "error": e}
+
+                for guild in bot.guilds:
+                    guild_key = str(guild.id)
+                    if guild_key not in enabled_channels_config:
+                        continue
+
+                    enabled_channel_ids = {int(cid) for cid, data in enabled_channels_config[guild_key].items() if data.get("enabled")}
+                    if not enabled_channel_ids:
+                        continue
+                    
+                    all_guild_channels = list(guild.channels) + list(guild.threads)
+                    for channel in all_guild_channels:
+                        if channel.id in enabled_channel_ids:
+                            tasks.append(index_channel_and_pins(guild, channel))
+                            guilds_with_indexed_channels.add(guild.id)
+
+                if not tasks:
+                    logger.info("No channels to index after filtering.")
+                    return
+
+                logger.info(f"Gathered {len(tasks)} indexing tasks. Running concurrently...")
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Process results
+                total_channels_indexed = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
+                total_pins_indexed = sum(r.get("pins", 0) for r in results if isinstance(r, dict))
+                failed_tasks = sum(1 for r in results if isinstance(r, Exception) or (isinstance(r, dict) and not r.get("success")))
+
+                logger.info(f"Concurrent indexing complete. {total_channels_indexed} channels succeeded, {failed_tasks} failed.")
+                
+                # Cleanup stale users in guilds that had channels indexed
+                total_users_cleaned = 0
+                if guilds_with_indexed_channels:
+                    logger.info(f"Cleaning up stale users for {len(guilds_with_indexed_channels)} guilds.")
+                    cleanup_tasks = [chatbot_manager.cleanup_stale_users(gid) for gid in guilds_with_indexed_channels]
+                    cleanup_results = await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                    
+                    for res in cleanup_results:
+                        if isinstance(res, int):
+                            total_users_cleaned += res
+                        else:
+                            logger.error(f"Error during user cleanup: {res}")
+
+                logger.info(f"Chatbot re-indexing on restart complete: {total_channels_indexed} channels/threads indexed, {total_pins_indexed} pinned messages indexed, {total_users_cleaned} stale users cleaned.")
+
             except Exception as e:
-                logger.error(f"Error during chatbot channel re-indexing on restart: {e}")
+                logger.error(f"Fatal error during chatbot channel re-indexing on restart: {e}", exc_info=True)
         
         # Start auto-indexing task
         asyncio.create_task(auto_index_on_restart())
