@@ -11,7 +11,7 @@ from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from utils.embed_helper import create_embed_response, create_llm_response
 from lib.rotator_library import RotatingClient
-from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env, get_safety_settings, save_server_safety_settings
+from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env, get_safety_settings, save_server_safety_settings, get_reasoning_budget, save_reasoning_budget, get_all_reasoning_budgets
 from utils.chatbot.manager import chatbot_manager
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 
@@ -255,6 +255,25 @@ class LLMCommands(commands.Cog):
 
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
+
+        # Apply reasoning budget
+        reasoning_budget_level = get_reasoning_budget(target_model, model_type, guild_id)
+        if reasoning_budget_level is not None:
+            logger.info(f"Applying reasoning budget for model '{target_model}' in mode '{model_type}' with level '{reasoning_budget_level}'.")
+            if reasoning_budget_level == -1 or reasoning_budget_level == "auto":
+                request_kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": -1
+                }
+            else:
+                reasoning_map = {0: "disable", 1: "low", 2: "medium", 3: "high"}
+                level_str = reasoning_map.get(reasoning_budget_level)
+                if not level_str:
+                    level_map_str = {"none": "disable", "low": "low", "medium": "medium", "high": "high"}
+                    level_str = level_map_str.get(reasoning_budget_level)
+
+                if level_str:
+                    request_kwargs["reasoning_effort"] = level_str
 
         # Handle local provider by setting api_base
         if target_model.startswith("local/"):
@@ -1661,7 +1680,7 @@ class LLMCommands(commands.Cog):
     @has_command_permission("chatbot_clear_history")
     @command_category("AI Assistant")
     async def chatbot_clear_history(self, ctx):
-        """Clear conversation history for this channel"""
+        """Clear conversation history and set a checkpoint for this channel."""
         try:
             from utils.chatbot.manager import chatbot_manager
             
@@ -1677,35 +1696,64 @@ class LLMCommands(commands.Cog):
                 )
                 return
             
-            # Load current history to show count
-            current_history = chatbot_manager.load_conversation_history(guild_id, channel_id)
-            message_count = len(current_history)
+            chatbot_manager.clear_channel_data(guild_id, channel_id)
             
-            # Clear history by saving empty list
-            success = chatbot_manager.save_conversation_history(guild_id, channel_id, [])
-            
-            if success:
-                await create_embed_response(
-                    ctx,
-                    f"✅ Cleared {message_count} messages from conversation history.\n\n"
-                    f"The chatbot will start fresh with no previous context in this channel.",
-                    title="History Cleared",
-                    color=discord.Color.green()
-                )
-                logger.info(f"Cleared {message_count} messages from chatbot history for channel {ctx.channel.name} ({channel_id}) by {ctx.author}")
-            else:
-                await create_embed_response(
-                    ctx,
-                    "Failed to clear conversation history. Please try again.",
-                    title="Clear Failed",
-                    color=discord.Color.red()
-                )
-                
-        except Exception as e:
-            logger.error(f"Error clearing chatbot history: {e}", exc_info=True)
             await create_embed_response(
                 ctx,
-                f"An error occurred while clearing history: {str(e)}",
+                f"✅ Cleared channel data and set a checkpoint.\n\n"
+                f"The chatbot will start fresh, and messages from before this point will not be re-indexed.",
+                title="Channel Data Cleared",
+                color=discord.Color.green()
+            )
+            logger.info(f"Cleared channel data for channel {ctx.channel.name} ({channel_id}) by {ctx.author}")
+                
+        except Exception as e:
+            logger.error(f"Error clearing channel data: {e}", exc_info=True)
+            await create_embed_response(
+                ctx,
+                f"An error occurred while clearing channel data: {str(e)}",
+                title="Error",
+                color=discord.Color.red()
+            )
+
+    @commands.command(name='chatbot_remove_checkpoint')
+    @has_command_permission("chatbot_clear_history")
+    @command_category("AI Assistant")
+    async def chatbot_remove_checkpoint(self, ctx):
+        """Remove the indexing checkpoint for this channel."""
+        try:
+            from utils.chatbot.manager import chatbot_manager
+            
+            guild_id = ctx.guild.id if ctx.guild else None
+            channel_id = ctx.channel.id
+            
+            if not guild_id:
+                await create_embed_response(
+                    ctx,
+                    "This command can only be used in server channels, not in DMs.",
+                    title="Error",
+                    color=discord.Color.red()
+                )
+                return
+            
+            channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
+            channel_config.last_cleared_timestamp = None
+            chatbot_manager.set_channel_config(guild_id, channel_id, channel_config)
+            
+            await create_embed_response(
+                ctx,
+                f"✅ Removed indexing checkpoint.\n\n"
+                f"The chatbot will now re-index messages from before the last clear.",
+                title="Checkpoint Removed",
+                color=discord.Color.green()
+            )
+            logger.info(f"Removed indexing checkpoint for channel {ctx.channel.name} ({channel_id}) by {ctx.author}")
+                
+        except Exception as e:
+            logger.error(f"Error removing checkpoint: {e}", exc_info=True)
+            await create_embed_response(
+                ctx,
+                f"An error occurred while removing the checkpoint: {str(e)}",
                 title="Error",
                 color=discord.Color.red()
             )
@@ -2117,6 +2165,69 @@ class LLMCommands(commands.Cog):
         else:
             await create_embed_response(ctx, "Invalid level. Use 'server' or a channel mention.", title="Error", color=discord.Color.red())
             return
+
+    @commands.command(name='set_reasoning_budget', help='Set the reasoning budget for a model.')
+    @has_command_permission('manage_guild')
+    @command_category("AI Assistant")
+    async def set_reasoning_budget(self, ctx, model: str, level: str, mode: Optional[str] = None):
+        """Sets the reasoning budget for a specific model and mode."""
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
+            return
+
+        guild_id = ctx.guild.id
+        level_map = {"auto": -1, "none": 0, "low": 1, "medium": 2, "high": 3}
+        
+        level_val = level_map.get(level.lower())
+        if level_val is None:
+            await create_embed_response(ctx, "Invalid level. Use 'auto', 'none', 'low', 'medium', or 'high'.", title="Error", color=discord.Color.red())
+            return
+
+        if mode and mode.lower() == 'all':
+            modes_to_set = ["default", "chat", "ask", "think"]
+            for target_mode in modes_to_set:
+                save_reasoning_budget(model, target_mode, level_val, guild_id)
+            await create_embed_response(ctx, f"Reasoning budget for model `{model}` for all modes set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+        else:
+            target_mode = mode if mode else "default"
+            save_reasoning_budget(model, target_mode, level_val, guild_id)
+            
+            if mode:
+                await create_embed_response(ctx, f"Reasoning budget for model `{model}` in mode `{mode}` set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+            else:
+                await create_embed_response(ctx, f"Default reasoning budget for model `{model}` set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+
+    @commands.command(name='view_reasoning_budget', help='View the reasoning budget for all models.')
+    @has_command_permission('manage_guild')
+    @command_category("AI Assistant")
+    async def view_reasoning_budget(self, ctx):
+        """Displays the reasoning budget for all models on the server."""
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
+            return
+
+        guild_id = ctx.guild.id
+        all_budgets = get_all_reasoning_budgets(guild_id)
+
+        if not all_budgets:
+            await create_embed_response(ctx, "No reasoning budgets have been set for this server.", title="No Reasoning Budgets Found", color=discord.Color.orange())
+            return
+
+        embed = discord.Embed(title="Reasoning Budget Configuration", color=discord.Color.blue())
+        embed.description = "Showing configured reasoning budgets for all models on this server."
+        
+        level_map_inv = {-1: "auto", 0: "none", 1: "low", 2: "medium", 3: "high"}
+
+        for model, budgets in all_budgets.items():
+            budget_lines = []
+            for mode, level in budgets.items():
+                level_str = level_map_inv.get(level, str(level))
+                budget_lines.append(f"**{mode.title()}:** `{level_str}`")
+            
+            if budget_lines:
+                embed.add_field(name=f"Model: `{model}`", value="\n".join(budget_lines), inline=False)
+
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     """Setup function to add the cog to the bot"""

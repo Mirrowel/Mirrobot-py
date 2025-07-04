@@ -56,6 +56,14 @@ class ChatbotManager:
         channel_config.enabled = False
         return self.config_manager.set_channel_config(guild_id, channel_id, channel_config)
 
+    def clear_channel_data(self, guild_id: int, channel_id: int):
+        """Clear all data for a specific channel."""
+        self.conversation_manager.clear_conversation_history(guild_id, channel_id)
+        self.indexing_manager.clear_pinned_messages(guild_id, channel_id)
+        channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
+        channel_config.last_cleared_timestamp = time.time()
+        self.config_manager.set_channel_config(guild_id, channel_id, channel_config)
+
     def should_respond_to_message(self, guild_id: int, channel_id: int, message, bot_user_id: int) -> bool:
         """Determine if the bot should respond to a message in chatbot mode"""
         try:
@@ -99,6 +107,9 @@ class ChatbotManager:
             max_messages_to_index = config.max_context_messages
             cutoff_time = time.time() - (config.context_window_hours * 3600)
             
+            if config.last_cleared_timestamp and cutoff_time < config.last_cleared_timestamp:
+                cutoff_time = config.last_cleared_timestamp
+
             logger.debug(f"Attempting to index up to {max_messages_to_index} qualifying messages from #{channel.name}")
             
             messages_indexed = 0

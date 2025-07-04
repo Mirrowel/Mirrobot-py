@@ -91,6 +91,7 @@ class ChannelChatbotConfig:
     auto_respond_to_mentions: bool = True
     auto_respond_to_replies: bool = True
     safety_settings: Optional[Dict[str, str]] = None
+    last_cleared_timestamp: Optional[float] = None
     
     def __post_init__(self):
         # Handle cases where config might have old values or missing fields
