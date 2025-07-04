@@ -6,7 +6,7 @@ import json
 import time
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, Tuple, List, Union
 from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from utils.embed_helper import create_embed_response, create_llm_response
@@ -24,10 +24,6 @@ class LLMCommands(commands.Cog):
         self.bot = bot
         self.llm_config = load_llm_config()
         self.api_keys = load_api_keys_from_env()
-        self.llm_client = RotatingClient(
-            api_keys=self.api_keys,
-            max_retries=self.llm_config.get("max_retries", 2)
-        )
         # Global default models
         self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
@@ -38,12 +34,6 @@ class LLMCommands(commands.Cog):
         """Initialize the LLM client and check provider status on cog load."""
         logger.info("LLMCommands cog loaded. Initializing client and checking providers.")
         await self.check_all_providers_status()
-
-    async def cog_unload(self):
-        """Clean up any resources when the cog unloads."""
-        if self.llm_client and hasattr(self.llm_client, 'http_client'):
-            await self.llm_client.http_client.aclose()
-        logger.info("LLMCommands cog unloaded.")
 
     def get_llm_config(self, guild_id: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -198,14 +188,15 @@ class LLMCommands(commands.Cog):
     async def check_provider_status(self, provider: str) -> bool:
         """Check the status of a single provider by trying to list its models."""
         try:
-            models = await self.llm_client.get_available_models(provider)
-            is_online = bool(models)
-            self.provider_status[provider] = is_online
-            if is_online:
-                logger.info(f"Provider '{provider}' is online. Found {len(models)} models.")
-            else:
-                logger.warning(f"Provider '{provider}' is offline or has no models.")
-            return is_online
+            async with RotatingClient(api_keys=self.api_keys) as client:
+                models = await client.get_available_models(provider)
+                is_online = bool(models)
+                self.provider_status[provider] = is_online
+                if is_online:
+                    logger.info(f"Provider '{provider}' is online. Found {len(models)} models.")
+                else:
+                    logger.warning(f"Provider '{provider}' is offline or has no models.")
+                return is_online
         except Exception as e:
             logger.error(f"Failed to check status for provider '{provider}': {e}")
             self.provider_status[provider] = False
@@ -226,7 +217,7 @@ class LLMCommands(commands.Cog):
         self, 
         prompt: Optional[str] = None,
         model_type: str = "default",
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
         temperature: float = 0.7,
         guild_id: Optional[int] = None,
         channel_id: Optional[int] = None,
@@ -257,11 +248,13 @@ class LLMCommands(commands.Cog):
         request_kwargs = {
             "model": target_model,
             "messages": messages,
-            "max_tokens": max_tokens,
             "temperature": temperature,
             "timeout": self.llm_config.get("timeout", 120),
             "safety_settings": get_safety_settings(guild_id, channel_id)
         }
+
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
 
         # Handle local provider by setting api_base
         if target_model.startswith("local/"):
@@ -274,7 +267,8 @@ class LLMCommands(commands.Cog):
         self._save_debug_request(request_kwargs, "RotatingClient", target_model.split('/')[0])
 
         try:
-            response = await self.llm_client.acompletion(**request_kwargs)
+            async with RotatingClient(api_keys=self.api_keys, max_retries=self.llm_config.get("max_retries", 2)) as client:
+                response = await client.acompletion(**request_kwargs)
             
             # Save the raw response for debugging
             self._save_debug_response(response, target_model.split('/')[0])
@@ -1040,14 +1034,15 @@ class LLMCommands(commands.Cog):
         await ctx.typing()
 
         try:
-            all_models = await self.llm_client.get_all_available_models(grouped=True)
-            if self.llm_config.get("base_url"):
-                try:
-                    local_models = await self.llm_client.get_available_models("local")
-                    if local_models:
-                        all_models["local"] = local_models
-                except Exception as e:
-                    logger.warning(f"Could not fetch local models: {e}")
+            async with RotatingClient(api_keys=self.api_keys) as client:
+                all_models = await client.get_all_available_models(grouped=True)
+                if self.llm_config.get("base_url"):
+                    try:
+                        local_models = await client.get_available_models("local")
+                        if local_models:
+                            all_models["local"] = local_models
+                    except Exception as e:
+                        logger.warning(f"Could not fetch local models: {e}")
 
             if not all_models:
                 await create_embed_response(ctx, "No models found for any provider.", title="No Models Found", color=discord.Color.orange())
@@ -1190,7 +1185,8 @@ class LLMCommands(commands.Cog):
 
         try:
             if not is_manual:
-                all_models_grouped = await self.llm_client.get_all_available_models(grouped=True)
+                async with RotatingClient(api_keys=self.api_keys) as client:
+                    all_models_grouped = await client.get_all_available_models(grouped=True)
                 all_models_flat = [model for models in all_models_grouped.values() for model in models]
 
                 if not all_models_flat:
@@ -2071,31 +2067,28 @@ class LLMCommands(commands.Cog):
 
     @llm_safety.command(name='set', help="""Set a safety setting for the server or a channel.
 
-    Usage: `!llm_safety set <level> <category> <threshold> [channel]`
+    Usage: `!llm_safety set <level> <category> <threshold>`
 
     Arguments:
-    - `level`: `server` or `channel`.
-    - `category`: `harassment`, `hate_speech`, `sexually_explicit`, `dangerous_content`.
+    - `level`: `server` or a channel mention (e.g., #general).
+    - `category`: `all`, `harassment`, `hate_speech`, `sexually_explicit`, `dangerous_content`.
     - `threshold`: `block_none`, `block_low_and_above`, `block_medium_and_above`, `block_only_high`.
-    - `[channel]`: Optional channel mention. Required if level is `channel` and you want to set it for a different channel.
 
     Examples:
-    - `!llm_safety set server harassment block_none`
-    - `!llm_safety set channel hate_speech block_medium_and_above #general`
+    - `!llm_safety set server all block_none`
+    - `!llm_safety set #general hate_speech block_medium_and_above`
     """)
-    async def set_safety_settings(self, ctx, level: str, category: str, threshold: str, channel: Optional[discord.TextChannel] = None):
+    async def set_safety_settings(self, ctx, level: Union[discord.TextChannel, str], category: str, threshold: str):
         """Set a safety setting for the server or a specific channel."""
-        level = level.lower()
-        if level not in ['server', 'channel']:
-            await create_embed_response(ctx, "Invalid level. Use 'server' or 'channel'.", title="Error", color=discord.Color.red())
-            return
-
-        if level == 'channel' and not channel:
-            channel = ctx.channel
-
         valid_categories = ["harassment", "hate_speech", "sexually_explicit", "dangerous_content"]
-        if category.lower() not in valid_categories:
-            await create_embed_response(ctx, f"Invalid category. Use one of: {', '.join(valid_categories)}", title="Error", color=discord.Color.red())
+        categories_to_set = []
+
+        if category.lower() == 'all':
+            categories_to_set = valid_categories
+        elif category.lower() in valid_categories:
+            categories_to_set.append(category.lower())
+        else:
+            await create_embed_response(ctx, f"Invalid category. Use 'all' or one of: {', '.join(valid_categories)}", title="Error", color=discord.Color.red())
             return
 
         valid_thresholds = ["block_none", "block_low_and_above", "block_medium_and_above", "block_only_high"]
@@ -2105,19 +2098,25 @@ class LLMCommands(commands.Cog):
 
         guild_id = ctx.guild.id
         
-        if level == 'server':
+        if isinstance(level, str) and level.lower() == 'server':
             settings = get_safety_settings(guild_id)
-            settings[category.lower()] = threshold.lower()
+            for cat in categories_to_set:
+                settings[cat] = threshold.lower()
             save_server_safety_settings(guild_id, settings)
             await create_embed_response(ctx, f"Server safety setting for `{category}` updated to `{threshold}`.", title="✅ Success", color=discord.Color.green())
-        else: # channel
+        elif isinstance(level, discord.TextChannel):
+            channel = level
             channel_config = chatbot_manager.get_channel_config(guild_id, channel.id)
             if not channel_config.safety_settings:
                 channel_config.safety_settings = get_safety_settings(guild_id, channel.id)
             
-            channel_config.safety_settings[category.lower()] = threshold.lower()
+            for cat in categories_to_set:
+                channel_config.safety_settings[cat] = threshold.lower()
             chatbot_manager.set_channel_config(guild_id, channel.id, channel_config)
             await create_embed_response(ctx, f"Channel safety setting for `{category}` in #{channel.name} updated to `{threshold}`.", title="✅ Success", color=discord.Color.green())
+        else:
+            await create_embed_response(ctx, "Invalid level. Use 'server' or a channel mention.", title="Error", color=discord.Color.red())
+            return
 
 async def setup(bot):
     """Setup function to add the cog to the bot"""
