@@ -222,14 +222,12 @@ def create_bot(config):
                 total_users_cleaned = 0
                 if guilds_with_indexed_channels:
                     logger.info(f"Cleaning up stale users for {len(guilds_with_indexed_channels)} guilds.")
-                    cleanup_tasks = [chatbot_manager.cleanup_stale_users(gid) for gid in guilds_with_indexed_channels]
-                    cleanup_results = await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-                    
-                    for res in cleanup_results:
-                        if isinstance(res, int):
-                            total_users_cleaned += res
-                        else:
-                            logger.error(f"Error during user cleanup: {res}")
+                    for guild_id in guilds_with_indexed_channels:
+                        try:
+                            cleaned_count = chatbot_manager.cleanup_stale_users(guild_id)
+                            total_users_cleaned += cleaned_count
+                        except Exception as e:
+                            logger.error(f"Error during user cleanup for guild {guild_id}: {e}")
 
                 logger.info(f"Chatbot re-indexing on restart complete: {total_channels_indexed} channels/threads indexed, {total_pins_indexed} pinned messages indexed, {total_users_cleaned} stale users cleaned.")
 
