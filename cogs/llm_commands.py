@@ -259,7 +259,7 @@ class LLMCommands(commands.Cog):
         # Apply reasoning budget
         reasoning_budget_level = get_reasoning_budget(target_model, model_type, guild_id)
         if reasoning_budget_level is not None:
-            logger.info(f"Applying reasoning budget for model '{target_model}' in mode '{model_type}' with level '{reasoning_budget_level}'.")
+            #logger.info(f"Applying reasoning budget for model '{target_model}' in mode '{model_type}' with level '{reasoning_budget_level}'.")
             if reasoning_budget_level == -1 or reasoning_budget_level == "auto":
                 request_kwargs["thinking"] = {
                     "type": "enabled",
