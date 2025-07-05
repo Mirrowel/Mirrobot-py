@@ -96,72 +96,62 @@ class ChatbotManager:
             return False
 
     async def index_chatbot_channel(self, guild_id: int, channel_id: int, channel) -> bool:
-        """Index the specific channel where chatbot is enabled and fetch recent message history"""
+        """Index a channel incrementally or perform a full scan if needed."""
         try:
+            # Always update the channel's own index entry
             channel_index = self.indexing_manager.load_channel_index(guild_id)
             channel_entry = self.indexing_manager.index_channel(channel)
             channel_index[channel_id] = channel_entry
             self.indexing_manager.save_channel_index(guild_id, channel_index)
 
             config = self.config_manager.get_channel_config(guild_id, channel_id)
-            max_messages_to_index = config.max_context_messages
-            cutoff_time = time.time() - (config.context_window_hours * 3600)
             
-            if config.last_cleared_timestamp and cutoff_time < config.last_cleared_timestamp:
-                cutoff_time = config.last_cleared_timestamp
-
-            logger.debug(f"Attempting to index up to {max_messages_to_index} qualifying messages from #{channel.name}")
+            # Load existing history to check for incremental update
+            existing_history = self.conversation_manager.load_conversation_history(guild_id, channel_id)
             
-            messages_indexed = 0
-            messages_skipped = 0
-            messages_failed = 0
-            total_messages_fetched_from_discord = 0
-            consecutive_old_messages = 0
+            after_message = None
+            if existing_history:
+                existing_history.sort(key=lambda m: m.timestamp, reverse=True)
+                latest_message_id = existing_history[0].message_id
+                after_message = discord.Object(id=latest_message_id)
+                logger.debug(f"Performing incremental index for #{channel.name} after message ID {latest_message_id}")
+            else:
+                logger.debug(f"Performing full history index for #{channel.name}")
+
+            messages_to_add = []
+            # Fetch history. Use `after` for incremental, or `limit` for full scan.
+            history_iterator = channel.history(limit=None if after_message else config.max_context_messages, after=after_message)
             
-            last_message_object = None
-            while messages_indexed < max_messages_to_index:
-                history_iterator = channel.history(limit=500, before=last_message_object, oldest_first=False)
-                
-                batch_fetched = 0
-                async for message in history_iterator:
-                    total_messages_fetched_from_discord += 1
-                    batch_fetched += 1
-                    last_message_object = message
+            async for message in history_iterator:
+                if message.type not in [discord.MessageType.default, discord.MessageType.reply]:
+                    continue
+                messages_to_add.append(message)
+                # Also index users from mentions and replies
+                for mentioned_user in message.mentions:
+                    self.indexing_manager.update_user_index(guild_id, mentioned_user)
+                if message.reference and message.reference.resolved and hasattr(message.reference.resolved, 'author'):
+                    self.indexing_manager.update_user_index(guild_id, message.reference.resolved.author)
 
-                    if message.created_at.timestamp() < cutoff_time:
-                        consecutive_old_messages += 1
-                        if consecutive_old_messages >= 4:
-                            logger.debug(f"Stopping fetch: {consecutive_old_messages} consecutive messages older than cutoff.")
-                            break
-                        continue
-                    else:
-                        consecutive_old_messages = 0
+            if not messages_to_add:
+                logger.info(f"No new messages to index for #{channel.name}.")
+                return True
 
-                    if message.type not in [discord.MessageType.default, discord.MessageType.reply]:
-                        messages_skipped += 1
-                        continue
+            # For a full scan (newest to oldest), reverse to get chronological order.
+            # For incremental (oldest to newest), the order is already correct.
+            if not after_message:
+                messages_to_add.reverse()
 
-                    if self.add_message_to_conversation(guild_id, channel_id, message):
-                        messages_indexed += 1
-                        for mentioned_user in message.mentions:
-                            self.indexing_manager.update_user_index(guild_id, mentioned_user)
-                        if message.reference and message.reference.resolved and hasattr(message.reference.resolved, 'author'):
-                            self.indexing_manager.update_user_index(guild_id, message.reference.resolved.author)
-                    else:
-                        messages_failed += 1
-                    
-                    if messages_indexed >= max_messages_to_index:
-                        break
-                
-                if batch_fetched == 0 or consecutive_old_messages >= 4:
-                    logger.debug(f"Exiting fetch loop. Batch fetched: {batch_fetched}, Consecutive old: {consecutive_old_messages}")
-                    break
-                if messages_indexed >= max_messages_to_index:
-                    break
+            # Use the new bulk add method
+            added_count = self.conversation_manager.bulk_add_messages_to_conversation(
+                guild_id,
+                channel_id,
+                messages_to_add,
+                self.indexing_manager.update_user_index
+            )
 
-            logger.info(f"Indexed chatbot channel #{channel.name}: {messages_indexed}/{max_messages_to_index} qualifying messages "
-                       f"({messages_skipped} system skipped, {messages_failed} content/time filtered, {total_messages_fetched_from_discord} Discord messages fetched) for guild {guild_id}")
+            logger.info(f"Indexing for #{channel.name} complete. Added {added_count} new messages.")
             return True
+
         except Exception as e:
             logger.error(f"Error indexing chatbot channel #{channel.name}: {e}", exc_info=True)
             return False

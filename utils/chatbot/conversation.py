@@ -159,6 +159,79 @@ class ConversationManager:
             logger.error(f"Error adding message to conversation for channel {channel_id}: {e}", exc_info=True)
             return False
 
+    def bulk_add_messages_to_conversation(self, guild_id: int, channel_id: int, new_messages: List[discord.Message], update_user_index_func) -> int:
+        """Add a list of messages to the conversation history efficiently."""
+        try:
+            if not new_messages:
+                return 0
+
+            channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
+            cutoff_time = time.time() - (channel_config.context_window_hours * 3600)
+            
+            existing_history = self.load_conversation_history(guild_id, channel_id)
+            existing_message_ids = {msg.message_id for msg in existing_history}
+            
+            converted_messages = []
+            users_to_update = set()
+
+            for message in new_messages:
+                if message.id in existing_message_ids:
+                    continue
+
+                cleaned_content, image_urls, embed_urls = self._process_discord_message_for_context(message)
+                if not cleaned_content and not image_urls:
+                    continue
+
+                multimodal_content = []
+                if cleaned_content:
+                    multimodal_content.append(ContentPart(type="text", text=cleaned_content))
+                for url in image_urls:
+                    multimodal_content.append(ContentPart(type="image_url", image_url={"url": url}))
+
+                conv_message = ConversationMessage(
+                    user_id=message.author.id,
+                    username=message.author.display_name,
+                    content=cleaned_content,
+                    timestamp=message.created_at.timestamp(),
+                    message_id=message.id,
+                    is_bot_response=message.author.bot,
+                    is_self_bot_response=(message.author.id == self.bot_user_id),
+                    referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
+                    attachment_urls=image_urls,
+                    embed_urls=embed_urls,
+                    multimodal_content=multimodal_content
+                )
+
+                if conv_message.timestamp < cutoff_time:
+                    continue
+
+                is_valid, _ = self._is_valid_context_message(conv_message, debug_mode=False)
+                if not is_valid:
+                    continue
+                
+                converted_messages.append(conv_message)
+                users_to_update.add(message.author)
+
+            if not converted_messages:
+                return 0
+
+            for user in users_to_update:
+                update_user_index_func(guild_id, user, is_message_author=True)
+
+            # Combine, sort, and truncate
+            combined_messages = existing_history + converted_messages
+            combined_messages.sort(key=lambda m: m.timestamp)
+            
+            if len(combined_messages) > channel_config.max_context_messages:
+                combined_messages = combined_messages[-channel_config.max_context_messages:]
+            
+            self.save_conversation_history(guild_id, channel_id, combined_messages)
+            return len(converted_messages)
+            
+        except Exception as e:
+            logger.error(f"Error bulk adding messages to conversation for channel {channel_id}: {e}", exc_info=True)
+            return 0
+
     def _is_valid_context_message(self, msg: ConversationMessage, debug_mode: bool = False) -> tuple[bool, list[str]]:
         """Check if a message is valid for context inclusion"""
         debug_steps = []
