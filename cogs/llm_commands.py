@@ -306,9 +306,6 @@ class LLMCommands(commands.Cog):
                 logger.debug(f"LLM request to '{target_model}' completed in {performance_metrics['elapsed_time']:.2f}s, "
                            f"{performance_metrics['chars_per_sec']:.1f} chars/s")
 
-            # Convert text patterns to Discord format
-            content = self.convert_text_to_discord_format(content, guild_id)
-            
             return content, performance_metrics
 
         except Exception as e:
@@ -652,190 +649,6 @@ class LLMCommands(commands.Cog):
         
         return cleaned_response, combined_thinking
     
-    def convert_text_to_discord_format(self, content: str, guild_id: Optional[int] = None) -> str:
-        """Convert text patterns in LLM response to Discord format
-        
-        Handles:
-        - <Ping> @Username -> actual Discord mention
-        - @Username -> actual Discord mention
-        - Removes self-mentions of the bot to prevent it from mentioning itself
-        
-        Args:
-            content: Text content from LLM response
-            guild_id: Optional guild ID to look up users
-            
-        Returns:
-            Formatted text with proper Discord formatting
-        """
-        try:
-            # Skip processing if content is empty
-            if not content:
-                return content
-            
-            # Check if this is a bot response message by looking for the bot's name
-            # This helps us determine if we need to strip out self-references
-            # Note: bot_user_id should ideally be fetched from bot.user.id in a listener,
-            # but for a cog, assuming it's relatively static is okay for now.
-            bot_user_id = self.bot.user.id if self.bot.user else 0 # Use bot's actual ID
-            bot_names = ["Mirrobot", "Helper Retirement Machine 9000"] # Add your bot's names here
-            is_bot_message = False
-            
-            # Check if message starts with bot name (this indicates it's likely a bot's own internal response)
-            # This is a heuristic to guess if the *LLM* is generating a self-referential message,
-            # not if the *bot* is sending a message. LLM should be told its name.
-            # Removed this heuristic as it's unreliable; rely on the LLM's instruction not to self-mention in prompt.
-            # The removal of self-mentions logic below will handle it based on bot_user_id.
-            
-            # Filter out "Username:" pattern at the beginning of messages or lines
-            # This handles cases where a message starts with a username followed by a colon
-            username_colon_pattern = r'^(?:(?:[a-zA-Z0-9_ -]+)|(?:<@!?\d+>)):|(?:\n)(?:(?:[a-zA-Z0-9_ -]+)|(?:<@!?\d+>)): '
-            content = re.sub(username_colon_pattern, '', content, flags=re.MULTILINE).strip()
-            # After removing, clean up potential empty lines or excessive whitespace
-            content = re.sub(r'\n\s*\n', '\n\n', content).strip()
-
-
-            # If this is from the bot, remove self-mentions to prevent self-talk
-            # This happens if the LLM output itself contains the bot's mention or name
-            if bot_user_id != 0: # Only apply if bot_user_id is known
-                # Remove direct mentions of the bot
-                bot_mention_pattern = f'<@!?{bot_user_id}>'
-                content = re.sub(bot_mention_pattern, '', content)
-                
-                # Also remove text references to the bot's name
-                for name in bot_names:
-                    # Use word boundary to avoid partial replacements, and ignore case
-                    content = re.sub(f'\\b{re.escape(name)}\\b', '', content, flags=re.IGNORECASE)
-                
-                # Clean up any double spaces or leading/trailing whitespace left by mention/name removals
-                content = re.sub(r'\s+', ' ', content).strip()
-            
-            # Load user index for mentions (used by both mention formats)
-            user_index = {}
-            try:
-                from utils.chatbot.manager import chatbot_manager
-                if guild_id:
-                    user_index = chatbot_manager.load_user_index(guild_id)
-                    logger.debug(f"Loaded user index with {len(user_index)} users for mention conversion")
-            except ImportError:
-                logger.debug("Chatbot manager not available for user lookups")
-            
-            # Convert text ping format: <Ping> @Username
-            # This pattern should be robust to various characters in username, but usually it's plain letters/numbers
-            # Find all instances of this pattern (e.g., <Ping> @User_Name or <ping> @Another User)
-            ping_pattern = r'<[Pp][Ii][Nn][Gg]>\s*@([a-zA-Z0-9_ ]+)' # Capture the username string
-            ping_matches = re.findall(ping_pattern, content)
-            
-            if ping_matches:
-                # Process each match
-                for username_match in set(ping_matches): # Use set to process unique usernames once
-                    user_id = None
-                    # Look in user index first (case-insensitive and handle spaces)
-                    for uid, user_entry in user_index.items():
-                        if username_match.lower().strip() == user_entry.username.lower().strip() or \
-                           username_match.lower().strip() == user_entry.display_name.lower().strip():
-                            user_id = uid
-                            break
-                    
-                    if user_id:
-                        # Skip self-mentions (if the user ID matches the bot's own ID)
-                        if int(user_id) == bot_user_id: # and is_bot_message: // is_bot_message heuristic removed
-                            # Remove the original text ping pattern from content
-                            content = re.sub(re.escape(f'<Ping> @{username_match}'), '', content, flags=re.IGNORECASE)
-                            logger.debug(f"Removed self-mention of bot via <Ping> @{username_match}")
-                            continue
-                            
-                        # Replace the text ping with actual Discord mention
-                        # Use re.escape for the username_match to handle special characters correctly in regex
-                        pattern_to_replace = r'<[Pp][Ii][Nn][Gg]>\s*@' + re.escape(username_match) + r'\b'
-                        discord_mention = f'<@{user_id}>'
-                        content = re.sub(pattern_to_replace, discord_mention, content, flags=re.IGNORECASE)
-                        logger.debug(f"Converted text ping for '{username_match}' to Discord mention for user ID {user_id}")
-                    else:
-                        logger.debug(f"Could not find user ID for <Ping> @'{username_match}'")
-            
-            # Convert plain @Username format (without <Ping> tag)
-            # Find all instances of @Username pattern (not preceded by < and not part of existing <@ID>)
-            # This regex avoids matching inside existing Discord mentions like <@12345>
-            username_pattern = r'(?<!<)(?<!<@)\B@([a-zA-Z0-9_]+)\b'
-            username_matches = re.findall(username_pattern, content)
-            
-            if username_matches:
-                logger.debug(f"Found {len(username_matches)} username mentions to convert")
-                
-                # Process each match
-                for username in set(username_matches): # Use set for unique usernames
-                    # Skip if username is one of the bot names and this is a bot message
-                    if any(username.lower() == name.lower() for name in bot_names) and bot_user_id != 0: # and is_bot_message: // heuristic removed
-                        logger.debug(f"Skipping @{username} as it's a self-mention of the bot.")
-                        # Additionally, remove the self-mention
-                        content = re.sub(f'@{re.escape(username)}\\b', '', content)
-                        continue
-                        
-                    # Try to find the user by username or display name
-                    user_id = None
-                    
-                    # Look in user index (case-insensitive)
-                    for uid, user_entry in user_index.items():
-                        if username.lower() == user_entry.username.lower() or username.lower() == user_entry.display_name.lower():
-                            user_id = uid
-                            break
-                    
-                    if user_id:
-                        # Replace the username with actual Discord mention
-                        # Use word boundary to ensure we don't replace partial matches
-                        # Also ensure it's not already part of an existing mention
-                        pattern = r'(?<!<)(?<!<@)\B@' + re.escape(username) + r'\b'
-                        discord_mention = f'<@{user_id}>'
-                        content = re.sub(pattern, discord_mention, content)
-                        logger.debug(f"Converted @{username} to Discord mention for user ID {user_id}")
-                    else:
-                        logger.debug(f"Could not find user ID for username '@{username}'")
-            
-            # NEW: Convert plain Username format (without @ symbol)
-            # We need to be more careful here to avoid false positives
-            if user_index and len(user_index) > 0:
-                # Build a list of usernames to look for - filter out short names to avoid false positives
-                usernames_to_find = []
-                for uid, user_entry in user_index.items():
-                    # Only consider usernames that are at least 3 characters to avoid false positives
-                    # and are not exclusively numbers (to avoid accidental ID matches)
-                    if len(user_entry.username) >= 3 and not user_entry.username.isdigit():
-                        usernames_to_find.append((user_entry.username, uid))
-                    # Also include display names if they differ from username and are long enough
-                    if user_entry.display_name != user_entry.username and len(user_entry.display_name) >= 3 and not user_entry.display_name.isdigit():
-                        usernames_to_find.append((user_entry.display_name, uid))
-                
-                # Sort by length (descending) to prioritize longer matches and avoid replacing substrings
-                usernames_to_find.sort(key=lambda x: len(x[0]), reverse=True)
-                
-                # Check for each username in the content
-                for username_text, uid in usernames_to_find:
-                    # Skip self-mentions (if the user ID matches the bot's own ID)
-                    if int(uid) == bot_user_id: # and is_bot_message: // heuristic removed
-                        continue
-                        
-                    # Look for the username with word boundaries to avoid partial matches
-                    # Ensure it's not already part of a Discord mention (e.g., <@12345> or @username_part_of_mention)
-                    # This pattern also ensures it's not part of a URL or code block
-                    pattern = r'(?<![<@`/\.])\b' + re.escape(username_text) + r'\b(?![\d])'
-                    
-                    # Check if this pattern appears in the content
-                    if re.search(pattern, content, re.IGNORECASE):
-                        # Replace with Discord mention
-                        discord_mention = f'<@{uid}>'
-                        content = re.sub(pattern, discord_mention, content, flags=re.IGNORECASE)
-                        logger.debug(f"Converted plain username '{username_text}' to Discord mention for user ID {uid}")
-            
-            # Final cleanup of any weird whitespace artifacts
-            content = re.sub(r'\s+', ' ', content).strip()
-            content = re.sub(r'\s+([.,!?:;])', r'\1', content)  # Fix spacing before punctuation
-            
-            return content
-            
-        except Exception as e:
-            logger.error(f"Error converting text to Discord format: {e}", exc_info=True)
-            # If something goes wrong, just return the original content
-            return content
 
     @commands.command(name='ask', help='Ask the LLM a question')
     @has_command_permission('manage_messages')
@@ -893,7 +706,13 @@ class LLMCommands(commands.Cog):
                     context=context
                 )
                 cleaned_response, _ = self.strip_thinking_tokens(response)
-                await self.send_llm_response(ctx, cleaned_response, question, model_type="ask", performance_metrics=performance_metrics)
+                final_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                    cleaned_response,
+                    guild_id,
+                    bot_user_id=self.bot.user.id,
+                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                )
+                await self.send_llm_response(ctx, final_response, question, model_type="ask", performance_metrics=performance_metrics)
             except Exception as e:
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
@@ -953,11 +772,18 @@ class LLMCommands(commands.Cog):
                     context=context
                 )
                 
+                formatted_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                    response,
+                    guild_id,
+                    bot_user_id=self.bot.user.id,
+                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                )
+
                 if not display_thinking:
-                    cleaned_response, _ = self.strip_thinking_tokens(response)
+                    cleaned_response, _ = self.strip_thinking_tokens(formatted_response)
                     await self.send_llm_response(ctx, cleaned_response, question, model_type="think", performance_metrics=performance_metrics)
                 else:
-                    await self.send_llm_response(ctx, response, question, model_type="think", performance_metrics=performance_metrics)
+                    await self.send_llm_response(ctx, formatted_response, question, model_type="think", performance_metrics=performance_metrics)
             except Exception as e:
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     

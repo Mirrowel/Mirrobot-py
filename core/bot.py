@@ -628,13 +628,46 @@ async def handle_chatbot_response(bot, message):
                     # We still strip them here to ensure the final response is clean.
                     cleaned_response, thinking_content = llm_cog.strip_thinking_tokens(response_text)
 
+                    # NEW: Format the response for user-friendly display
+                    final_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                        text=cleaned_response,
+                        guild_id=message.guild.id,
+                        bot_user_id=bot.user.id,
+                        bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                    )
+
+                    def truncate_to_last_sentence(text: str, max_length: int) -> str:
+                        """Truncates text to the last full sentence within the max_length."""
+                        if len(text) <= max_length:
+                            return text
+                        
+                        # Truncate to max_length to work with a smaller string
+                        truncated_text = text[:max_length]
+                        
+                        # Find the last sentence-ending punctuation
+                        last_sentence_end = -1
+                        for p in ['.', '!', '?']:
+                            last_sentence_end = max(last_sentence_end, truncated_text.rfind(p))
+                        
+                        # If we found a sentence end, truncate there and add ellipsis
+                        if last_sentence_end != -1:
+                            return truncated_text[:last_sentence_end+1] + "..."
+                        
+                        # Fallback: find the last space to avoid cutting a word
+                        last_space = truncated_text.rfind(' ')
+                        if last_space != -1:
+                            return truncated_text[:last_space] + "..."
+                            
+                        # Final fallback: hard truncate
+                        return text[:max_length-3] + "..."
+
                     # Ensure response doesn't exceed Discord's character limit (2000)
-                    if len(cleaned_response) > 2000:
-                        logger.warning(f"LLM response ({len(cleaned_response)} chars) exceeds Discord limit (2000). Truncating.")
-                        cleaned_response = cleaned_response[:1997] + "..."
+                    if len(final_response) > 2000:
+                        logger.warning(f"LLM response ({len(final_response)} chars) exceeds Discord limit (2000). Truncating intelligently.")
+                        final_response = truncate_to_last_sentence(final_response, 2000)
 
                     # Send the response as a reply
-                    sent_message = await message.reply(cleaned_response)
+                    sent_message = await message.reply(final_response)
 
                     # Add the bot's response to conversation history
                     chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)

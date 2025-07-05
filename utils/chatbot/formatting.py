@@ -126,21 +126,135 @@ class LLMContextFormatter:
             return ""
 
     def _convert_discord_format_to_llm_readable(self, content: str, guild_id: int) -> str:
-        """Converts Discord-specific formats to LLM-readable text."""
+        """
+        Converts Discord-specific formats and plain text names into a standardized
+        @username format for the LLM context.
+        """
         user_index = self.index_manager.load_user_index(guild_id)
-        
-        def replace_mention(match):
+        if not user_index:
+            return content
+
+        processed_content = content
+
+        # 1. Handle standard Discord mentions first (<@12345>)
+        def replace_mention_id(match):
             user_id = int(match.group(1))
             user = user_index.get(user_id)
-            return f"@{user.username}" if user else match.group(0)
+            return f"@{user.username}" if user else "@Unknown User"
+        processed_content = re.sub(r'<@!?(\d+)>', replace_mention_id, processed_content)
 
-        processed_content = re.sub(r'<@!?(\d+)>', replace_mention, content)
-        #processed_content = re.sub(r'<a?:(\w+):(\d+)>', r'(\1 emoji)', processed_content)
-        #processed_content = re.sub(r'\b\d{10,20}\b', '', processed_content)
+        # 2. Handle the specially formatted creator name
+        # This specifically looks for the formatted name and converts it back.
+        creator_username_formatted = "⭐ \\*\\*Mirrowel\\*\\*"
+        processed_content = re.sub(creator_username_formatted, "@Mirrowel", processed_content)
+
+        # 3. Handle all other display names and usernames, stripping markdown
+        name_to_username = {}
+        for user in user_index.values():
+            # Map both display name and username to the canonical @username
+            name_to_username[user.display_name.lower()] = f"@{user.username}"
+            name_to_username[user.username.lower()] = f"@{user.username}"
+        
+        # Sort by length descending to match longer names first
+        sorted_names = sorted(name_to_username.keys(), key=len, reverse=True)
+        
+        # Create a regex that finds names, optionally surrounded by markdown
+        # This looks for markdown characters like *, _, ~, `, etc.
+        escaped_names = [re.escape(name) for name in sorted_names if len(name) >= 3]
+        if escaped_names:
+            pattern = re.compile(
+                r'(?<![@\w])(?:[\*\_~`]*|⭐\s\*\*?)(' + '|'.join(escaped_names) + r')(?:[\*\_~`]*|\*\*?)(?!\w)',
+                re.IGNORECASE
+            )
+
+            def replace_name(match):
+                # The first group is the plain name, stripped of markdown
+                matched_name = match.group(1).lower()
+                return name_to_username.get(matched_name, match.group(0))
+
+            processed_content = pattern.sub(replace_name, processed_content)
+
+        # 4. Final cleanup
         processed_content = re.sub(r'(?<=\s):(\d+\.?)\s*$', '', processed_content, flags=re.MULTILINE)
         processed_content = re.sub(r'\s+', ' ', processed_content).strip()
         processed_content = re.sub(r'\s+([.,!?:;])', r'\1', processed_content)
+        
         return processed_content
+
+    def format_llm_output_for_discord(self, text: str, guild_id: int, bot_user_id: int = 0, bot_names: List[str] = []) -> str:
+        """
+        Cleans and formats LLM output for display on Discord.
+        Handles:
+        - Removing `Username:` prefixes.
+        - Preventing bot self-mentions.
+        - Converting internal `@username` and plain text names to display names.
+        - Special handling for the creator's username.
+        - Cleaning up leftover artifacts.
+        """
+        try:
+            creator_id = 214161976534892545
+            creator_username = "⭐ **Mirrowel**"
+
+            # 1. Strip "Username:" prefixes
+            username_colon_pattern = r'^(?:[a-zA-Z0-9_ -]+):\s*'
+            processed_text = re.sub(username_colon_pattern, '', text, flags=re.MULTILINE).strip()
+
+            # 2. Bot Self-Mention Prevention
+            if bot_user_id and bot_names:
+                for name in bot_names:
+                    processed_text = re.sub(f'\\b{re.escape(name)}\\b', '', processed_text, flags=re.IGNORECASE)
+                processed_text = re.sub(r'@\s*', '', processed_text)
+
+            # 3. Convert all username mentions to display names
+            user_index = self.index_manager.load_user_index(guild_id)
+            if user_index:
+                # Create a mapping from various names to user objects
+                name_to_user = {}
+                for user in user_index.values():
+                    name_to_user[user.username.lower()] = user
+                    if user.display_name:
+                        name_to_user[user.display_name.lower()] = user
+
+                if name_to_user:
+                    # Prioritize longer names to avoid partial matches
+                    sorted_names = sorted(name_to_user.keys(), key=len, reverse=True)
+                    
+                    # Build a regex to find all possible names, with or without @
+                    # This includes plain text names and @mentions
+                    escaped_names = [re.escape(name) for name in sorted_names if len(name) >= 3]
+                    if not escaped_names:
+                        return processed_text # No names to process
+
+                    pattern = re.compile(r'(?<!\w)@?(' + '|'.join(escaped_names) + r')(?!\w)', re.IGNORECASE)
+
+                    def replace_func(match):
+                        matched_name = match.group(1).lower()
+                        user = name_to_user.get(matched_name)
+
+                        if not user:
+                            return match.group(0)
+
+                        # Special case for the creator
+                        if user.user_id == creator_id:
+                            return creator_username
+                        
+                        # Handle bot self-mentions that might have been missed
+                        if bot_names and user.user_id == bot_user_id:
+                            return ""
+
+                        # Default to display name
+                        return user.display_name or user.username
+
+                    processed_text = pattern.sub(replace_func, processed_text)
+
+            # 4. Final Cleanup
+            processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+            processed_text = re.sub(r'\s+([.,!?:;])', r'\1', processed_text)
+            
+            return processed_text
+        except Exception as e:
+            logger.error(f"Error formatting LLM output for Discord: {e}", exc_info=True)
+            return text
 
     def get_channel_context_for_llm(self, guild_id: int, channel_id: int) -> str:
         """Get channel context information for LLM"""
