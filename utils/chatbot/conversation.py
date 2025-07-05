@@ -34,6 +34,19 @@ class ConversationManager:
     def get_conversation_file_path(self, guild_id: int, channel_id: int) -> str:
         return os.path.join(CONVERSATION_DATA_DIR, f"guild_{guild_id}", f"channel_{channel_id}.json")
 
+    def clear_conversation_history(self, guild_id: int, channel_id: int) -> bool:
+        """Clear conversation history for a specific channel."""
+        file_path = self.get_conversation_file_path(guild_id, channel_id)
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.debug(f"Cleared conversation history for channel {channel_id} in guild {guild_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error clearing conversation history for {file_path}: {e}", exc_info=True)
+            return False
+
     def load_conversation_history(self, guild_id: int, channel_id: int) -> List[ConversationMessage]:
         """Load conversation history for a specific channel"""
         file_path = self.get_conversation_file_path(guild_id, channel_id)
