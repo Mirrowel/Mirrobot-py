@@ -266,25 +266,32 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         # If all conditions are met, build the context and log it.
         logger.info(f"Inline response triggered for message {message.id} in channel {message.channel.id}")
 
-        # 2. Perform on-the-fly indexing
+        # 2. Build context and perform on-the-fly indexing
+        context_messages = []
         try:
-            # Index the current channel
-            chatbot_manager.index_manager.update_channel_index(message.channel)
-
-            # Build context and then index all users involved
+            # Step 2a: Build the context. This is critical for a quality response.
             context_messages = await self.manager.build_context(message)
-            
-            if context_messages:
-                unique_users = {msg.author for msg in context_messages if not msg.author.bot}
-                for user in unique_users:
-                    chatbot_manager.index_manager.update_user_index(message.guild.id, user)
-            
-            logger.info(f"Built context with {len(context_messages)} messages and indexed {len(unique_users)} users.")
-
+            logger.info(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
         except Exception as e:
-            logger.error(f"Error during on-the-fly indexing for inline response: {e}", exc_info=True)
-            # We can still proceed, but the context might be incomplete.
-            context_messages = []
+            logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
+            await message.reply("Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
+            return
+
+        # Step 2b: Perform non-critical on-the-fly indexing.
+        # A failure here should be logged but not prevent the bot from responding.
+        try:
+            # Index the current channel.
+            await chatbot_manager.index_manager.update_channel_index(message.channel)
+
+            # Bulk index all unique users from the context.
+            if context_messages:
+                unique_users = list({msg.author for msg in context_messages if not msg.author.bot})
+                if unique_users:
+                    await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
+                    logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
+        except Exception as e:
+            logger.warning(f"Non-critical error during on-the-fly indexing for message {message.id}: {e}", exc_info=True)
+            # Do not abort; proceed with the response using the built context.
 
 
         # 3. Format the context for the LLM

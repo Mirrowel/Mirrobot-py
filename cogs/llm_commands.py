@@ -615,8 +615,8 @@ class LLMCommands(commands.Cog):
         async with ctx.typing():
             try:
                 guild_id = ctx.guild.id if ctx.guild else None
-                channel_context = chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
-                user_context = chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
 
                 if extracted_text:
@@ -632,7 +632,7 @@ class LLMCommands(commands.Cog):
                     context=context
                 )
                 cleaned_response, _ = self.strip_thinking_tokens(response)
-                final_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                final_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                     cleaned_response,
                     guild_id,
                     bot_user_id=self.bot.user.id,
@@ -681,8 +681,8 @@ class LLMCommands(commands.Cog):
         async with ctx.typing():
             try:
                 guild_id = ctx.guild.id if ctx.guild else None
-                channel_context = chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
-                user_context = chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
 
                 if extracted_text:
@@ -698,7 +698,7 @@ class LLMCommands(commands.Cog):
                     context=context
                 )
                 
-                formatted_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                     response,
                     guild_id,
                     bot_user_id=self.bot.user.id,
@@ -1448,7 +1448,7 @@ class LLMCommands(commands.Cog):
                 )
                 return
             
-            chatbot_manager.clear_channel_data(guild_id, channel_id)
+            await chatbot_manager.clear_channel_data(guild_id, channel_id)
             
             await create_embed_response(
                 ctx,
@@ -1702,7 +1702,7 @@ class LLMCommands(commands.Cog):
             content_lines.append(f"Bot responses: {len([msg for msg in context_messages if msg.is_bot_response])}")
             
             # Get indexing stats
-            indexing_stats = chatbot_manager.get_indexing_stats(guild_id)
+            indexing_stats = await chatbot_manager.get_indexing_stats(guild_id)
             content_lines.append(f"Total users indexed: {indexing_stats['users_indexed']}")
             content_lines.append(f"Total channels indexed: {indexing_stats['channels_indexed']}")
             content_lines.append(f"Total user messages tracked: {indexing_stats['total_user_messages']}")
@@ -2006,6 +2006,47 @@ class LLMCommands(commands.Cog):
                 embed.add_field(name=f"Model: `{model}`", value="\n".join(budget_lines), inline=False)
 
         await ctx.send(embed=embed)
+
+    @commands.command(name='indexing_stats', help='Show indexing statistics for this server.')
+    @has_command_permission('manage_guild')
+    @command_category("AI Assistant")
+    async def indexing_stats(self, ctx):
+        """Displays statistics about the user and channel indexes for this server."""
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
+            return
+
+        guild_id = ctx.guild.id
+        stats = await chatbot_manager.index_manager.get_indexing_stats(guild_id)
+
+        embed = discord.Embed(title=f"Indexing Statistics for {ctx.guild.name}", color=discord.Color.blue())
+        embed.add_field(name="👥 Users Indexed", value=f"`{stats['users_indexed']}`", inline=True)
+        embed.add_field(name="＃ Channels Indexed", value=f"`{stats['channels_indexed']}`", inline=True)
+        embed.add_field(name="💬 Total User Messages", value=f"`{stats['total_user_messages']}`", inline=True)
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name='cleanup_users', help='Manually clean up stale users from the index.')
+    @has_command_permission('manage_guild')
+    @command_category("AI Assistant")
+    async def cleanup_users(self, ctx, hours: int = 168):
+        """Manually cleans up users who have not been seen in the specified number of hours."""
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
+            return
+
+        if not (24 <= hours <= 8760): # 1 day to 1 year
+            await create_embed_response(ctx, "Please provide a value for `hours` between 24 and 8760.", title="Invalid Input", color=discord.Color.orange())
+            return
+
+        async with ctx.typing():
+            removed_count = await chatbot_manager.index_manager.cleanup_stale_users(ctx.guild.id, hours)
+            await create_embed_response(
+                ctx,
+                f"Removed `{removed_count}` stale users who haven't been seen in the last {hours} hours.",
+                title="User Cleanup Complete",
+                color=discord.Color.green()
+            )
 
 async def setup(bot):
     """Setup function to add the cog to the bot"""

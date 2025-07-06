@@ -47,128 +47,108 @@ class ConversationManager:
             logger.error(f"Error clearing conversation history for {file_path}: {e}", exc_info=True)
             return False
 
-    def load_conversation_history(self, guild_id: int, channel_id: int) -> List[ConversationMessage]:
+    async def load_conversation_history(self, guild_id: int, channel_id: int) -> List[ConversationMessage]:
         """Load conversation history for a specific channel"""
         file_path = self.get_conversation_file_path(guild_id, channel_id)
         
         try:
-            data = self.storage_manager.read(file_path)
+            data = await asyncio.to_thread(self.storage_manager.read, file_path)
             if not data:
                 return []
 
             messages = [ConversationMessage(**msg) for msg in data.get("messages", [])]
             
-            # Filter messages within the context window
             channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
-            cutoff_time = time.time() - (channel_config.context_window_hours * 3600)
-            # Filter out empty messages, bot commands, and messages outside time window
-            filtered_messages = []
-            total_loaded = len(messages)
-            time_filtered = 0
-            content_filtered = 0
             
-            for msg in messages:
-                if msg.timestamp < cutoff_time:
-                    time_filtered += 1
-                    continue
-                is_valid, _ = self._is_valid_context_message(msg, debug_mode=False)
-                if is_valid:
-                    filtered_messages.append(msg)
-                else:
-                    content_filtered += 1
+            # Determine the definitive cutoff time.
+            time_window_cutoff = time.time() - (channel_config.context_window_hours * 3600)
+            checkpoint_cutoff = channel_config.last_cleared_timestamp or 0
+            final_cutoff = max(time_window_cutoff, checkpoint_cutoff)
             
-            #logger.debug(f"Conversation history filtering for guild {guild_id}, channel {channel_id}:")
-            #logger.debug(f"  Total messages loaded: {total_loaded}")
-            #logger.debug(f"  Filtered by time window: {time_filtered}")
-            #logger.debug(f"  Filtered by content: {content_filtered}")
-            #logger.debug(f"  Final valid messages: {len(filtered_messages)}")
-            return filtered_messages
+            return [
+                msg for msg in messages
+                if msg.timestamp >= final_cutoff and self._is_valid_context_message(msg)[0]
+            ]
         except Exception as e:
             logger.error(f"Error loading conversation history for {file_path}: {e}", exc_info=True)
             return []
 
-    def save_conversation_history(self, guild_id: int, channel_id: int, messages: List[ConversationMessage]) -> bool:
+    async def save_conversation_history(self, guild_id: int, channel_id: int, messages: List[ConversationMessage]) -> bool:
         """Save conversation history for a specific channel"""
         file_path = self.get_conversation_file_path(guild_id, channel_id)
         
         try:
-            # Convert messages to dict format
             data = {
                 "messages": [asdict(msg) for msg in messages],
                 "last_updated": time.time()
             }
-            
-            #logger.debug(f"Saved {len(messages)} messages to conversation history for {file_path}")
-            return self.storage_manager.write(file_path, data)
+            return await asyncio.to_thread(self.storage_manager.write, file_path, data)
         except Exception as e:
             logger.error(f"Error saving conversation history to {file_path}: {e}", exc_info=True)
             return False
 
-    def add_message_to_conversation(self, guild_id: int, channel_id: int, message: discord.Message, update_user_index_func) -> bool:
-        """Add a message to the conversation history"""
+    async def add_message_to_conversation(self, guild_id: int, channel_id: int, message: discord.Message) -> Tuple[bool, List[discord.User]]:
+        """
+        Adds a message to conversation history.
+        Returns a tuple: (success_boolean, list_of_users_to_index).
+        """
         try:
-            if self.check_duplicate_message(guild_id, channel_id, message.id):
-                return True
+            if await self.check_duplicate_message(guild_id, channel_id, message.id):
+                return True, []
 
             cleaned_content, image_urls, embed_urls = self._process_discord_message_for_context(message)
             if not cleaned_content and not image_urls:
-                logger.debug(f"Skipping message {message.id} as content became empty after media filtering.")
-                return False
-            
-            multimodal_content = []
-            if cleaned_content:
-                multimodal_content.append(ContentPart(type="text", text=cleaned_content))
-            for url in image_urls:
-                multimodal_content.append(ContentPart(type="image_url", image_url={"url": url}))
+                return False, []
 
-            temp_conv_message = ConversationMessage(
-                user_id=message.author.id,
-                username=message.author.display_name,
-                content=cleaned_content,
-                timestamp=message.created_at.timestamp(),
-                message_id=message.id,
-                is_bot_response=message.author.bot,
+            multimodal_content = [ContentPart(type="text", text=cleaned_content)] if cleaned_content else []
+            multimodal_content.extend(ContentPart(type="image_url", image_url={"url": url}) for url in image_urls)
+
+            conv_message = ConversationMessage(
+                user_id=message.author.id, username=message.author.display_name,
+                content=cleaned_content, timestamp=message.created_at.timestamp(),
+                message_id=message.id, is_bot_response=message.author.bot,
                 is_self_bot_response=(message.author.id == self.bot_user_id),
-                referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
-                attachment_urls=image_urls,
-                embed_urls=embed_urls,
+                referenced_message_id=getattr(message.reference, 'message_id', None),
+                attachment_urls=image_urls, embed_urls=embed_urls,
                 multimodal_content=multimodal_content
             )
 
             channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
             cutoff_time = time.time() - (channel_config.context_window_hours * 3600)
-            if temp_conv_message.timestamp < cutoff_time:
-                logger.debug(f"Skipping message {message.id} as it's outside context window.")
-                return False
+            if conv_message.timestamp < cutoff_time:
+                return False, []
 
-            is_valid, _ = self._is_valid_context_message(temp_conv_message, debug_mode=False)
+            is_valid, _ = self._is_valid_context_message(conv_message)
             if not is_valid:
-                logger.debug(f"Skipping message {message.id} as it's not valid context.")
-                return False
+                return False, []
 
-            update_user_index_func(guild_id, message.author, is_message_author=True)
-            
-            messages = self.load_conversation_history(guild_id, channel_id)
-            messages.append(temp_conv_message)
+            messages = await self.load_conversation_history(guild_id, channel_id)
+            messages.append(conv_message)
             
             if len(messages) > channel_config.max_context_messages:
                 messages = messages[-channel_config.max_context_messages:]
             
-            return self.save_conversation_history(guild_id, channel_id, messages)
+            success = await self.save_conversation_history(guild_id, channel_id, messages)
+            users_to_index = [message.author] if success else []
+            return success, users_to_index
+
         except Exception as e:
             logger.error(f"Error adding message to conversation for channel {channel_id}: {e}", exc_info=True)
-            return False
+            return False, []
 
-    def bulk_add_messages_to_conversation(self, guild_id: int, channel_id: int, new_messages: List[discord.Message], update_user_index_func) -> int:
-        """Add a list of messages to the conversation history efficiently."""
+    async def bulk_add_messages_to_conversation(self, guild_id: int, channel_id: int, new_messages: List[discord.Message]) -> Tuple[int, List[discord.User]]:
+        """
+        Adds a list of messages to history efficiently.
+        Returns a tuple: (number_of_messages_added, list_of_unique_users_to_index).
+        """
         try:
             if not new_messages:
-                return 0
+                return 0, []
 
             channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
             cutoff_time = time.time() - (channel_config.context_window_hours * 3600)
             
-            existing_history = self.load_conversation_history(guild_id, channel_id)
+            existing_history = await self.load_conversation_history(guild_id, channel_id)
             existing_message_ids = {msg.message_id for msg in existing_history}
             
             converted_messages = []
@@ -182,30 +162,23 @@ class ConversationManager:
                 if not cleaned_content and not image_urls:
                     continue
 
-                multimodal_content = []
-                if cleaned_content:
-                    multimodal_content.append(ContentPart(type="text", text=cleaned_content))
-                for url in image_urls:
-                    multimodal_content.append(ContentPart(type="image_url", image_url={"url": url}))
+                multimodal_content = [ContentPart(type="text", text=cleaned_content)] if cleaned_content else []
+                multimodal_content.extend(ContentPart(type="image_url", image_url={"url": url}) for url in image_urls)
 
                 conv_message = ConversationMessage(
-                    user_id=message.author.id,
-                    username=message.author.display_name,
-                    content=cleaned_content,
-                    timestamp=message.created_at.timestamp(),
-                    message_id=message.id,
-                    is_bot_response=message.author.bot,
+                    user_id=message.author.id, username=message.author.display_name,
+                    content=cleaned_content, timestamp=message.created_at.timestamp(),
+                    message_id=message.id, is_bot_response=message.author.bot,
                     is_self_bot_response=(message.author.id == self.bot_user_id),
-                    referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
-                    attachment_urls=image_urls,
-                    embed_urls=embed_urls,
+                    referenced_message_id=getattr(message.reference, 'message_id', None),
+                    attachment_urls=image_urls, embed_urls=embed_urls,
                     multimodal_content=multimodal_content
                 )
 
                 if conv_message.timestamp < cutoff_time:
                     continue
 
-                is_valid, _ = self._is_valid_context_message(conv_message, debug_mode=False)
+                is_valid, _ = self._is_valid_context_message(conv_message)
                 if not is_valid:
                     continue
                 
@@ -213,24 +186,20 @@ class ConversationManager:
                 users_to_update.add(message.author)
 
             if not converted_messages:
-                return 0
+                return 0, []
 
-            for user in users_to_update:
-                update_user_index_func(guild_id, user, is_message_author=True)
-
-            # Combine, sort, and truncate
             combined_messages = existing_history + converted_messages
             combined_messages.sort(key=lambda m: m.timestamp)
             
             if len(combined_messages) > channel_config.max_context_messages:
                 combined_messages = combined_messages[-channel_config.max_context_messages:]
             
-            self.save_conversation_history(guild_id, channel_id, combined_messages)
-            return len(converted_messages)
+            await self.save_conversation_history(guild_id, channel_id, combined_messages)
+            return len(converted_messages), list(users_to_update)
             
         except Exception as e:
             logger.error(f"Error bulk adding messages to conversation for channel {channel_id}: {e}", exc_info=True)
-            return 0
+            return 0, []
 
     def _is_valid_context_message(self, msg: ConversationMessage, debug_mode: bool = False) -> tuple[bool, list[str]]:
         """Check if a message is valid for context inclusion"""
@@ -351,16 +320,14 @@ class ConversationManager:
         # Return cleaned content, a list of unique image URLs, and a list of other URLs
         return cleaned_content, list(image_urls), list(other_urls)
 
-    def check_duplicate_message(self, guild_id: int, channel_id: int, message_id: int) -> bool:
+    async def check_duplicate_message(self, guild_id: int, channel_id: int, message_id: int) -> bool:
         """Check if a message is already in the conversation history"""
         try:
-            file_path = self.get_conversation_file_path(guild_id, channel_id)
-            data = self.storage_manager.read(file_path)
-            if data:
-                return any(msg.get("message_id") == message_id for msg in data.get("messages", []))
-            return False
+            # This can remain somewhat synchronous as it's a read-only check on potentially cached data
+            history = await self.load_conversation_history(guild_id, channel_id)
+            return any(msg.message_id == message_id for msg in history)
         except Exception as e:
-            logger.error(f"Error checking for duplicate message in {file_path}: {e}", exc_info=True)
+            logger.error(f"Error checking for duplicate message in channel {channel_id}: {e}", exc_info=True)
             return False
 
     def delete_message_from_conversation(self, guild_id: int, channel_id: int, message_id: int) -> bool:

@@ -15,6 +15,9 @@ from utils.logging_setup import get_logger
 
 logger = get_logger()
 
+DISCORD_EPOCH = 1420070400000
+HISTORY_FETCH_LIMIT = 10
+
 class ChatbotManager:
     """Orchestrates all chatbot functionality."""
 
@@ -56,13 +59,30 @@ class ChatbotManager:
         channel_config.enabled = False
         return self.config_manager.set_channel_config(guild_id, channel_id, channel_config)
 
-    def clear_channel_data(self, guild_id: int, channel_id: int):
+    async def clear_channel_data(self, guild_id: int, channel_id: int):
         """Clear all data for a specific channel."""
-        self.conversation_manager.clear_conversation_history(guild_id, channel_id)
-        self.indexing_manager.clear_pinned_messages(guild_id, channel_id)
+        await self.conversation_manager.clear_conversation_history(guild_id, channel_id)
+        await self.indexing_manager.clear_pinned_messages(guild_id, channel_id)
         channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
         channel_config.last_cleared_timestamp = time.time()
         self.config_manager.set_channel_config(guild_id, channel_id, channel_config)
+
+    async def cleanup_guild_data(self, guild_id: int):
+        """Remove all data associated with a guild."""
+        logger.info(f"Cleaning up all data for guild {guild_id}.")
+        await self.indexing_manager.remove_guild_indexes(guild_id)
+        self.config_manager.remove_guild_config(guild_id)
+        # Conversation histories are stored by guild/channel, so they will be removed
+        # when the guild's directory is removed by the indexing manager.
+        logger.info(f"Cleanup for guild {guild_id} complete.")
+
+    async def cleanup_channel_data(self, guild_id: int, channel_id: int):
+        """Remove all data associated with a channel."""
+        logger.info(f"Cleaning up all data for channel {channel_id} in guild {guild_id}.")
+        await self.conversation_manager.clear_conversation_history(guild_id, channel_id)
+        await self.indexing_manager.clear_pinned_messages(guild_id, channel_id)
+        self.config_manager.remove_channel_config(guild_id, channel_id)
+        logger.info(f"Cleanup for channel {channel_id} complete.")
 
     def should_respond_to_message(self, guild_id: int, channel_id: int, message, bot_user_id: int) -> bool:
         """Determine if the bot should respond to a message in chatbot mode"""
@@ -98,69 +118,67 @@ class ChatbotManager:
     async def index_chatbot_channel(self, guild_id: int, channel_id: int, channel) -> bool:
         """Index a channel incrementally or perform a full scan if needed."""
         try:
-            # Always update the channel's own index entry
-            channel_index = self.indexing_manager.load_channel_index(guild_id)
-            channel_entry = self.indexing_manager.index_channel(channel)
-            channel_index[channel_id] = channel_entry
-            self.indexing_manager.save_channel_index(guild_id, channel_index)
+            await self.indexing_manager.update_channel_index(channel)
 
             config = self.config_manager.get_channel_config(guild_id, channel_id)
+            existing_history = await self.conversation_manager.load_conversation_history(guild_id, channel_id)
             
-            # Load existing history to check for incremental update
-            existing_history = self.conversation_manager.load_conversation_history(guild_id, channel_id)
-            
-            after_message = None
+            after_timestamp = config.last_cleared_timestamp or 0
+            after_message_id = 0
             if existing_history:
-                existing_history.sort(key=lambda m: m.timestamp, reverse=True)
-                latest_message_id = existing_history[0].message_id
-                after_message = discord.Object(id=latest_message_id)
-                logger.debug(f"Performing incremental index for #{channel.name} after message ID {latest_message_id}")
-            else:
-                logger.debug(f"Performing full history index for #{channel.name}")
+                after_message_id = max(msg.message_id for msg in existing_history)
+
+            # Determine the true 'after' point
+            after_param = None
+            if after_timestamp > 0:
+                after_param = discord.Object(id=((int(after_timestamp * 1000) - DISCORD_EPOCH) << 22)) # Convert timestamp to snowflake
+                if after_message_id > after_param.id:
+                    after_param = discord.Object(id=after_message_id)
+            elif after_message_id > 0:
+                after_param = discord.Object(id=after_message_id)
 
             messages_to_add = []
-            # Fetch history. Use `after` for incremental, or `limit` for full scan.
-            history_iterator = channel.history(limit=None if after_message else config.max_context_messages, after=after_message)
-            
-            async for message in history_iterator:
-                if message.type not in [discord.MessageType.default, discord.MessageType.reply]:
-                    continue
-                messages_to_add.append(message)
-                # Also index users from mentions and replies
-                for mentioned_user in message.mentions:
-                    self.indexing_manager.update_user_index(guild_id, mentioned_user)
-                if message.reference and message.reference.resolved and hasattr(message.reference.resolved, 'author'):
-                    self.indexing_manager.update_user_index(guild_id, message.reference.resolved.author)
+            if after_param:
+                logger.debug(f"Performing incremental index for #{channel.name} after ID {after_param.id}")
+                history_iterator = channel.history(limit=None, after=after_param)
+                messages_to_add = [msg async for msg in history_iterator if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
+            else:
+                logger.debug(f"Performing full history index for #{channel.name} in batches of {HISTORY_FETCH_LIMIT}")
+                last_message_id = None
+                while True:
+                    batch_history = [msg async for msg in channel.history(limit=HISTORY_FETCH_LIMIT, before=discord.Object(id=last_message_id) if last_message_id else None) if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
+                    if not batch_history:
+                        break
+                    messages_to_add.extend(batch_history)
+                    last_message_id = batch_history[-1].id
+                    logger.debug(f"Fetched batch of {len(batch_history)} messages for #{channel.name}. Oldest message ID: {last_message_id}")
+                messages_to_add.reverse()
 
             if not messages_to_add:
                 logger.info(f"No new messages to index for #{channel.name}.")
                 return True
 
-            # For a full scan (newest to oldest), reverse to get chronological order.
-            # For incremental (oldest to newest), the order is already correct.
-            if not after_message:
-                messages_to_add.reverse()
+            added_count, users_to_index = await self.conversation_manager.bulk_add_messages_to_conversation(guild_id, channel_id, messages_to_add)
+            
+            # Also index users from mentions and replies in the fetched messages
+            for msg in messages_to_add:
+                users_to_index.extend(msg.mentions)
+                if msg.reference and msg.reference.resolved and hasattr(msg.reference.resolved, 'author'):
+                    users_to_index.append(msg.reference.resolved.author)
 
-            # Use the new bulk add method
-            added_count = self.conversation_manager.bulk_add_messages_to_conversation(
-                guild_id,
-                channel_id,
-                messages_to_add,
-                self.indexing_manager.update_user_index
-            )
+            if users_to_index:
+                await self.indexing_manager.update_users_bulk(guild_id, list(set(users_to_index)), is_message_author=True)
 
-            logger.info(f"Indexing for #{channel.name} complete. Added {added_count} new messages.")
+            logger.info(f"Indexing for #{channel.name} complete. Added {added_count} new messages. Indexed {len(set(users_to_index))} users.")
             return True
 
         except Exception as e:
             logger.error(f"Error indexing chatbot channel #{channel.name}: {e}", exc_info=True)
             return False
 
-    async def index_pinned_messages(self, guild_id: int, channel_id: int, channel: discord.abc.Messageable):
+    async def index_pinned_messages(self, channel: discord.abc.Messageable):
         """Index pinned messages, passing the validation and processing functions from the conversation manager."""
         return await self.indexing_manager.index_pinned_messages(
-            guild_id,
-            channel_id,
             channel,
             self.conversation_manager._is_valid_context_message,
             self.conversation_manager._process_discord_message_for_context
@@ -198,14 +216,12 @@ class ChatbotManager:
             self.conversation_manager
         )
 
-    def add_message_to_conversation(self, guild_id: int, channel_id: int, message: discord.Message) -> bool:
+    async def add_message_to_conversation(self, guild_id: int, channel_id: int, message: discord.Message) -> bool:
         """Public method to add a message, handling dependencies internally."""
-        return self.conversation_manager.add_message_to_conversation(
-            guild_id,
-            channel_id,
-            message,
-            self.indexing_manager.update_user_index
-        )
+        success, users_to_index = await self.conversation_manager.add_message_to_conversation(guild_id, channel_id, message)
+        if success and users_to_index:
+            await self.indexing_manager.update_users_bulk(guild_id, users_to_index, is_message_author=True)
+        return success
 
     def __getattr__(self, name):
         """Delegate calls to the appropriate manager."""
