@@ -161,6 +161,30 @@ def save_server_safety_settings(guild_id: int, settings: Dict[str, str]) -> bool
     config.setdefault("servers", {}).setdefault(str(guild_id), {})["safety_settings"] = settings
     return save_llm_config(config)
 
+def get_reasoning_budget(model_name: str, mode: str, guild_id: int) -> Optional[int]:
+    """Get reasoning budget level with hierarchical fallback."""
+    llm_config = load_llm_config()
+    server_budgets = llm_config.get("servers", {}).get(str(guild_id), {}).get("reasoning_budgets", {})
+    
+    model_budgets = server_budgets.get(model_name, {})
+    # Fallback from specific mode to default, then return None if neither is found
+    return model_budgets.get(mode, model_budgets.get("default"))
+
+def save_reasoning_budget(model: str, mode: str, level: int, guild_id: int) -> bool:
+    """Save a reasoning budget for a model and mode."""
+    config = load_llm_config()
+    budgets = config.setdefault("servers", {}).setdefault(str(guild_id), {}).setdefault("reasoning_budgets", {})
+    
+    model_budgets = budgets.setdefault(model, {})
+    model_budgets[mode] = level
+    
+    return save_llm_config(config)
+
+def get_all_reasoning_budgets(guild_id: int) -> Dict[str, Any]:
+    """Get all reasoning budgets for a specific server."""
+    llm_config = load_llm_config()
+    return llm_config.get("servers", {}).get(str(guild_id), {}).get("reasoning_budgets", {})
+
 def save_llm_config(config):
     """Save LLM configuration to file"""
     try:

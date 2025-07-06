@@ -13,6 +13,7 @@ import re
 from utils.chatbot.manager import chatbot_manager
 from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
+from utils.chatbot.models import ConversationMessage, ContentPart
 
 logger = get_logger()
 
@@ -156,85 +157,83 @@ def create_bot(config):
         # Auto-index chatbot-enabled channels on bot restart
         async def auto_index_on_restart():
             try:
-                # from utils.chatbot.manager import chatbot_manager # Already imported above
-
                 config_data = chatbot_manager.config_cache.get("global", {})
-                if config_data.get("auto_index_on_restart", True):
-                    logger.info("Starting chatbot channel re-indexing on bot restart...")
-
-                    # Get enabled channels directly from config file structure
-                    # Use the loaded config cache
-                    enabled_channels_config = chatbot_manager.config_cache.get("channels", {})
-
-                    if not enabled_channels_config:
-                        logger.info("No chatbot-enabled channels found in config for re-indexing")
-                        return
-
-                    total_channels_indexed = 0
-                    total_users_cleaned = 0 # This cleanup is done guild-wide after all channels in a guild are indexed
-                    total_pins_indexed = 0 # For pins
-
-                    # Iterate through all guilds the bot is in
-                    for guild in bot.guilds:
-                        guild_id = guild.id
-                        guild_key = str(guild_id)
-
-                        # Check if this guild has any channels enabled in the config
-                        if guild_key in enabled_channels_config:
-                            enabled_channel_ids_in_config = set(int(cid) for cid, data in enabled_channels_config[guild_key].items() if data.get("enabled", False))
-
-                            if not enabled_channel_ids_in_config:
-                                logger.debug(f"No enabled channels found in config for guild {guild.name} ({guild_id})")
-                                continue
-
-                            guild_channels_indexed = 0
-
-                            # Get all channels and threads in the guild
-                            # Fetch threads separately as guild.channels only gets top-level channels
-                            # guild.threads is a list of all threads the bot is currently aware of in the guild
-                            all_guild_channels_and_threads = list(guild.channels) + list(guild.threads)
-
-
-                            # Iterate through all channels and threads to find the enabled ones
-                            for channel_object in all_guild_channels_and_threads:
-                                # Ensure it's a type we can index (TextChannel or Thread) and is in the enabled list
-                                # discord.Thread objects inherit from discord.TextChannel as of discord.py 2.0+
-                                if isinstance(channel_object, (discord.TextChannel, discord.Thread)) and channel_object.id in enabled_channel_ids_in_config:
-                                    try:
-                                        logger.debug(f"Indexing enabled channel/thread #{channel_object.name} ({channel_object.id}) in guild {guild.name} ({guild_id})")
-                                        success = await chatbot_manager.index_chatbot_channel(guild_id, channel_object.id, channel_object)
-                                        if success:
-                                            # Index pinned messages if applicable (TextChannel and Thread objects both have .pins())
-                                            indexed_pins = await chatbot_manager.index_pinned_messages(guild_id, channel_object.id, channel_object)
-                                            total_pins_indexed += indexed_pins
-
-                                            guild_channels_indexed += 1
-                                            # Increment total count outside the inner loop
-                                            # total_channels_indexed += 1 # This line should be outside the inner loop, moved below
-                                            logger.debug(f"Re-indexed chatbot channel/thread and pins (if applicable) #{channel_object.name} in {guild.name}")
-                                    except Exception as e:
-                                        logger.error(f"Error indexing channel/thread {channel_object.id} in guild {guild.name}: {e}", exc_info=True)
-
-                            # Increment total channels indexed by the number of channels/threads indexed in this guild
-                            total_channels_indexed += guild_channels_indexed
-
-                            # Perform cleanup of users not in current context for this guild
-                            try:
-                                # This should ideally be done after all *relevant* channels in a guild are processed,
-                                # or as a separate periodic task. Doing it per guild after its channels are processed
-                                # seems reasonable for startup.
-                                cleaned_users = chatbot_manager.cleanup_stale_users(guild_id)
-                                total_users_cleaned += cleaned_users
-                                if cleaned_users > 0:
-                                    logger.debug(f"Cleaned up {cleaned_users} stale users in guild {guild.name}")
-                            except Exception as e:
-                                logger.error(f"Error cleaning up users in guild {guild.name}: {e}")
-
-                    logger.info(f"Chatbot re-indexing on restart complete: {total_channels_indexed} channels/threads indexed, {total_pins_indexed} pinned messages indexed, {total_users_cleaned} stale users cleaned across guilds with enabled channels")
-                else:
+                if not config_data.get("auto_index_on_restart", True):
                     logger.debug("Auto-indexing on restart is disabled")
+                    return
+
+                logger.info("Starting concurrent chatbot channel re-indexing...")
+                
+                enabled_channels_config = chatbot_manager.config_cache.get("channels", {})
+                if not enabled_channels_config:
+                    logger.info("No chatbot-enabled channels found in config for re-indexing.")
+                    return
+
+                tasks = []
+                guilds_with_indexed_channels = set()
+
+                async def index_channel_and_pins(guild, channel):
+                    """Helper function to index a channel and its pins, returning results."""
+                    try:
+                        logger.debug(f"Starting indexing for #{channel.name} in {guild.name}")
+                        # Index channel history
+                        history_success = await chatbot_manager.index_chatbot_channel(guild.id, channel.id, channel)
+                        
+                        # Index pinned messages
+                        pins_indexed = 0
+                        if history_success and isinstance(channel, (discord.TextChannel, discord.Thread)):
+                            pins_indexed = await chatbot_manager.index_pinned_messages(guild.id, channel.id, channel)
+                        
+                        logger.debug(f"Finished indexing for #{channel.name}. Success: {history_success}, Pins: {pins_indexed}")
+                        return {"success": history_success, "pins": pins_indexed, "guild_id": guild.id}
+                    except Exception as e:
+                        logger.error(f"Error in indexing task for channel {channel.id} in guild {guild.id}: {e}", exc_info=True)
+                        return {"success": False, "pins": 0, "guild_id": guild.id, "error": e}
+
+                for guild in bot.guilds:
+                    guild_key = str(guild.id)
+                    if guild_key not in enabled_channels_config:
+                        continue
+
+                    enabled_channel_ids = {int(cid) for cid, data in enabled_channels_config[guild_key].items() if data.get("enabled")}
+                    if not enabled_channel_ids:
+                        continue
+                    
+                    all_guild_channels = list(guild.channels) + list(guild.threads)
+                    for channel in all_guild_channels:
+                        if channel.id in enabled_channel_ids:
+                            tasks.append(index_channel_and_pins(guild, channel))
+                            guilds_with_indexed_channels.add(guild.id)
+
+                if not tasks:
+                    logger.info("No channels to index after filtering.")
+                    return
+
+                logger.info(f"Gathered {len(tasks)} indexing tasks. Running concurrently...")
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Process results
+                total_channels_indexed = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
+                total_pins_indexed = sum(r.get("pins", 0) for r in results if isinstance(r, dict))
+                failed_tasks = sum(1 for r in results if isinstance(r, Exception) or (isinstance(r, dict) and not r.get("success")))
+
+                logger.info(f"Concurrent indexing complete. {total_channels_indexed} channels succeeded, {failed_tasks} failed.")
+                
+                # Cleanup stale users in guilds that had channels indexed
+                total_users_cleaned = 0
+                if guilds_with_indexed_channels:
+                    logger.info(f"Cleaning up stale users for {len(guilds_with_indexed_channels)} guilds.")
+                    for guild_id in guilds_with_indexed_channels:
+                        try:
+                            cleaned_count = chatbot_manager.cleanup_stale_users(guild_id)
+                            total_users_cleaned += cleaned_count
+                        except Exception as e:
+                            logger.error(f"Error during user cleanup for guild {guild_id}: {e}")
+
+                logger.info(f"Chatbot re-indexing on restart complete: {total_channels_indexed} channels/threads indexed, {total_pins_indexed} pinned messages indexed, {total_users_cleaned} stale users cleaned.")
+
             except Exception as e:
-                logger.error(f"Error during chatbot channel re-indexing on restart: {e}")
+                logger.error(f"Fatal error during chatbot channel re-indexing on restart: {e}", exc_info=True)
         
         # Start auto-indexing task
         asyncio.create_task(auto_index_on_restart())
@@ -544,11 +543,12 @@ async def handle_chatbot_response(bot, message):
             try:
                 # Get prioritized context messages. This history does NOT include the current message.
                 context_messages = chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
-                # Format all context (channel info, user info, conversation history, pinned messages) into a single string
-                full_context_string = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
+                
+                # Format context into static info and structured history
+                static_context, history_messages = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
                 
                 # Load system prompt (this loads from file and applies thinking mode if configured)
-                system_prompt_for_llm = llm_cog.load_system_prompt(guild_id) # Chatbot typically doesn't show thinking
+                system_prompt_for_llm = llm_cog.load_system_prompt(guild_id, prompt_type="chat")
                 
                 # --- Start of Refactored Logic ---
 
@@ -586,11 +586,27 @@ async def handle_chatbot_response(bot, message):
                 if extracted_text:
                     prompt_text = f"{' '.join(extracted_text)}\n\n{prompt_text}"
 
-                # Apply the same formatting to the prompt as the rest of the history
-                formatted_prompt_text = chatbot_manager.formatter._convert_discord_format_to_llm_readable(prompt_text, guild_id)
+                # Create a ConversationMessage object for the current prompt to use the formatter
+                prompt_conv_message = ConversationMessage(
+                    user_id=message.author.id,
+                    username=message.author.display_name,
+                    content=prompt_text, # Use the text with prepended file content
+                    timestamp=message.created_at.timestamp(),
+                    message_id=message.id,
+                    is_bot_response=False,
+                    is_self_bot_response=False,
+                    referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
+                    attachment_urls=image_urls,
+                    multimodal_content=[ContentPart(type="text", text=prompt_text)] + [ContentPart(type="image_url", image_url={"url": url}) for url in image_urls]
+                )
 
-                # Final prompt includes the author's name
-                user_prompt_content = f"{message.author.name}: {formatted_prompt_text}"
+                # Format the single prompt message using the same logic as the history
+                user_prompt_content = chatbot_manager.formatter.format_single_message(
+                    msg=prompt_conv_message,
+                    history_messages=context_messages, # Pass historical messages for reply context
+                    guild_id=guild_id,
+                    channel_id=channel_id
+                )
 
                 # --- End of Refactored Logic ---
 
@@ -601,43 +617,72 @@ async def handle_chatbot_response(bot, message):
                 debug_filename = f"{debug_dir}/chatbot_prompt.txt"
                 try:
                     with open(debug_filename, 'w', encoding='utf-8') as debug_file:
-                        #debug_file.write("=== SYSTEM PROMPT ===\n")
-                        debug_file.write((system_prompt_for_llm or "None") + "\n\n")
-                        #debug_file.write("=== FULL CONTEXT (from chatbot_manager) ===\n")
-                        debug_file.write((full_context_string or "None") + "\n\n")
-                        #debug_file.write("=== USER'S CURRENT PROMPT (cleaned) ===\n")
-                        debug_file.write((user_prompt_content or "None") + "\n")
-                        #debug_file.write("=== RAW DISCORD MESSAGE CONTENT ===\n")
-                        debug_file.write(message.content or "None")
-                        #debug_file.write("\n\n--- END OF DEBUG ---\n")
+                        debug_file.write((system_prompt_for_llm or "No System Prompt") + "\n\n")
+                        debug_file.write((static_context or "No Static Context") + "\n\n")
+                        # Dump the history messages
+                        for msg in history_messages:
+                            debug_file.write(f"Role: {msg['role']}\nContent: {msg['content']}\n\n")
+                        debug_file.write(f"Current User Prompt: {user_prompt_content}\n")
 
                     logger.debug(f"Debug chatbot prompts written to: {debug_filename}")
                 except Exception as debug_e:
                     logger.warning(f"Failed to write debug prompts to file: {debug_e}")
 
-
                 response_text, performance_metrics = await llm_cog.make_llm_request(
                     prompt=user_prompt_content,
                     system_prompt=system_prompt_for_llm,
-                    context=full_context_string,
+                    context=static_context,
+                    history=history_messages,
                     model_type="chat",
-                    max_tokens=min(channel_config.max_response_length, 2000),
                     guild_id=guild_id,
+                    channel_id=channel_id,
                     image_urls=image_urls
                 )
 
                 if response_text:
-                    # Note: Chatbot mode typically doesn't display thinking tokens to the user.
-                    # We still strip them here to ensure the final response is clean.
-                    cleaned_response, thinking_content = llm_cog.strip_thinking_tokens(response_text)
+                    # First, format the raw response to strip any parroted context and handle names.
+                    formatted_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                        text=response_text,
+                        guild_id=message.guild.id,
+                        bot_user_id=bot.user.id,
+                        bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                    )
+
+                    # Then, strip any thinking tokens from the formatted response.
+                    final_response, thinking_content = llm_cog.strip_thinking_tokens(formatted_response)
+
+                    def truncate_to_last_sentence(text: str, max_length: int) -> str:
+                        """Truncates text to the last full sentence within the max_length."""
+                        if len(text) <= max_length:
+                            return text
+                        
+                        # Truncate to max_length to work with a smaller string
+                        truncated_text = text[:max_length]
+                        
+                        # Find the last sentence-ending punctuation
+                        last_sentence_end = -1
+                        for p in ['.', '!', '?']:
+                            last_sentence_end = max(last_sentence_end, truncated_text.rfind(p))
+                        
+                        # If we found a sentence end, truncate there and add ellipsis
+                        if last_sentence_end != -1:
+                            return truncated_text[:last_sentence_end+1] + "..."
+                        
+                        # Fallback: find the last space to avoid cutting a word
+                        last_space = truncated_text.rfind(' ')
+                        if last_space != -1:
+                            return truncated_text[:last_space] + "..."
+                            
+                        # Final fallback: hard truncate
+                        return text[:max_length-3] + "..."
 
                     # Ensure response doesn't exceed Discord's character limit (2000)
-                    if len(cleaned_response) > 2000:
-                        logger.warning(f"LLM response ({len(cleaned_response)} chars) exceeds Discord limit (2000). Truncating.")
-                        cleaned_response = cleaned_response[:1997] + "..."
+                    if len(final_response) > 2000:
+                        logger.warning(f"LLM response ({len(final_response)} chars) exceeds Discord limit (2000). Truncating intelligently.")
+                        final_response = truncate_to_last_sentence(final_response, 2000)
 
                     # Send the response as a reply
-                    sent_message = await message.reply(cleaned_response)
+                    sent_message = await message.reply(final_response)
 
                     # Add the bot's response to conversation history
                     chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)

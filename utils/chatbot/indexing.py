@@ -232,7 +232,6 @@ class IndexingManager:
                 channel_type=str(channel.type).replace('channel_type.', ''),
                 topic=getattr(channel, 'topic', None) or (channel.name if isinstance(channel, discord.Thread) else None),
                 category_name=getattr(channel.category, 'name', None) if hasattr(channel, 'category') else (getattr(channel.parent.category, 'name', None) if isinstance(channel, discord.Thread) and hasattr(channel, 'parent') and hasattr(channel.parent, 'category') else None),
-                is_nsfw=getattr(channel, 'nsfw', False) or (getattr(channel.parent, 'nsfw', False) if isinstance(channel, discord.Thread) and hasattr(channel, 'parent') else False),
                 last_indexed=time.time(),
                 message_count=0,
                 guild_name=channel.guild.name,
@@ -270,11 +269,15 @@ class IndexingManager:
                 
                 from utils.chatbot.models import ConversationMessage
                 temp_conv_message = ConversationMessage(
-                    user_id=message.author.id, username=message.author.display_name,
-                    content=cleaned_content, timestamp=message.created_at.timestamp(),
-                    message_id=message.id, is_bot_response=message.author.bot,
+                    user_id=message.author.id,
+                    username=message.author.display_name,
+                    content=cleaned_content,
+                    timestamp=message.created_at.timestamp(),
+                    message_id=message.id,
+                    is_bot_response=message.author.bot,
                     is_self_bot_response=(message.author.id == self.bot_user_id),
-                    attachment_urls=image_urls, embed_urls=embed_urls
+                    attachment_urls=image_urls,
+                    embed_urls=embed_urls
                 )
                 is_valid, _ = is_valid_message_func(temp_conv_message)
 
@@ -314,6 +317,12 @@ class IndexingManager:
         file_path = self.get_pinned_messages_file_path(guild_id, channel_id)
         data = self.storage_manager.read(file_path)
         return [PinnedMessage(**msg) for msg in data.get("pins", [])]
+
+    def clear_pinned_messages(self, guild_id: int, channel_id: int):
+        """Clear pinned messages for a specific channel."""
+        file_path = self.get_pinned_messages_file_path(guild_id, channel_id)
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
     def cleanup_stale_users(self, guild_id: int, cleanup_hours: int = 168) -> int:
         """Remove users from index if they haven't been seen recently."""

@@ -6,12 +6,12 @@ import json
 import time
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, Tuple, List, Union
 from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from utils.embed_helper import create_embed_response, create_llm_response
 from lib.rotator_library import RotatingClient
-from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env, get_safety_settings, save_server_safety_settings
+from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env, get_safety_settings, save_server_safety_settings, get_reasoning_budget, save_reasoning_budget, get_all_reasoning_budgets
 from utils.chatbot.manager import chatbot_manager
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 
@@ -24,10 +24,6 @@ class LLMCommands(commands.Cog):
         self.bot = bot
         self.llm_config = load_llm_config()
         self.api_keys = load_api_keys_from_env()
-        self.llm_client = RotatingClient(
-            api_keys=self.api_keys,
-            max_retries=self.llm_config.get("max_retries", 2)
-        )
         # Global default models
         self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
@@ -38,12 +34,6 @@ class LLMCommands(commands.Cog):
         """Initialize the LLM client and check provider status on cog load."""
         logger.info("LLMCommands cog loaded. Initializing client and checking providers.")
         await self.check_all_providers_status()
-
-    async def cog_unload(self):
-        """Clean up any resources when the cog unloads."""
-        if self.llm_client and hasattr(self.llm_client, 'http_client'):
-            await self.llm_client.http_client.aclose()
-        logger.info("LLMCommands cog unloaded.")
 
     def get_llm_config(self, guild_id: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -198,14 +188,15 @@ class LLMCommands(commands.Cog):
     async def check_provider_status(self, provider: str) -> bool:
         """Check the status of a single provider by trying to list its models."""
         try:
-            models = await self.llm_client.get_available_models(provider)
-            is_online = bool(models)
-            self.provider_status[provider] = is_online
-            if is_online:
-                logger.info(f"Provider '{provider}' is online. Found {len(models)} models.")
-            else:
-                logger.warning(f"Provider '{provider}' is offline or has no models.")
-            return is_online
+            async with RotatingClient(api_keys=self.api_keys) as client:
+                models = await client.get_available_models(provider)
+                is_online = bool(models)
+                self.provider_status[provider] = is_online
+                if is_online:
+                    logger.info(f"Provider '{provider}' is online. Found {len(models)} models.")
+                else:
+                    logger.warning(f"Provider '{provider}' is offline or has no models.")
+                return is_online
         except Exception as e:
             logger.error(f"Failed to check status for provider '{provider}': {e}")
             self.provider_status[provider] = False
@@ -226,12 +217,13 @@ class LLMCommands(commands.Cog):
         self, 
         prompt: Optional[str] = None,
         model_type: str = "default",
-        max_tokens: int = 2000,
+        max_tokens: Optional[int] = None,
         temperature: float = 0.7,
         guild_id: Optional[int] = None,
         channel_id: Optional[int] = None,
         system_prompt: Optional[str] = None,
         context: Optional[str] = None,
+        history: Optional[List[Dict[str, any]]] = None, # New history parameter
         model: Optional[str] = None,
         image_urls: Optional[List[str]] = None
     ) -> Tuple[str, Dict[str, Any]]:
@@ -251,17 +243,46 @@ class LLMCommands(commands.Cog):
         
         is_multimodal = any(keyword in target_model for keyword in self.multimodal_models_whitelist)
         
-        messages = self._build_messages_list(system_prompt, context, prompt, image_urls, is_multimodal)
+        # Build the messages list using the new structured history
+        messages = self._build_messages_list(
+            system_prompt=system_prompt,
+            static_context=context,
+            history=history,
+            prompt=prompt,
+            image_urls=image_urls,
+            is_multimodal=is_multimodal
+        )
         
         # Prepare kwargs for the rotating client
         request_kwargs = {
             "model": target_model,
             "messages": messages,
-            "max_tokens": max_tokens,
             "temperature": temperature,
             "timeout": self.llm_config.get("timeout", 120),
             "safety_settings": get_safety_settings(guild_id, channel_id)
         }
+
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
+
+        # Apply reasoning budget
+        reasoning_budget_level = get_reasoning_budget(target_model, model_type, guild_id)
+        if reasoning_budget_level is not None:
+            #logger.info(f"Applying reasoning budget for model '{target_model}' in mode '{model_type}' with level '{reasoning_budget_level}'.")
+            if reasoning_budget_level == -1 or reasoning_budget_level == "auto":
+                request_kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": -1
+                }
+            else:
+                reasoning_map = {0: "disable", 1: "low", 2: "medium", 3: "high"}
+                level_str = reasoning_map.get(reasoning_budget_level)
+                if not level_str:
+                    level_map_str = {"none": "disable", "low": "low", "medium": "medium", "high": "high"}
+                    level_str = level_map_str.get(reasoning_budget_level)
+
+                if level_str:
+                    request_kwargs["reasoning_effort"] = level_str
 
         # Handle local provider by setting api_base
         if target_model.startswith("local/"):
@@ -274,7 +295,8 @@ class LLMCommands(commands.Cog):
         self._save_debug_request(request_kwargs, "RotatingClient", target_model.split('/')[0])
 
         try:
-            response = await self.llm_client.acompletion(**request_kwargs)
+            async with RotatingClient(api_keys=self.api_keys, max_retries=self.llm_config.get("max_retries", 2)) as client:
+                response = await client.acompletion(**request_kwargs)
             
             # Save the raw response for debugging
             self._save_debug_response(response, target_model.split('/')[0])
@@ -293,9 +315,6 @@ class LLMCommands(commands.Cog):
                 logger.debug(f"LLM request to '{target_model}' completed in {performance_metrics['elapsed_time']:.2f}s, "
                            f"{performance_metrics['chars_per_sec']:.1f} chars/s")
 
-            # Convert text patterns to Discord format
-            content = self.convert_text_to_discord_format(content, guild_id)
-            
             return content, performance_metrics
 
         except Exception as e:
@@ -392,71 +411,37 @@ class LLMCommands(commands.Cog):
             'has_token_data': total_tokens > 0
         }
 
-    def _build_messages_list(self, system_prompt: str, context: Optional[str],
-                          prompt: Optional[str], image_urls: Optional[List[str]] = None, is_multimodal: bool = False) -> List[Dict[str, Any]]:
-        """Build messages list with roles: 'system', 'user', 'assistant'"""
+    def _build_messages_list(
+        self,
+        system_prompt: str,
+        static_context: Optional[str],
+        history: Optional[List[Dict[str, any]]],
+        prompt: Optional[str],
+        image_urls: Optional[List[str]] = None,
+        is_multimodal: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Builds the final list of messages for the LLM API."""
         messages = []
 
-        # Add the initial system prompt
+        # 1. Add the main system prompt
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        
-        # Process dynamic context from chatbot_manager.format_context_for_llm
-        if context:
-            channel_info = ""
-            user_info = ""
-            pinned_messages_text = "" # NEW: For pinned messages
-            conversation_history_text = ""
 
-            # Use regex to split the context string by its known section headers
-            # This regex handles cases where headers might be at the start or mid-string
-            sections = re.split(r'(===\s*(Current Channel Info|Known Users|Recent Conversation History|Pinned Messages)\s*===)', context, flags=re.DOTALL)
-            
-            # Iterate through the parts to extract content for each section
-            # The split operation results in: ["", HEADER_FULL, HEADER_NAME, CONTENT, HEADER_FULL, HEADER_NAME, CONTENT, ...]
-            # We process every 3 elements starting from index 0 or 1 depending on initial empty string
-            i = 0
-            # If the first element is empty, start from the first header
-            if sections and sections[0] == "":
-                i = 1
-            
-            while i < len(sections):
-                if i + 2 < len(sections) and sections[i].startswith("==="): # Check if it looks like a header section
-                    header_name = sections[i+1].strip() # This is the captured group name
-                    content_block = sections[i+2].strip()
-                    
-                    if header_name == "Current Channel Info":
-                        channel_info = content_block
-                    elif header_name == "Known Users":
-                        user_info = content_block
-                    elif header_name == "Recent Conversation History":
-                        conversation_history_text = content_block
-                    elif header_name == "Pinned Messages": # NEW
-                        pinned_messages_text = content_block
-                    
-                    i += 3 # Move past header_tag, header_name, content_block
-                else:
-                    i += 1 # Skip non-header parts (e.g., initial empty string)
+        # 2. Add the static context (channel info, user info, pins) as another system message
+        if static_context:
+            messages.append({"role": "system", "content": static_context})
 
-            # Combine Channel Info, Known Users, and Pinned Messages into a single 'system' message
-            # This provides general context before the dynamic conversation history
-            combined_static_context_block = []
-            if channel_info:
-                combined_static_context_block.append(f"Channel Information:\n{channel_info}")
-            if user_info:
-                combined_static_context_block.append(f"Known Users:\n{user_info}")
-            if pinned_messages_text: # NEW
-                combined_static_context_block.append(f"Pinned Messages:\n{pinned_messages_text}")
-            
-            if combined_static_context_block:
-                llm_context_content = "\n\n".join(combined_static_context_block)
-                messages.append({"role": "system", "content": llm_context_content})
+        # 3. Add the structured conversation history
+        if history:
+            # The history is already formatted with roles, so we just extend the list.
+            # We need to ensure the content is correctly formatted for multimodal.
+            for msg in history:
+                # For now, we assume the content is a string.
+                # If multimodal content needs to be passed as a list of parts,
+                # this is where that logic would go.
+                messages.append(msg)
 
-            # Add the actual conversation history
-            if conversation_history_text:
-                messages.extend(self._parse_conversation_history_block(conversation_history_text, is_multimodal))
-        
-        # Add the actual current user prompt
+        # 4. Add the current user's prompt
         if prompt:
             content_parts = [{"type": "text", "text": prompt}]
             if image_urls and is_multimodal:
@@ -464,60 +449,11 @@ class LLMCommands(commands.Cog):
                 for url in image_urls:
                     content_parts.append({"type": "image_url", "image_url": {"url": url}})
             
-            messages.append({"role": "user", "content": content_parts})
+            # If there's only one text part, send it as a simple string for compatibility.
+            # Otherwise, send the list of parts.
+            final_prompt_content = content_parts[0]['text'] if len(content_parts) == 1 else content_parts
+            messages.append({"role": "user", "content": final_prompt_content})
             
-        return messages
-
-    def _parse_conversation_history_block(self, conversation_text: str, is_multimodal: bool = False) -> List[Dict[str, any]]:
-        """Parse raw conversation history text into messages list with 'user' and 'assistant' roles."""
-        messages = []
-        
-        # Remove the '=== End of Conversation History ===' line if it's there
-        conversation_text = conversation_text.split("=== End of Conversation History ===")[0].strip()
-
-        # This regex is designed to find blocks of text associated with a user.
-        # It looks for a username followed by a colon, and then captures all subsequent lines
-        # until it hits the next username or the end of the string.
-        pattern = re.compile(r"^(.*?): (.*?)(?=\n^.*?: |\Z)", re.DOTALL | re.MULTILINE)
-        
-        for match in pattern.finditer(conversation_text):
-            role_name = match.group(1).strip()
-            content_block = match.group(2).strip()
-            
-            # Determine the role for the message
-            role = "assistant" if role_name in ["Mirrobot", "Other Bot"] else "user"
-            
-            # Regex to find image URLs in the content block
-            image_pattern = re.compile(r"\(Image: (https?://[^\)]+)\)")
-            
-            text_parts = image_pattern.split(content_block)
-            
-            # The first part is always text.
-            # Subsequent parts will be [image_url, text, image_url, text, ...]
-            
-            final_content = []
-            
-            # Process the first text part
-            if text_parts[0].strip():
-                # For user messages, prepend the username to the first text part
-                # to maintain speaker identity for the LLM.
-                text_to_add = f"{role_name}: {text_parts[0].strip()}" if role == "user" else text_parts[0].strip()
-                final_content.append({"type": "text", "text": text_to_add})
-
-            # Process the rest of the parts (image_url, text pairs)
-            for i in range(1, len(text_parts), 2):
-                if is_multimodal:
-                    # Add the image part
-                    image_url = text_parts[i]
-                    final_content.append({"type": "image_url", "image_url": {"url": image_url}})
-                
-                # Add the subsequent text part if it exists and is not empty
-                if i + 1 < len(text_parts) and text_parts[i+1].strip():
-                    final_content.append({"type": "text", "text": text_parts[i+1].strip()})
-            
-            if final_content:
-                messages.append({"role": role, "content": final_content})
-                
         return messages
 
     def _add_parsed_message(self, messages: List[Dict[str, str]], current_role: str,
@@ -639,190 +575,6 @@ class LLMCommands(commands.Cog):
         
         return cleaned_response, combined_thinking
     
-    def convert_text_to_discord_format(self, content: str, guild_id: Optional[int] = None) -> str:
-        """Convert text patterns in LLM response to Discord format
-        
-        Handles:
-        - <Ping> @Username -> actual Discord mention
-        - @Username -> actual Discord mention
-        - Removes self-mentions of the bot to prevent it from mentioning itself
-        
-        Args:
-            content: Text content from LLM response
-            guild_id: Optional guild ID to look up users
-            
-        Returns:
-            Formatted text with proper Discord formatting
-        """
-        try:
-            # Skip processing if content is empty
-            if not content:
-                return content
-            
-            # Check if this is a bot response message by looking for the bot's name
-            # This helps us determine if we need to strip out self-references
-            # Note: bot_user_id should ideally be fetched from bot.user.id in a listener,
-            # but for a cog, assuming it's relatively static is okay for now.
-            bot_user_id = self.bot.user.id if self.bot.user else 0 # Use bot's actual ID
-            bot_names = ["Mirrobot", "Helper Retirement Machine 9000"] # Add your bot's names here
-            is_bot_message = False
-            
-            # Check if message starts with bot name (this indicates it's likely a bot's own internal response)
-            # This is a heuristic to guess if the *LLM* is generating a self-referential message,
-            # not if the *bot* is sending a message. LLM should be told its name.
-            # Removed this heuristic as it's unreliable; rely on the LLM's instruction not to self-mention in prompt.
-            # The removal of self-mentions logic below will handle it based on bot_user_id.
-            
-            # Filter out "Username:" pattern at the beginning of messages or lines
-            # This handles cases where a message starts with a username followed by a colon
-            username_colon_pattern = r'^(?:(?:[a-zA-Z0-9_ -]+)|(?:<@!?\d+>)):|(?:\n)(?:(?:[a-zA-Z0-9_ -]+)|(?:<@!?\d+>)): '
-            content = re.sub(username_colon_pattern, '', content, flags=re.MULTILINE).strip()
-            # After removing, clean up potential empty lines or excessive whitespace
-            content = re.sub(r'\n\s*\n', '\n\n', content).strip()
-
-
-            # If this is from the bot, remove self-mentions to prevent self-talk
-            # This happens if the LLM output itself contains the bot's mention or name
-            if bot_user_id != 0: # Only apply if bot_user_id is known
-                # Remove direct mentions of the bot
-                bot_mention_pattern = f'<@!?{bot_user_id}>'
-                content = re.sub(bot_mention_pattern, '', content)
-                
-                # Also remove text references to the bot's name
-                for name in bot_names:
-                    # Use word boundary to avoid partial replacements, and ignore case
-                    content = re.sub(f'\\b{re.escape(name)}\\b', '', content, flags=re.IGNORECASE)
-                
-                # Clean up any double spaces or leading/trailing whitespace left by mention/name removals
-                content = re.sub(r'\s+', ' ', content).strip()
-            
-            # Load user index for mentions (used by both mention formats)
-            user_index = {}
-            try:
-                from utils.chatbot.manager import chatbot_manager
-                if guild_id:
-                    user_index = chatbot_manager.load_user_index(guild_id)
-                    logger.debug(f"Loaded user index with {len(user_index)} users for mention conversion")
-            except ImportError:
-                logger.debug("Chatbot manager not available for user lookups")
-            
-            # Convert text ping format: <Ping> @Username
-            # This pattern should be robust to various characters in username, but usually it's plain letters/numbers
-            # Find all instances of this pattern (e.g., <Ping> @User_Name or <ping> @Another User)
-            ping_pattern = r'<[Pp][Ii][Nn][Gg]>\s*@([a-zA-Z0-9_ ]+)' # Capture the username string
-            ping_matches = re.findall(ping_pattern, content)
-            
-            if ping_matches:
-                # Process each match
-                for username_match in set(ping_matches): # Use set to process unique usernames once
-                    user_id = None
-                    # Look in user index first (case-insensitive and handle spaces)
-                    for uid, user_entry in user_index.items():
-                        if username_match.lower().strip() == user_entry.username.lower().strip() or \
-                           username_match.lower().strip() == user_entry.display_name.lower().strip():
-                            user_id = uid
-                            break
-                    
-                    if user_id:
-                        # Skip self-mentions (if the user ID matches the bot's own ID)
-                        if int(user_id) == bot_user_id: # and is_bot_message: // is_bot_message heuristic removed
-                            # Remove the original text ping pattern from content
-                            content = re.sub(re.escape(f'<Ping> @{username_match}'), '', content, flags=re.IGNORECASE)
-                            logger.debug(f"Removed self-mention of bot via <Ping> @{username_match}")
-                            continue
-                            
-                        # Replace the text ping with actual Discord mention
-                        # Use re.escape for the username_match to handle special characters correctly in regex
-                        pattern_to_replace = r'<[Pp][Ii][Nn][Gg]>\s*@' + re.escape(username_match) + r'\b'
-                        discord_mention = f'<@{user_id}>'
-                        content = re.sub(pattern_to_replace, discord_mention, content, flags=re.IGNORECASE)
-                        logger.debug(f"Converted text ping for '{username_match}' to Discord mention for user ID {user_id}")
-                    else:
-                        logger.debug(f"Could not find user ID for <Ping> @'{username_match}'")
-            
-            # Convert plain @Username format (without <Ping> tag)
-            # Find all instances of @Username pattern (not preceded by < and not part of existing <@ID>)
-            # This regex avoids matching inside existing Discord mentions like <@12345>
-            username_pattern = r'(?<!<)(?<!<@)\B@([a-zA-Z0-9_]+)\b'
-            username_matches = re.findall(username_pattern, content)
-            
-            if username_matches:
-                logger.debug(f"Found {len(username_matches)} username mentions to convert")
-                
-                # Process each match
-                for username in set(username_matches): # Use set for unique usernames
-                    # Skip if username is one of the bot names and this is a bot message
-                    if any(username.lower() == name.lower() for name in bot_names) and bot_user_id != 0: # and is_bot_message: // heuristic removed
-                        logger.debug(f"Skipping @{username} as it's a self-mention of the bot.")
-                        # Additionally, remove the self-mention
-                        content = re.sub(f'@{re.escape(username)}\\b', '', content)
-                        continue
-                        
-                    # Try to find the user by username or display name
-                    user_id = None
-                    
-                    # Look in user index (case-insensitive)
-                    for uid, user_entry in user_index.items():
-                        if username.lower() == user_entry.username.lower() or username.lower() == user_entry.display_name.lower():
-                            user_id = uid
-                            break
-                    
-                    if user_id:
-                        # Replace the username with actual Discord mention
-                        # Use word boundary to ensure we don't replace partial matches
-                        # Also ensure it's not already part of an existing mention
-                        pattern = r'(?<!<)(?<!<@)\B@' + re.escape(username) + r'\b'
-                        discord_mention = f'<@{user_id}>'
-                        content = re.sub(pattern, discord_mention, content)
-                        logger.debug(f"Converted @{username} to Discord mention for user ID {user_id}")
-                    else:
-                        logger.debug(f"Could not find user ID for username '@{username}'")
-            
-            # NEW: Convert plain Username format (without @ symbol)
-            # We need to be more careful here to avoid false positives
-            if user_index and len(user_index) > 0:
-                # Build a list of usernames to look for - filter out short names to avoid false positives
-                usernames_to_find = []
-                for uid, user_entry in user_index.items():
-                    # Only consider usernames that are at least 3 characters to avoid false positives
-                    # and are not exclusively numbers (to avoid accidental ID matches)
-                    if len(user_entry.username) >= 3 and not user_entry.username.isdigit():
-                        usernames_to_find.append((user_entry.username, uid))
-                    # Also include display names if they differ from username and are long enough
-                    if user_entry.display_name != user_entry.username and len(user_entry.display_name) >= 3 and not user_entry.display_name.isdigit():
-                        usernames_to_find.append((user_entry.display_name, uid))
-                
-                # Sort by length (descending) to prioritize longer matches and avoid replacing substrings
-                usernames_to_find.sort(key=lambda x: len(x[0]), reverse=True)
-                
-                # Check for each username in the content
-                for username_text, uid in usernames_to_find:
-                    # Skip self-mentions (if the user ID matches the bot's own ID)
-                    if int(uid) == bot_user_id: # and is_bot_message: // heuristic removed
-                        continue
-                        
-                    # Look for the username with word boundaries to avoid partial matches
-                    # Ensure it's not already part of a Discord mention (e.g., <@12345> or @username_part_of_mention)
-                    # This pattern also ensures it's not part of a URL or code block
-                    pattern = r'(?<![<@`/\.])\b' + re.escape(username_text) + r'\b(?![\d])'
-                    
-                    # Check if this pattern appears in the content
-                    if re.search(pattern, content, re.IGNORECASE):
-                        # Replace with Discord mention
-                        discord_mention = f'<@{uid}>'
-                        content = re.sub(pattern, discord_mention, content, flags=re.IGNORECASE)
-                        logger.debug(f"Converted plain username '{username_text}' to Discord mention for user ID {uid}")
-            
-            # Final cleanup of any weird whitespace artifacts
-            content = re.sub(r'\s+', ' ', content).strip()
-            content = re.sub(r'\s+([.,!?:;])', r'\1', content)  # Fix spacing before punctuation
-            
-            return content
-            
-        except Exception as e:
-            logger.error(f"Error converting text to Discord format: {e}", exc_info=True)
-            # If something goes wrong, just return the original content
-            return content
 
     @commands.command(name='ask', help='Ask the LLM a question')
     @has_command_permission('manage_messages')
@@ -880,7 +632,13 @@ class LLMCommands(commands.Cog):
                     context=context
                 )
                 cleaned_response, _ = self.strip_thinking_tokens(response)
-                await self.send_llm_response(ctx, cleaned_response, question, model_type="ask", performance_metrics=performance_metrics)
+                final_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                    cleaned_response,
+                    guild_id,
+                    bot_user_id=self.bot.user.id,
+                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                )
+                await self.send_llm_response(ctx, final_response, question, model_type="ask", performance_metrics=performance_metrics)
             except Exception as e:
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
@@ -940,11 +698,18 @@ class LLMCommands(commands.Cog):
                     context=context
                 )
                 
+                formatted_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                    response,
+                    guild_id,
+                    bot_user_id=self.bot.user.id,
+                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                )
+
                 if not display_thinking:
-                    cleaned_response, _ = self.strip_thinking_tokens(response)
+                    cleaned_response, _ = self.strip_thinking_tokens(formatted_response)
                     await self.send_llm_response(ctx, cleaned_response, question, model_type="think", performance_metrics=performance_metrics)
                 else:
-                    await self.send_llm_response(ctx, response, question, model_type="think", performance_metrics=performance_metrics)
+                    await self.send_llm_response(ctx, formatted_response, question, model_type="think", performance_metrics=performance_metrics)
             except Exception as e:
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
@@ -1040,14 +805,15 @@ class LLMCommands(commands.Cog):
         await ctx.typing()
 
         try:
-            all_models = await self.llm_client.get_all_available_models(grouped=True)
-            if self.llm_config.get("base_url"):
-                try:
-                    local_models = await self.llm_client.get_available_models("local")
-                    if local_models:
-                        all_models["local"] = local_models
-                except Exception as e:
-                    logger.warning(f"Could not fetch local models: {e}")
+            async with RotatingClient(api_keys=self.api_keys) as client:
+                all_models = await client.get_all_available_models(grouped=True)
+                if self.llm_config.get("base_url"):
+                    try:
+                        local_models = await client.get_available_models("local")
+                        if local_models:
+                            all_models["local"] = local_models
+                    except Exception as e:
+                        logger.warning(f"Could not fetch local models: {e}")
 
             if not all_models:
                 await create_embed_response(ctx, "No models found for any provider.", title="No Models Found", color=discord.Color.orange())
@@ -1190,7 +956,8 @@ class LLMCommands(commands.Cog):
 
         try:
             if not is_manual:
-                all_models_grouped = await self.llm_client.get_all_available_models(grouped=True)
+                async with RotatingClient(api_keys=self.api_keys) as client:
+                    all_models_grouped = await client.get_all_available_models(grouped=True)
                 all_models_flat = [model for models in all_models_grouped.values() for model in models]
 
                 if not all_models_flat:
@@ -1665,7 +1432,7 @@ class LLMCommands(commands.Cog):
     @has_command_permission("chatbot_clear_history")
     @command_category("AI Assistant")
     async def chatbot_clear_history(self, ctx):
-        """Clear conversation history for this channel"""
+        """Clear conversation history and set a checkpoint for this channel."""
         try:
             from utils.chatbot.manager import chatbot_manager
             
@@ -1681,35 +1448,64 @@ class LLMCommands(commands.Cog):
                 )
                 return
             
-            # Load current history to show count
-            current_history = chatbot_manager.load_conversation_history(guild_id, channel_id)
-            message_count = len(current_history)
+            chatbot_manager.clear_channel_data(guild_id, channel_id)
             
-            # Clear history by saving empty list
-            success = chatbot_manager.save_conversation_history(guild_id, channel_id, [])
-            
-            if success:
-                await create_embed_response(
-                    ctx,
-                    f"✅ Cleared {message_count} messages from conversation history.\n\n"
-                    f"The chatbot will start fresh with no previous context in this channel.",
-                    title="History Cleared",
-                    color=discord.Color.green()
-                )
-                logger.info(f"Cleared {message_count} messages from chatbot history for channel {ctx.channel.name} ({channel_id}) by {ctx.author}")
-            else:
-                await create_embed_response(
-                    ctx,
-                    "Failed to clear conversation history. Please try again.",
-                    title="Clear Failed",
-                    color=discord.Color.red()
-                )
-                
-        except Exception as e:
-            logger.error(f"Error clearing chatbot history: {e}", exc_info=True)
             await create_embed_response(
                 ctx,
-                f"An error occurred while clearing history: {str(e)}",
+                f"✅ Cleared channel data and set a checkpoint.\n\n"
+                f"The chatbot will start fresh, and messages from before this point will not be re-indexed.",
+                title="Channel Data Cleared",
+                color=discord.Color.green()
+            )
+            logger.info(f"Cleared channel data for channel {ctx.channel.name} ({channel_id}) by {ctx.author}")
+                
+        except Exception as e:
+            logger.error(f"Error clearing channel data: {e}", exc_info=True)
+            await create_embed_response(
+                ctx,
+                f"An error occurred while clearing channel data: {str(e)}",
+                title="Error",
+                color=discord.Color.red()
+            )
+
+    @commands.command(name='chatbot_remove_checkpoint')
+    @has_command_permission("chatbot_clear_history")
+    @command_category("AI Assistant")
+    async def chatbot_remove_checkpoint(self, ctx):
+        """Remove the indexing checkpoint for this channel."""
+        try:
+            from utils.chatbot.manager import chatbot_manager
+            
+            guild_id = ctx.guild.id if ctx.guild else None
+            channel_id = ctx.channel.id
+            
+            if not guild_id:
+                await create_embed_response(
+                    ctx,
+                    "This command can only be used in server channels, not in DMs.",
+                    title="Error",
+                    color=discord.Color.red()
+                )
+                return
+            
+            channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
+            channel_config.last_cleared_timestamp = None
+            chatbot_manager.set_channel_config(guild_id, channel_id, channel_config)
+            
+            await create_embed_response(
+                ctx,
+                f"✅ Removed indexing checkpoint.\n\n"
+                f"The chatbot will now re-index messages from before the last clear.",
+                title="Checkpoint Removed",
+                color=discord.Color.green()
+            )
+            logger.info(f"Removed indexing checkpoint for channel {ctx.channel.name} ({channel_id}) by {ctx.author}")
+                
+        except Exception as e:
+            logger.error(f"Error removing checkpoint: {e}", exc_info=True)
+            await create_embed_response(
+                ctx,
+                f"An error occurred while removing the checkpoint: {str(e)}",
                 title="Error",
                 color=discord.Color.red()
             )
@@ -2071,31 +1867,28 @@ class LLMCommands(commands.Cog):
 
     @llm_safety.command(name='set', help="""Set a safety setting for the server or a channel.
 
-    Usage: `!llm_safety set <level> <category> <threshold> [channel]`
+    Usage: `!llm_safety set <level> <category> <threshold>`
 
     Arguments:
-    - `level`: `server` or `channel`.
-    - `category`: `harassment`, `hate_speech`, `sexually_explicit`, `dangerous_content`.
+    - `level`: `server` or a channel mention (e.g., #general).
+    - `category`: `all`, `harassment`, `hate_speech`, `sexually_explicit`, `dangerous_content`.
     - `threshold`: `block_none`, `block_low_and_above`, `block_medium_and_above`, `block_only_high`.
-    - `[channel]`: Optional channel mention. Required if level is `channel` and you want to set it for a different channel.
 
     Examples:
-    - `!llm_safety set server harassment block_none`
-    - `!llm_safety set channel hate_speech block_medium_and_above #general`
+    - `!llm_safety set server all block_none`
+    - `!llm_safety set #general hate_speech block_medium_and_above`
     """)
-    async def set_safety_settings(self, ctx, level: str, category: str, threshold: str, channel: Optional[discord.TextChannel] = None):
+    async def set_safety_settings(self, ctx, level: Union[discord.TextChannel, str], category: str, threshold: str):
         """Set a safety setting for the server or a specific channel."""
-        level = level.lower()
-        if level not in ['server', 'channel']:
-            await create_embed_response(ctx, "Invalid level. Use 'server' or 'channel'.", title="Error", color=discord.Color.red())
-            return
-
-        if level == 'channel' and not channel:
-            channel = ctx.channel
-
         valid_categories = ["harassment", "hate_speech", "sexually_explicit", "dangerous_content"]
-        if category.lower() not in valid_categories:
-            await create_embed_response(ctx, f"Invalid category. Use one of: {', '.join(valid_categories)}", title="Error", color=discord.Color.red())
+        categories_to_set = []
+
+        if category.lower() == 'all':
+            categories_to_set = valid_categories
+        elif category.lower() in valid_categories:
+            categories_to_set.append(category.lower())
+        else:
+            await create_embed_response(ctx, f"Invalid category. Use 'all' or one of: {', '.join(valid_categories)}", title="Error", color=discord.Color.red())
             return
 
         valid_thresholds = ["block_none", "block_low_and_above", "block_medium_and_above", "block_only_high"]
@@ -2105,19 +1898,88 @@ class LLMCommands(commands.Cog):
 
         guild_id = ctx.guild.id
         
-        if level == 'server':
+        if isinstance(level, str) and level.lower() == 'server':
             settings = get_safety_settings(guild_id)
-            settings[category.lower()] = threshold.lower()
+            for cat in categories_to_set:
+                settings[cat] = threshold.lower()
             save_server_safety_settings(guild_id, settings)
             await create_embed_response(ctx, f"Server safety setting for `{category}` updated to `{threshold}`.", title="✅ Success", color=discord.Color.green())
-        else: # channel
+        elif isinstance(level, discord.TextChannel):
+            channel = level
             channel_config = chatbot_manager.get_channel_config(guild_id, channel.id)
             if not channel_config.safety_settings:
                 channel_config.safety_settings = get_safety_settings(guild_id, channel.id)
             
-            channel_config.safety_settings[category.lower()] = threshold.lower()
+            for cat in categories_to_set:
+                channel_config.safety_settings[cat] = threshold.lower()
             chatbot_manager.set_channel_config(guild_id, channel.id, channel_config)
             await create_embed_response(ctx, f"Channel safety setting for `{category}` in #{channel.name} updated to `{threshold}`.", title="✅ Success", color=discord.Color.green())
+        else:
+            await create_embed_response(ctx, "Invalid level. Use 'server' or a channel mention.", title="Error", color=discord.Color.red())
+            return
+
+    @commands.command(name='set_reasoning_budget', help='Set the reasoning budget for a model.')
+    @has_command_permission('manage_guild')
+    @command_category("AI Assistant")
+    async def set_reasoning_budget(self, ctx, model: str, level: str, mode: Optional[str] = None):
+        """Sets the reasoning budget for a specific model and mode."""
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
+            return
+
+        guild_id = ctx.guild.id
+        level_map = {"auto": -1, "none": 0, "low": 1, "medium": 2, "high": 3}
+        
+        level_val = level_map.get(level.lower())
+        if level_val is None:
+            await create_embed_response(ctx, "Invalid level. Use 'auto', 'none', 'low', 'medium', or 'high'.", title="Error", color=discord.Color.red())
+            return
+
+        if mode and mode.lower() == 'all':
+            modes_to_set = ["default", "chat", "ask", "think"]
+            for target_mode in modes_to_set:
+                save_reasoning_budget(model, target_mode, level_val, guild_id)
+            await create_embed_response(ctx, f"Reasoning budget for model `{model}` for all modes set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+        else:
+            target_mode = mode if mode else "default"
+            save_reasoning_budget(model, target_mode, level_val, guild_id)
+            
+            if mode:
+                await create_embed_response(ctx, f"Reasoning budget for model `{model}` in mode `{mode}` set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+            else:
+                await create_embed_response(ctx, f"Default reasoning budget for model `{model}` set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+
+    @commands.command(name='view_reasoning_budget', help='View the reasoning budget for all models.')
+    @has_command_permission('manage_guild')
+    @command_category("AI Assistant")
+    async def view_reasoning_budget(self, ctx):
+        """Displays the reasoning budget for all models on the server."""
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
+            return
+
+        guild_id = ctx.guild.id
+        all_budgets = get_all_reasoning_budgets(guild_id)
+
+        if not all_budgets:
+            await create_embed_response(ctx, "No reasoning budgets have been set for this server.", title="No Reasoning Budgets Found", color=discord.Color.orange())
+            return
+
+        embed = discord.Embed(title="Reasoning Budget Configuration", color=discord.Color.blue())
+        embed.description = "Showing configured reasoning budgets for all models on this server."
+        
+        level_map_inv = {-1: "auto", 0: "none", 1: "low", 2: "medium", 3: "high"}
+
+        for model, budgets in all_budgets.items():
+            budget_lines = []
+            for mode, level in budgets.items():
+                level_str = level_map_inv.get(level, str(level))
+                budget_lines.append(f"**{mode.title()}:** `{level_str}`")
+            
+            if budget_lines:
+                embed.add_field(name=f"Model: `{model}`", value="\n".join(budget_lines), inline=False)
+
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     """Setup function to add the cog to the bot"""
