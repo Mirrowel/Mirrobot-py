@@ -219,7 +219,10 @@ class LLMContextFormatter:
             processed_text = re.sub(p1, '', text.strip())
             # Second, handle the simpler case with just a username prefix.
             p2 = r'\[\d+\]\s*.*?:'
-            processed_text = re.sub(p2, processed_text.strip())
+            processed_text = re.sub(p2, '', processed_text.strip())
+            # Third, handle standalone reply blocks on their own lines.
+            p3 = r'^\s*\[Replying to #\d+\]\s*'
+            processed_text = re.sub(p3, '', processed_text, flags=re.MULTILINE).strip()
             #logger.debug(f"Anti-parrot post-filter text: '{processed_text[:100]}...'")
 
             creator_id = 214161976534892545
