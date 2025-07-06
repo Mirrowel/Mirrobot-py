@@ -2008,7 +2008,7 @@ class LLMCommands(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name='indexing_stats', help='Show indexing statistics for this server.')
-    @has_command_permission('manage_guild')
+    @has_command_permission()
     @command_category("AI Assistant")
     async def indexing_stats(self, ctx):
         """Displays statistics about the user and channel indexes for this server."""
@@ -2027,7 +2027,7 @@ class LLMCommands(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name='cleanup_users', help='Manually clean up stale users from the index.')
-    @has_command_permission('manage_guild')
+    @has_command_permission()
     @command_category("AI Assistant")
     async def cleanup_users(self, ctx, hours: int = 168):
         """Manually cleans up users who have not been seen in the specified number of hours."""
