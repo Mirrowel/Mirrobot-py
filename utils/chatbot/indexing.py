@@ -241,6 +241,27 @@ class IndexingManager:
             logger.error(f"Error indexing channel {getattr(channel, 'id', 'Unknown')}: {e}", exc_info=True)
             raise
 
+    def update_channel_index(self, channel) -> bool:
+        """Update channel index with information from a Discord channel object."""
+        try:
+            guild_id = channel.guild.id
+            channel_index = self.load_channel_index(guild_id)
+            channel_id = channel.id
+            
+            # Create a new entry or get the existing one
+            entry = self.index_channel(channel)
+
+            # Update message count if it exists, otherwise it's set in index_channel
+            if channel_id in channel_index:
+                entry.message_count = channel_index[channel_id].message_count
+
+            channel_index[channel_id] = entry
+            
+            return self.save_channel_index(guild_id, channel_index)
+        except Exception as e:
+            logger.error(f"Error updating channel index for channel {getattr(channel, 'id', 'Unknown')}: {e}", exc_info=True)
+            return False
+
     # Pinned Messages
     def get_pinned_messages_file_path(self, guild_id: int, channel_id: int) -> str:
         return os.path.join(PINNED_MESSAGES_DIR, f"guild_{guild_id}_channel_{channel_id}_pins.json")

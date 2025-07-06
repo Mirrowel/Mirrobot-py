@@ -1512,6 +1512,7 @@ class LLMCommands(commands.Cog):
 
     @commands.command(name='debug_message_filter', aliases=['dbg_filter'])
     @has_command_permission()
+    @command_category("AI Assistant(Debug)")
     async def debug_message_filter(self, ctx, *, test_message: str):
         """Test a message through the filter system (dev only)
         
@@ -1617,6 +1618,7 @@ class LLMCommands(commands.Cog):
 
     @commands.command(name='debug_full_context', aliases=['dbg_full'])
     @has_command_permission()
+    @command_category("AI Assistant(Debug)")
     async def debug_full_context(self, ctx, channel: Optional[discord.abc.Messageable] = None, user_id: int = None):
         """Export the complete LLM context to a file (dev only)
         
@@ -1808,11 +1810,26 @@ class LLMCommands(commands.Cog):
     async def llm_safety(self, ctx):
         """View or configure LLM safety settings for this server/channel."""
         if ctx.invoked_subcommand is None:
-            help_command = self.bot.get_command('help')
-            if help_command:
-                await ctx.invoke(help_command, command=ctx.command.name)
-            else:
-                await ctx.send("Help command not found.")
+            help_embed = discord.Embed(
+                title="LLM Safety Feature Help",
+                description=self.llm_safety.help,
+                color=discord.Color.blue()
+            )
+            
+            for command in self.llm_safety.commands:
+                # Format the signature to show parameters
+                signature = f"`!llm_safety {command.name}"
+                for param in command.clean_params.values():
+                    signature += f" <{param.name}>"
+                signature += "`"
+                
+                help_embed.add_field(
+                    name=f"**{command.name.capitalize()}**",
+                    value=f"{signature}\n{command.help}",
+                    inline=False
+                )
+            
+            await ctx.send(embed=help_embed)
 
     @llm_safety.command(name='view', help="""View the current safety settings.
 
@@ -1878,8 +1895,17 @@ class LLMCommands(commands.Cog):
     - `!llm_safety set server all block_none`
     - `!llm_safety set #general hate_speech block_medium_and_above`
     """)
-    async def set_safety_settings(self, ctx, level: Union[discord.TextChannel, str], category: str, threshold: str):
+    async def set_safety_settings(self, ctx, level: Optional[Union[discord.TextChannel, str]] = None, category: Optional[str] = None, threshold: Optional[str] = None):
         """Set a safety setting for the server or a specific channel."""
+        if level is None or category is None or threshold is None:
+            help_embed = discord.Embed(
+                title=f"Help for: `!llm_safety {ctx.command.name}`",
+                description=ctx.command.help,
+                color=discord.Color.orange()
+            )
+            await ctx.send(embed=help_embed)
+            return
+
         valid_categories = ["harassment", "hate_speech", "sexually_explicit", "dangerous_content"]
         categories_to_set = []
 
