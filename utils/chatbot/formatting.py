@@ -59,88 +59,91 @@ class LLMContextFormatter:
             logger.error(f"Error getting prioritized context: {e}", exc_info=True)
             return []
 
-    def format_context_for_llm(self, messages: List[ConversationMessage], guild_id: int, channel_id: int) -> str:
-        """Formats conversation messages for LLM context, handling replies with local IDs and snippets."""
+    def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> str:
+        """Private helper to format the content of a single message."""
+        user_index = self.index_manager.load_user_index(guild_id)
+        role_label = "Mirrobot" if msg.is_self_bot_response else (user_index.get(msg.user_id).username if user_index.get(msg.user_id) else msg.username)
+        
+        reply_info = ""
+        if msg.referenced_message_id:
+            if msg.referenced_message_id in message_id_to_local_index:
+                reply_info = f"[Replying to #{message_id_to_local_index[msg.referenced_message_id]}] "
+            else:
+                # This is a performance hit, but necessary for out-of-context replies.
+                # Consider caching full history if this becomes a bottleneck.
+                full_history = self.conv_manager.load_conversation_history(guild_id, channel_id)
+                original_msg = next((m for m in full_history if m.message_id == msg.referenced_message_id), None)
+                if original_msg:
+                    original_author = (user_index.get(original_msg.user_id).username if user_index.get(original_msg.user_id) else original_msg.username)
+                    snippet = (original_msg.content or "")[:75] + ("..." if len(original_msg.content or "") > 75 else "")
+                    reply_info = f'[Replying to @{original_author}: "{snippet}"] '
+
+        line_parts = [f"[{local_id}] {role_label}: {reply_info}"]
+
+        # Use a temporary variable for content to handle cases where multimodal_content is empty
+        content_to_process = msg.multimodal_content if msg.multimodal_content else [ConversationMessage(type="text", text=msg.content)]
+
+        if msg.multimodal_content:
+            text_segments = []
+            for part in msg.multimodal_content:
+                if part.type == "text" and part.text:
+                    text_segments.append(self._convert_discord_format_to_llm_readable(part.text, guild_id))
+                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                    if text_segments:
+                        line_parts.append(" ".join(text_segments))
+                        text_segments = []
+                    line_parts.append(f"(Image: {part.image_url['url']})")
+            if text_segments:
+                line_parts.append(" ".join(text_segments))
+        else: # Fallback for older data or non-multimodal messages
+            llm_readable_content = self._convert_discord_format_to_llm_readable(msg.content, guild_id)
+            if msg.attachment_urls:
+                llm_readable_content += f" (Image: {', '.join(msg.attachment_urls)})"
+            line_parts.append(llm_readable_content)
+
+        return " ".join(line_parts).strip()
+
+    def format_context_for_llm(self, messages: List[ConversationMessage], guild_id: int, channel_id: int) -> tuple[str, List[dict]]:
+        """
+        Formats all context into a static string and a structured list of message dictionaries.
+        Returns a tuple: (static_context_string, history_messages_list).
+        """
         try:
-            if not messages:
-                return ""
-
-            context_lines = []
-
-            # Add channel, user, and pinned message context
+            # Part 1: Assemble the static context string
+            static_context_parts = []
             if guild_id and channel_id:
-                context_lines.append(self.get_channel_context_for_llm(guild_id, channel_id))
+                static_context_parts.append(self.get_channel_context_for_llm(guild_id, channel_id))
             if guild_id and messages:
                 unique_user_ids = list(set(msg.user_id for msg in messages if not msg.is_bot_response))
                 if unique_user_ids:
-                    context_lines.append(self.get_user_context_for_llm(guild_id, unique_user_ids))
+                    static_context_parts.append(self.get_user_context_for_llm(guild_id, unique_user_ids))
             if guild_id and channel_id:
-                context_lines.append(self.get_pinned_context_for_llm(guild_id, channel_id))
+                static_context_parts.append(self.get_pinned_context_for_llm(guild_id, channel_id))
+            
+            static_context_string = "\n".join(filter(None, static_context_parts))
 
-            context_lines.append("=== Recent Conversation History ===")
-            
-            user_index = self.index_manager.load_user_index(guild_id)
-            
-            # Create a map of message_id to its 1-based local index for the current context
+            # Part 2: Assemble the structured conversation history
+            if not messages:
+                return static_context_string, []
+
+            history_messages = []
             message_id_to_local_index = {msg.message_id: i + 1 for i, msg in enumerate(messages)}
-            
-            # Keep a map of message_id to the message object for snippet generation
-            message_id_to_object = {msg.message_id: msg for msg in messages}
 
             for i, msg in enumerate(messages):
-                local_id = i + 1
-                role_label = "Mirrobot" if msg.is_self_bot_response else ("Other Bot" if msg.is_bot_response else (user_index.get(msg.user_id).username if user_index.get(msg.user_id) else msg.username))
-                
-                reply_info = ""
-                if msg.referenced_message_id:
-                    # Case 1: The replied-to message is within the current context window
-                    if msg.referenced_message_id in message_id_to_local_index:
-                        reply_info = f"[Replying to #{message_id_to_local_index[msg.referenced_message_id]}] "
-                    # Case 2: The replied-to message is older and not in the current context
-                    else:
-                        # We need to find the original message in the full history to create a snippet
-                        # This is a simplified approach; a more optimized version might cache this
-                        full_history = self.conv_manager.load_conversation_history(guild_id, channel_id)
-                        original_msg = next((m for m in full_history if m.message_id == msg.referenced_message_id), None)
-                        
-                        if original_msg:
-                            original_author = (user_index.get(original_msg.user_id).username if user_index.get(original_msg.user_id) else original_msg.username)
-                            snippet = (original_msg.content or "")[:75] + ("..." if len(original_msg.content or "") > 75 else "")
-                            reply_info = f'[Replying to @{original_author}: "{snippet}"] '
+                role = "assistant" if msg.is_self_bot_response else "user"
+                content_string = self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
+                history_messages.append({"role": role, "content": content_string})
 
-                # Start building the line for the current message
-                line_parts = [f"[{local_id}] {role_label}: {reply_info}"]
-
-                # Process multimodal content (text and images)
-                if msg.multimodal_content:
-                    text_segments = []
-                    for part in msg.multimodal_content:
-                        if part.type == "text" and part.text:
-                            llm_readable_text = self._convert_discord_format_to_llm_readable(part.text, guild_id)
-                            text_segments.append(llm_readable_text)
-                        elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
-                            if text_segments:
-                                line_parts.append(" ".join(text_segments))
-                                text_segments = []
-                            line_parts.append(f"(Image: {part.image_url['url']})")
-                    if text_segments:
-                        line_parts.append(" ".join(text_segments))
-                # Fallback for older data structure
-                else:
-                    llm_readable_content = self._convert_discord_format_to_llm_readable(msg.content, guild_id)
-                    if msg.attachment_urls:
-                        llm_readable_content += f" (Image: {', '.join(msg.attachment_urls)})"
-                    line_parts.append(llm_readable_content)
-
-                context_lines.append(" ".join(line_parts).strip())
-
-            context_lines.append("=== End of Conversation History ===")
-            context_lines.append("")
-
-            return "\n".join(filter(None, context_lines))
+            return static_context_string, history_messages
         except Exception as e:
             logger.error(f"Error formatting context for LLM: {e}", exc_info=True)
-            return ""
+            return "", []
+
+    def format_single_message(self, msg: ConversationMessage, history_messages: List[ConversationMessage], guild_id: int, channel_id: int) -> str:
+        """Formats a single message using the same logic as the history formatter."""
+        local_id = len(history_messages) + 1
+        message_id_to_local_index = {m.message_id: i + 1 for i, m in enumerate(history_messages)}
+        return self._format_message_content(msg, local_id, guild_id, channel_id, message_id_to_local_index)
 
     def _convert_discord_format_to_llm_readable(self, content: str, guild_id: int) -> str:
         """
@@ -209,18 +212,18 @@ class LLMContextFormatter:
         - Cleaning up leftover artifacts.
         """
         try:
+            # 0. Failsafe: Strip any context formatting the LLM might have parroted.
+            # This pattern handles multiple occurrences and variations of the parroted prefix.
+            failsafe_pattern = r'\s*\[\d+\].*?(?:\[Replying to #\d+\]|:)\s*'
+            processed_text = re.sub(failsafe_pattern, '', text.strip()).strip()
+            #logger.debug(f"Anti-parrot post-filter text: '{processed_text[:100]}...'")
+
             creator_id = 214161976534892545
             creator_username = "⭐ **Mirrowel**"
 
-            # 1. Strip "Username:" prefixes
+            # 1. Strip "Username:" prefixes, but only if they are at the very start of the message.
             username_colon_pattern = r'^(?:[a-zA-Z0-9_ -]+):\s*'
-            processed_text = re.sub(username_colon_pattern, '', text, flags=re.MULTILINE).strip()
-
-            # 2. Bot Self-Mention Prevention
-            if bot_user_id and bot_names:
-                for name in bot_names:
-                    processed_text = re.sub(f'\\b{re.escape(name)}\\b', '', processed_text, flags=re.IGNORECASE)
-                processed_text = re.sub(r'@\s*', '', processed_text)
+            processed_text = re.sub(username_colon_pattern, '', processed_text).strip()
 
             # 3. Convert all username mentions to display names
             user_index = self.index_manager.load_user_index(guild_id)

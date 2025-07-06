@@ -13,6 +13,7 @@ import re
 from utils.chatbot.manager import chatbot_manager
 from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
+from utils.chatbot.models import ConversationMessage, ContentPart
 
 logger = get_logger()
 
@@ -542,11 +543,12 @@ async def handle_chatbot_response(bot, message):
             try:
                 # Get prioritized context messages. This history does NOT include the current message.
                 context_messages = chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
-                # Format all context (channel info, user info, conversation history, pinned messages) into a single string
-                full_context_string = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
+                
+                # Format context into static info and structured history
+                static_context, history_messages = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
                 
                 # Load system prompt (this loads from file and applies thinking mode if configured)
-                system_prompt_for_llm = llm_cog.load_system_prompt(guild_id) # Chatbot typically doesn't show thinking
+                system_prompt_for_llm = llm_cog.load_system_prompt(guild_id, prompt_type="chat")
                 
                 # --- Start of Refactored Logic ---
 
@@ -584,11 +586,27 @@ async def handle_chatbot_response(bot, message):
                 if extracted_text:
                     prompt_text = f"{' '.join(extracted_text)}\n\n{prompt_text}"
 
-                # Apply the same formatting to the prompt as the rest of the history
-                formatted_prompt_text = chatbot_manager.formatter._convert_discord_format_to_llm_readable(prompt_text, guild_id)
+                # Create a ConversationMessage object for the current prompt to use the formatter
+                prompt_conv_message = ConversationMessage(
+                    user_id=message.author.id,
+                    username=message.author.display_name,
+                    content=prompt_text, # Use the text with prepended file content
+                    timestamp=message.created_at.timestamp(),
+                    message_id=message.id,
+                    is_bot_response=False,
+                    is_self_bot_response=False,
+                    referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
+                    attachment_urls=image_urls,
+                    multimodal_content=[ContentPart(type="text", text=prompt_text)] + [ContentPart(type="image_url", image_url={"url": url}) for url in image_urls]
+                )
 
-                # Final prompt includes the author's name
-                user_prompt_content = f"{message.author.name}: {formatted_prompt_text}"
+                # Format the single prompt message using the same logic as the history
+                user_prompt_content = chatbot_manager.formatter.format_single_message(
+                    msg=prompt_conv_message,
+                    history_messages=context_messages, # Pass historical messages for reply context
+                    guild_id=guild_id,
+                    channel_id=channel_id
+                )
 
                 # --- End of Refactored Logic ---
 
@@ -599,42 +617,39 @@ async def handle_chatbot_response(bot, message):
                 debug_filename = f"{debug_dir}/chatbot_prompt.txt"
                 try:
                     with open(debug_filename, 'w', encoding='utf-8') as debug_file:
-                        #debug_file.write("=== SYSTEM PROMPT ===\n")
-                        debug_file.write((system_prompt_for_llm or "None") + "\n\n")
-                        #debug_file.write("=== FULL CONTEXT (from chatbot_manager) ===\n")
-                        debug_file.write((full_context_string or "None") + "\n\n")
-                        #debug_file.write("=== USER'S CURRENT PROMPT (cleaned) ===\n")
-                        debug_file.write((user_prompt_content or "None") + "\n")
-                        #debug_file.write("=== RAW DISCORD MESSAGE CONTENT ===\n")
-                        debug_file.write(message.content or "None")
-                        #debug_file.write("\n\n--- END OF DEBUG ---\n")
+                        debug_file.write((system_prompt_for_llm or "No System Prompt") + "\n\n")
+                        debug_file.write((static_context or "No Static Context") + "\n\n")
+                        # Dump the history messages
+                        for msg in history_messages:
+                            debug_file.write(f"Role: {msg['role']}\nContent: {msg['content']}\n\n")
+                        debug_file.write(f"Current User Prompt: {user_prompt_content}\n")
 
                     logger.debug(f"Debug chatbot prompts written to: {debug_filename}")
                 except Exception as debug_e:
                     logger.warning(f"Failed to write debug prompts to file: {debug_e}")
 
-
                 response_text, performance_metrics = await llm_cog.make_llm_request(
                     prompt=user_prompt_content,
                     system_prompt=system_prompt_for_llm,
-                    context=full_context_string,
+                    context=static_context,
+                    history=history_messages,
                     model_type="chat",
                     guild_id=guild_id,
+                    channel_id=channel_id,
                     image_urls=image_urls
                 )
 
                 if response_text:
-                    # Note: Chatbot mode typically doesn't display thinking tokens to the user.
-                    # We still strip them here to ensure the final response is clean.
-                    cleaned_response, thinking_content = llm_cog.strip_thinking_tokens(response_text)
-
-                    # NEW: Format the response for user-friendly display
-                    final_response = chatbot_manager.formatter.format_llm_output_for_discord(
-                        text=cleaned_response,
+                    # First, format the raw response to strip any parroted context and handle names.
+                    formatted_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                        text=response_text,
                         guild_id=message.guild.id,
                         bot_user_id=bot.user.id,
                         bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
                     )
+
+                    # Then, strip any thinking tokens from the formatted response.
+                    final_response, thinking_content = llm_cog.strip_thinking_tokens(formatted_response)
 
                     def truncate_to_last_sentence(text: str, max_length: int) -> str:
                         """Truncates text to the last full sentence within the max_length."""

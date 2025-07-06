@@ -223,6 +223,7 @@ class LLMCommands(commands.Cog):
         channel_id: Optional[int] = None,
         system_prompt: Optional[str] = None,
         context: Optional[str] = None,
+        history: Optional[List[Dict[str, any]]] = None, # New history parameter
         model: Optional[str] = None,
         image_urls: Optional[List[str]] = None
     ) -> Tuple[str, Dict[str, Any]]:
@@ -242,7 +243,15 @@ class LLMCommands(commands.Cog):
         
         is_multimodal = any(keyword in target_model for keyword in self.multimodal_models_whitelist)
         
-        messages = self._build_messages_list(system_prompt, context, prompt, image_urls, is_multimodal)
+        # Build the messages list using the new structured history
+        messages = self._build_messages_list(
+            system_prompt=system_prompt,
+            static_context=context,
+            history=history,
+            prompt=prompt,
+            image_urls=image_urls,
+            is_multimodal=is_multimodal
+        )
         
         # Prepare kwargs for the rotating client
         request_kwargs = {
@@ -402,71 +411,37 @@ class LLMCommands(commands.Cog):
             'has_token_data': total_tokens > 0
         }
 
-    def _build_messages_list(self, system_prompt: str, context: Optional[str],
-                          prompt: Optional[str], image_urls: Optional[List[str]] = None, is_multimodal: bool = False) -> List[Dict[str, Any]]:
-        """Build messages list with roles: 'system', 'user', 'assistant'"""
+    def _build_messages_list(
+        self,
+        system_prompt: str,
+        static_context: Optional[str],
+        history: Optional[List[Dict[str, any]]],
+        prompt: Optional[str],
+        image_urls: Optional[List[str]] = None,
+        is_multimodal: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Builds the final list of messages for the LLM API."""
         messages = []
 
-        # Add the initial system prompt
+        # 1. Add the main system prompt
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        
-        # Process dynamic context from chatbot_manager.format_context_for_llm
-        if context:
-            channel_info = ""
-            user_info = ""
-            pinned_messages_text = "" # NEW: For pinned messages
-            conversation_history_text = ""
 
-            # Use regex to split the context string by its known section headers
-            # This regex handles cases where headers might be at the start or mid-string
-            sections = re.split(r'(===\s*(Current Channel Info|Known Users|Recent Conversation History|Pinned Messages)\s*===)', context, flags=re.DOTALL)
-            
-            # Iterate through the parts to extract content for each section
-            # The split operation results in: ["", HEADER_FULL, HEADER_NAME, CONTENT, HEADER_FULL, HEADER_NAME, CONTENT, ...]
-            # We process every 3 elements starting from index 0 or 1 depending on initial empty string
-            i = 0
-            # If the first element is empty, start from the first header
-            if sections and sections[0] == "":
-                i = 1
-            
-            while i < len(sections):
-                if i + 2 < len(sections) and sections[i].startswith("==="): # Check if it looks like a header section
-                    header_name = sections[i+1].strip() # This is the captured group name
-                    content_block = sections[i+2].strip()
-                    
-                    if header_name == "Current Channel Info":
-                        channel_info = content_block
-                    elif header_name == "Known Users":
-                        user_info = content_block
-                    elif header_name == "Recent Conversation History":
-                        conversation_history_text = content_block
-                    elif header_name == "Pinned Messages": # NEW
-                        pinned_messages_text = content_block
-                    
-                    i += 3 # Move past header_tag, header_name, content_block
-                else:
-                    i += 1 # Skip non-header parts (e.g., initial empty string)
+        # 2. Add the static context (channel info, user info, pins) as another system message
+        if static_context:
+            messages.append({"role": "system", "content": static_context})
 
-            # Combine Channel Info, Known Users, and Pinned Messages into a single 'system' message
-            # This provides general context before the dynamic conversation history
-            combined_static_context_block = []
-            if channel_info:
-                combined_static_context_block.append(f"Channel Information:\n{channel_info}")
-            if user_info:
-                combined_static_context_block.append(f"Known Users:\n{user_info}")
-            if pinned_messages_text: # NEW
-                combined_static_context_block.append(f"Pinned Messages:\n{pinned_messages_text}")
-            
-            if combined_static_context_block:
-                llm_context_content = "\n\n".join(combined_static_context_block)
-                messages.append({"role": "system", "content": llm_context_content})
+        # 3. Add the structured conversation history
+        if history:
+            # The history is already formatted with roles, so we just extend the list.
+            # We need to ensure the content is correctly formatted for multimodal.
+            for msg in history:
+                # For now, we assume the content is a string.
+                # If multimodal content needs to be passed as a list of parts,
+                # this is where that logic would go.
+                messages.append(msg)
 
-            # Add the actual conversation history
-            if conversation_history_text:
-                messages.extend(self._parse_conversation_history_block(conversation_history_text, is_multimodal))
-        
-        # Add the actual current user prompt
+        # 4. Add the current user's prompt
         if prompt:
             content_parts = [{"type": "text", "text": prompt}]
             if image_urls and is_multimodal:
@@ -474,60 +449,11 @@ class LLMCommands(commands.Cog):
                 for url in image_urls:
                     content_parts.append({"type": "image_url", "image_url": {"url": url}})
             
-            messages.append({"role": "user", "content": content_parts})
+            # If there's only one text part, send it as a simple string for compatibility.
+            # Otherwise, send the list of parts.
+            final_prompt_content = content_parts[0]['text'] if len(content_parts) == 1 else content_parts
+            messages.append({"role": "user", "content": final_prompt_content})
             
-        return messages
-
-    def _parse_conversation_history_block(self, conversation_text: str, is_multimodal: bool = False) -> List[Dict[str, any]]:
-        """Parse raw conversation history text into messages list with 'user' and 'assistant' roles."""
-        messages = []
-        
-        # Remove the '=== End of Conversation History ===' line if it's there
-        conversation_text = conversation_text.split("=== End of Conversation History ===")[0].strip()
-
-        # This regex is designed to find blocks of text associated with a user.
-        # It looks for a username followed by a colon, and then captures all subsequent lines
-        # until it hits the next username or the end of the string.
-        pattern = re.compile(r"^(.*?): (.*?)(?=\n^.*?: |\Z)", re.DOTALL | re.MULTILINE)
-        
-        for match in pattern.finditer(conversation_text):
-            role_name = match.group(1).strip()
-            content_block = match.group(2).strip()
-            
-            # Determine the role for the message
-            role = "assistant" if role_name in ["Mirrobot", "Other Bot"] else "user"
-            
-            # Regex to find image URLs in the content block
-            image_pattern = re.compile(r"\(Image: (https?://[^\)]+)\)")
-            
-            text_parts = image_pattern.split(content_block)
-            
-            # The first part is always text.
-            # Subsequent parts will be [image_url, text, image_url, text, ...]
-            
-            final_content = []
-            
-            # Process the first text part
-            if text_parts[0].strip():
-                # For user messages, prepend the username to the first text part
-                # to maintain speaker identity for the LLM.
-                text_to_add = f"{role_name}: {text_parts[0].strip()}" if role == "user" else text_parts[0].strip()
-                final_content.append({"type": "text", "text": text_to_add})
-
-            # Process the rest of the parts (image_url, text pairs)
-            for i in range(1, len(text_parts), 2):
-                if is_multimodal:
-                    # Add the image part
-                    image_url = text_parts[i]
-                    final_content.append({"type": "image_url", "image_url": {"url": image_url}})
-                
-                # Add the subsequent text part if it exists and is not empty
-                if i + 1 < len(text_parts) and text_parts[i+1].strip():
-                    final_content.append({"type": "text", "text": text_parts[i+1].strip()})
-            
-            if final_content:
-                messages.append({"role": role, "content": final_content})
-                
         return messages
 
     def _add_parsed_message(self, messages: List[Dict[str, str]], current_role: str,
