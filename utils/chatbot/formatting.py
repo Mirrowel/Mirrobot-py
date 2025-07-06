@@ -223,6 +223,10 @@ class LLMContextFormatter:
             # Third, handle standalone reply blocks on their own lines.
             p3 = r'^\s*\[Replying to #\d+\]\s*'
             processed_text = re.sub(p3, '', processed_text, flags=re.MULTILINE).strip()
+
+            # Fourth, filter out stray numerical tags like [372] that the LLM sometimes outputs.
+            p4 = r'\s*\[\d{1,3}\]\s*'
+            processed_text = re.sub(p4, ' ', processed_text).strip()
             #logger.debug(f"Anti-parrot post-filter text: '{processed_text[:100]}...'")
 
             creator_id = 214161976534892545
