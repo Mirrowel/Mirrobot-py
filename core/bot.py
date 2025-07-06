@@ -1,13 +1,12 @@
 import os
 import discord
 from discord.ext import commands
-import cogs
 from core.ocr import respond_to_ocr
 from utils.logging_setup import get_logger
 import sys
 import asyncio
 from utils.log_manager import LogManager
-from cogs.__init__ import cogs
+from cogs import cogs
 import re
 # Import chatbot_manager directly here for config access
 from utils.chatbot.manager import chatbot_manager
@@ -693,7 +692,7 @@ async def handle_chatbot_response(bot, message):
                     
             except Exception as llm_error:
                 logger.error(f"Error generating LLM response for chatbot: {llm_error}")
-                await message.reply("I encountered an error while thinking of a response. Please try again.")
+                await message.reply("I encountered an error while thinking of a response. Please try again.", delete_after=10)
         
     except Exception as e:
         logger.error(f"Error handling chatbot response: {e}")
