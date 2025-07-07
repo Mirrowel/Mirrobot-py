@@ -60,9 +60,38 @@ class LLMContextFormatter:
             return []
 
     async def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> str:
-        """Private helper to format the content of a single message."""
+        """
+        Private helper to format the content of a single message.
+        It formats user messages with full context but strips prefixes from the bot's own messages
+        to prevent the LLM from parroting its own identity.
+        """
+        # --- Assistant Role (Bot's own messages) ---
+        # For the bot's own messages, we only want the raw content to break the parroting pattern.
+        if msg.is_self_bot_response:
+            # Even for the bot's own messages, we might need to include image URLs.
+            line_parts = []
+            if msg.multimodal_content:
+                text_segments = []
+                for part in msg.multimodal_content:
+                    if part.type == "text" and part.text:
+                        text_segments.append(part.text)
+                    elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                        if text_segments:
+                            line_parts.append(" ".join(text_segments))
+                            text_segments = []
+                        line_parts.append(f"(Image: {part.image_url['url']})")
+                if text_segments:
+                    line_parts.append(" ".join(text_segments))
+            else: # Fallback for older data
+                line_parts.append(msg.content)
+                if msg.attachment_urls:
+                    line_parts.append(f" (Image: {', '.join(msg.attachment_urls)})")
+            
+            return " ".join(line_parts).strip()
+
+        # --- User Role (User messages) ---
         user_index = await self.index_manager.load_user_index(guild_id)
-        role_label = "Mirrobot" if msg.is_self_bot_response else (user_index.get(msg.user_id).username if user_index.get(msg.user_id) else msg.username)
+        role_label = user_index.get(msg.user_id).username if user_index.get(msg.user_id) else msg.username
         
         reply_info = ""
         if msg.referenced_message_id:
