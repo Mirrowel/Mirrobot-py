@@ -33,13 +33,31 @@ class ConversationMessage:
 
     def __post_init__(self):
         """Ensure multimodal_content is a list of ContentPart objects."""
-        if self.multimodal_content and self.multimodal_content and isinstance(self.multimodal_content[0], dict):
+        if self.multimodal_content and isinstance(self.multimodal_content, list) and self.multimodal_content and isinstance(self.multimodal_content[0], dict):
             self.multimodal_content = [ContentPart(**part) for part in self.multimodal_content]
+        
         if self.author and isinstance(self.author, dict):
-            # This is a simple deserialization. For a more robust solution,
-            # you might need a more complex User/Member object reconstruction.
+            author_data = self.author
+            # --- Backward Compatibility Layer ---
+            # 1. Handle 'username' vs 'name'
+            if 'username' not in author_data and 'name' in author_data:
+                author_data['username'] = author_data.pop('name')
+            
+            # 2. Add 'discriminator' if missing
+            if 'discriminator' not in author_data:
+                author_data['discriminator'] = '0'
+
+            # 3. Add 'avatar' if missing
+            if 'avatar' not in author_data:
+                author_data['avatar'] = None
+
+            # --- Data Type Correction ---
+            # discord.py's User expects 'id' to be an int.
+            if 'id' in author_data:
+                author_data['id'] = int(author_data['id'])
+
             from discord import User
-            self.author = User(state=None, data=self.author)
+            self.author = User(state=None, data=author_data)
 
     def to_dict(self):
         """
@@ -69,8 +87,10 @@ class ConversationMessage:
         if self.author:
             data['author'] = {
                 'id': self.author.id,
-                'name': self.author.name,
-                'display_name': self.author.display_name
+                'username': self.author.name,
+                'discriminator': self.author.discriminator,
+                'display_name': self.author.display_name,
+                'avatar': getattr(self.author.avatar, 'key', None)
             }
         else:
             data['author'] = None
