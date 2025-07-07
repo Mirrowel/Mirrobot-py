@@ -1043,26 +1043,12 @@ class LLMCommands(commands.Cog):
             
             if success:
                 # Clear conversation history when disabling chatbot
-                history_cleared = await chatbot_manager.save_conversation_history(guild_id, channel_id, [])
-                
-                # Also delete the physical conversation file
-                conversation_file_path = chatbot_manager.get_conversation_file_path(guild_id, channel_id)
-                file_deleted = False
-                try:
-                    if os.path.exists(conversation_file_path):
-                        os.remove(conversation_file_path)
-                        file_deleted = True
-                        logger.debug(f"Deleted conversation file: {conversation_file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete conversation file {conversation_file_path}: {e}")
+                await chatbot_manager.clear_conversation_history(guild_id, channel_id)
+                history_cleared = True  # Assume success if no exception is raised
                 
                 history_msg = ""
                 if history_cleared and message_count > 0:
-                    history_msg = f"\n\n🗑️ Cleared {message_count} messages from conversation history"
-                    if file_deleted:
-                        history_msg += " and deleted conversation file."
-                    else:
-                        history_msg += "."
+                    history_msg = f"\n\n🗑️ Cleared {message_count} messages from conversation history and deleted the conversation file."
                 
                 await create_embed_response(
                     ctx,
