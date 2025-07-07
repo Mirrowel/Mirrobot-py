@@ -405,8 +405,11 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         entity="The name, ID, or mention of the role/member, or the word 'everyone'.",
         target="Optional: 'server', a #channel/thread, or a channel/thread ID."
     )
-    async def permissions_whitelist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: str, target: str = None):
+    async def permissions_whitelist(self, ctx: commands.Context, action: Literal['add', 'remove'] = None, entity: str = None, target: str = None):
         """Adds or removes an entity from the whitelist."""
+        if action is None or entity is None:
+            await self._send_subcommand_help(ctx)
+            return
         # This command delegates the core logic to the _update_permissions helper function.
         await self._update_permissions(ctx, action, 'whitelist', entity, target)
 
@@ -429,8 +432,11 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         entity="The name, ID, or mention of the role/member. You cannot blacklist @everyone.",
         target="Optional: 'server', a #channel/thread, or a channel/thread ID."
     )
-    async def permissions_blacklist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: str, target: str = None):
+    async def permissions_blacklist(self, ctx: commands.Context, action: Literal['add', 'remove'] = None, entity: str = None, target: str = None):
         """Adds or removes an entity from the blacklist."""
+        if action is None or entity is None:
+            await self._send_subcommand_help(ctx)
+            return
         # This command delegates the core logic to the _update_permissions helper function.
         await self._update_permissions(ctx, action, 'blacklist', entity, target)
 
