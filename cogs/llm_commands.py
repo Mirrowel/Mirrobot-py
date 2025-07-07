@@ -443,15 +443,27 @@ class LLMCommands(commands.Cog):
 
         # 4. Add the current user's prompt
         if prompt:
-            content_parts = [{"type": "text", "text": prompt}]
+            content_parts = []
+            # The 'prompt' can be a string (from /ask) or a list of parts (from the chatbot formatter)
+            if isinstance(prompt, list):
+                content_parts.extend(prompt)
+            elif isinstance(prompt, str):
+                content_parts.append({"type": "text", "text": prompt})
+
+            # Add any extra image_urls that weren't part of the initial prompt object
             if image_urls and is_multimodal:
                 logger.info(f"Adding {len(image_urls)} image URLs to user message for multimodal model")
                 for url in image_urls:
-                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+                    # Prevent adding duplicate images if they were already processed into the prompt
+                    if not any(part.get("type") == "image_url" and part.get("image_url", {}).get("url") == url for part in content_parts):
+                        content_parts.append({"type": "image_url", "image_url": {"url": url}})
             
+            if not content_parts:
+                return messages # Nothing to add
+
             # If there's only one text part, send it as a simple string for compatibility.
             # Otherwise, send the list of parts.
-            final_prompt_content = content_parts[0]['text'] if len(content_parts) == 1 else content_parts
+            final_prompt_content = content_parts[0]['text'] if len(content_parts) == 1 and content_parts[0]['type'] == 'text' else content_parts
             messages.append({"role": "user", "content": final_prompt_content})
             
         return messages
