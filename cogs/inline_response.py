@@ -597,7 +597,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                 )
 
             # 5. Process and send the response
-            cleaned_response = chatbot_manager.formatter.format_llm_output_for_discord(
+            cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                 response_text,
                 message.guild.id,
                 self.bot.user.id,
