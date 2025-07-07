@@ -13,6 +13,7 @@ from utils.chatbot.manager import chatbot_manager
 from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 from utils.chatbot.models import ConversationMessage, ContentPart
+from utils.discord_utils import reply_or_send
 
 logger = get_logger()
 
@@ -374,7 +375,7 @@ def create_bot(config):
             
             # Send a generic error message to the user for unhandled errors
             try:
-                await ctx.send(f"An unexpected error occurred: ```{error_details}```", delete_after=20)
+                await reply_or_send(ctx, f"An unexpected error occurred: ```{error_details}```", delete_after=20)
             except Exception as send_error:
                 logger.error(f"Failed to send error message to user: {send_error}", exc_info=True)
 
@@ -701,23 +702,23 @@ async def handle_chatbot_response(bot, message):
                         final_response = truncate_to_last_sentence(final_response, 2000)
 
                     # Send the response as a reply
-                    sent_message = await message.reply(final_response)
-
+                    sent_message = await reply_or_send(message, final_response)
+ 
                     # Add the bot's response to conversation history
                     await chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
                     
                     logger.info(f"Sent chatbot response to message {message.id} in channel {channel_id}")
                 else:
-                    await message.reply("I'm having trouble generating a response right now. Please try again.")
+                    await reply_or_send(message, "I'm having trouble generating a response right now. Please try again.")
                     
             except Exception as llm_error:
                 logger.error(f"Error generating LLM response for chatbot: {llm_error}")
-                await message.reply("I encountered an error while thinking of a response. Please try again.", delete_after=10)
+                await reply_or_send(message, "I encountered an error while thinking of a response. Please try again.", delete_after=10)
         
     except Exception as e:
         logger.error(f"Error handling chatbot response: {e}")
         try:
-            # await message.reply("I encountered an unexpected error. Please try again.") # Avoid excessive error messages
+            # await reply_or_send(message, "I encountered an unexpected error. Please try again.") # Avoid excessive error messages
             pass
         except:
             pass  # Ignore if we can't even send error message

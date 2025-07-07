@@ -1,10 +1,11 @@
 import discord
 from discord.ext import commands
+from utils.discord_utils import reply_or_send
 from utils.logging_setup import get_logger
 from config.config_manager import save_config
 from utils.permissions import (
     has_command_permission, command_category, get_permission_target,
-    get_categories, get_commands_in_category, add_to_blacklist, 
+    get_categories, get_commands_in_category, add_to_blacklist,
     remove_from_blacklist, get_blacklist, load_blacklists, save_blacklists
 )
 
@@ -31,7 +32,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Could not find role or user "{target}"'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
         
         # Verify the command exists
@@ -39,7 +40,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Command {command_name} does not exist'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         guild_id = str(ctx.guild.id)  # Ensure guild_id is a string for JSON keys
@@ -82,7 +83,7 @@ class PermissionCommandsCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='add_bot_manager', help='Add a role or user as a bot manager with access to all non-system commands.\nArguments: target (mention or ID) - The role/user to designate as bot manager\nExample: !add_bot_manager @Admins or !add_bot_manager @username')
     @has_command_permission()
@@ -99,7 +100,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Could not find role or user "{target}"'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
         
         guild_id = str(ctx.guild.id)  # Ensure guild_id is a string for JSON keys
@@ -142,7 +143,7 @@ class PermissionCommandsCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='remove_command_role', help='Remove a role or user\'s permission to use a specific bot command.\nArguments: target (mention or ID) - The role/user to remove permission from\n           command_name (str) - The name of the command\nExample: !remove_command_role @Moderators add_ocr_read_channel or !remove_command_role @username add_ocr_read_channel')
     @has_command_permission()
@@ -159,7 +160,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Could not find role or user "{target}"'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
         
         # Verify the command exists
@@ -167,7 +168,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Command {command_name} does not exist'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         guild_id = str(ctx.guild.id)  # Ensure guild_id is a string for JSON keys
@@ -216,7 +217,7 @@ class PermissionCommandsCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='remove_bot_manager', help='Remove a role or user from bot managers, revoking access to all commands.\nArguments: target (mention or ID) - The role/user to remove from manager status\nExample: !remove_bot_manager @Admins or !remove_bot_manager @username')
     @has_command_permission()
@@ -233,7 +234,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Could not find role or user "{target}"'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
         
         guild_id = str(ctx.guild.id)  # Ensure guild_id is a string for JSON keys
@@ -282,7 +283,7 @@ class PermissionCommandsCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='add_category_permission', help='Give a role or user permission to use all commands in a category.\nArguments: target (mention or ID) - The role/user to grant permission to\n           category (str) - The category name\nExample: !add_category_permission @Moderators Moderation')
     @has_command_permission()
@@ -301,7 +302,7 @@ class PermissionCommandsCog(commands.Cog):
                 break
                 
         if not found_category:
-            await ctx.reply(f"Category '{category}' does not exist. Available categories: {', '.join(categories)}")
+            await reply_or_send(ctx, f"Category '{category}' does not exist. Available categories: {', '.join(categories)}")
             return
             
         # Get the target (either role or user)
@@ -312,7 +313,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Could not find role or user "{target}"'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
             
         guild_id = str(ctx.guild.id)  # Ensure guild_id is a string for JSON keys
@@ -357,7 +358,7 @@ class PermissionCommandsCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='remove_category_permission', help='Remove a role or user\'s permission to use all commands in a category.\nArguments: target (mention or ID) - The role/user to remove permission from\n           category (str) - The category name\nExample: !remove_category_permission @Moderators Moderation')
     @has_command_permission()
@@ -376,7 +377,7 @@ class PermissionCommandsCog(commands.Cog):
                 break
                 
         if not found_category:
-            await ctx.reply(f"Category '{category}' does not exist. Available categories: {', '.join(categories)}")
+            await reply_or_send(ctx, f"Category '{category}' does not exist. Available categories: {', '.join(categories)}")
             return
             
         # Get the target (either role or user)
@@ -387,7 +388,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Could not find role or user "{target}"'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
             
         guild_id = str(ctx.guild.id)  # Ensure guild_id is a string for JSON keys
@@ -431,7 +432,7 @@ class PermissionCommandsCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='add_to_blacklist', help='Add a role or user to the permission blacklist to prevent them from using any commands.\nArguments: target (mention or ID) - The role/user to blacklist\nExample: !add_to_blacklist @Troublemaker')
     @has_command_permission()
@@ -446,16 +447,16 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Could not find role or user "{target}"'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
             
         # Prevent blacklisting server administrators
         if not is_role and target_obj.guild_permissions.administrator:
-            await ctx.reply(f"Cannot blacklist {target_obj.name} as they have administrator privileges.")
+            await reply_or_send(ctx, f"Cannot blacklist {target_obj.name} as they have administrator privileges.")
             return
             
         if is_role and target_obj.permissions.administrator:
-            await ctx.reply(f"Cannot blacklist the {target_obj.name} role as it has administrator privileges.")
+            await reply_or_send(ctx, f"Cannot blacklist the {target_obj.name} role as it has administrator privileges.")
             return
             
         guild_id = str(ctx.guild.id)
@@ -470,7 +471,7 @@ class PermissionCommandsCog(commands.Cog):
             
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='remove_from_blacklist', help='Remove a role or user from the permission blacklist.\nArguments: target (mention or ID) - The role/user to remove from blacklist\nExample: !remove_from_blacklist @Troublemaker')
     @has_command_permission()
@@ -485,7 +486,7 @@ class PermissionCommandsCog(commands.Cog):
             response = f'Could not find role or user "{target}"'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
             
         guild_id = str(ctx.guild.id)
@@ -500,7 +501,7 @@ class PermissionCommandsCog(commands.Cog):
             
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='list_blacklist', help='List all roles and users in the command permission blacklist.\nNo arguments required.\nExample: !list_blacklist')
     @has_command_permission()
@@ -511,7 +512,7 @@ class PermissionCommandsCog(commands.Cog):
         blacklist = get_blacklist(guild_id)
         
         if not blacklist["users"] and not blacklist["roles"]:
-            await ctx.reply("No roles or users are blacklisted in this server.")
+            await reply_or_send(ctx, "No roles or users are blacklisted in this server.")
             return
             
         # Build response message
@@ -538,7 +539,7 @@ class PermissionCommandsCog(commands.Cog):
                     response += f"• Unknown User (ID: {user_id})\n"
             
         # Send the response
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='list_categories', help='List all available command categories.\nNo arguments required.\nExample: !list_categories')
     @has_command_permission()
@@ -548,7 +549,7 @@ class PermissionCommandsCog(commands.Cog):
         categories = sorted(get_categories())
         
         if not categories:
-            await ctx.reply("No command categories found.")
+            await reply_or_send(ctx, "No command categories found.")
             return
             
         # Build response message
@@ -558,7 +559,7 @@ class PermissionCommandsCog(commands.Cog):
             commands = get_commands_in_category(category)
             response += f"• **{category}** - {len(commands)} commands\n"
             
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
 async def setup(bot):
     await bot.add_cog(PermissionCommandsCog(bot))

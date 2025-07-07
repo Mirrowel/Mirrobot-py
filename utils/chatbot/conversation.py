@@ -71,6 +71,10 @@ class ConversationManager:
         Returns a tuple: (success_boolean, list_of_users_to_index).
         """
         try:
+            # --- Pre-emptive Filtering ---
+            # This check is now handled more intelligently in _process_discord_message_for_context
+            # by differentiating between image embeds and other types.
+
             if await self.check_duplicate_message(guild_id, channel_id, message.id):
                 return True, []
 
@@ -83,6 +87,7 @@ class ConversationManager:
 
             conv_message = ConversationMessage(
                 user_id=message.author.id, username=message.author.display_name,
+                author=message.author,
                 content=cleaned_content, timestamp=message.created_at.timestamp(),
                 message_id=message.id, is_bot_response=message.author.bot,
                 is_self_bot_response=(message.author.id == self.bot_user_id),
@@ -134,6 +139,11 @@ class ConversationManager:
             for message in new_messages:
                 if message.id in existing_message_ids:
                     continue
+                
+                # If the message has embeds, filter it out immediately.
+                if message.embeds:
+                    logger.debug(f"Bulk message {message.id} filtered out because it contains embeds.")
+                    continue
 
                 cleaned_content, image_urls, embed_urls = self._process_discord_message_for_context(message)
                 if not cleaned_content and not image_urls:
@@ -144,6 +154,7 @@ class ConversationManager:
 
                 conv_message = ConversationMessage(
                     user_id=message.author.id, username=message.author.display_name,
+                    author=message.author,
                     content=cleaned_content, timestamp=message.created_at.timestamp(),
                     message_id=message.id, is_bot_response=message.author.bot,
                     is_self_bot_response=(message.author.id == self.bot_user_id),
@@ -182,18 +193,25 @@ class ConversationManager:
         """Check if a message is valid for context inclusion"""
         debug_steps = []
         try:
-            content = msg.content.strip()
+            content = msg.content.strip() if msg.content else ""
+            has_image = any(part.type == 'image_url' for part in msg.multimodal_content)
             message_preview = content[:50] + "..." if len(content) > 50 else content
-            
+
             if debug_mode:
                 debug_steps.append(f"📝 **Original Message:** `{content}`")
                 debug_steps.append(f"👤 **From User:** {msg.username} (ID: {msg.user_id})")
-                debug_steps.append(f"🖼️ **Attachment URLs:** {msg.attachment_urls}")
-            
-            if not content and not msg.attachment_urls:
+                debug_steps.append(f"🖼️ **Has Image:** {has_image}")
+
+            # A message is invalid if it has no text AND no images.
+            if not content and not has_image:
                 if debug_mode: debug_steps.append("❌ **Filter Result:** Empty message and no attachments - FILTERED")
                 return False, debug_steps
-            
+
+            # Filter out messages that are just non-image embeds (e.g., links to other sites)
+            if msg.embed_urls:
+                if debug_mode: debug_steps.append("❌ **Filter Result:** Message contains non-image embed URLs - FILTERED")
+                return False, debug_steps
+
             mention_pattern = r'<@!?(\d+)>'
             emoji_pattern = r'<a?:\w+:\d+>'
             mentions = re.findall(mention_pattern, content)
@@ -206,12 +224,13 @@ class ConversationManager:
                 debug_steps.append(f"👥 **Mentions Found:** {len(mentions)}")
                 debug_steps.append(f"😀 **Emojis Found:** {len(emojis)}")
                 debug_steps.append(f"🔍 **Content for Analysis:** `{content_for_analysis}`")
-            
+
+            # If there's no text left after stripping mentions/emojis, keep it only if it has an image or was just mentions/emojis.
             if not content_for_analysis:
-                keep_message = bool(mentions or emojis or msg.attachment_urls)
+                keep_message = bool(mentions or emojis or has_image)
                 if debug_mode: debug_steps.append("✅ **Filter Result:** Message is just mentions/emojis/attachments - KEPT" if keep_message else "❌ **Filter Result:** Message became empty after cleaning - FILTERED")
                 return keep_message, debug_steps
-            
+
             if not any(c.isalnum() for c in content_for_analysis):
                 if debug_mode: debug_steps.append(f"❌ **Filter Result:** No alphanumeric characters in `{content_for_analysis}` - FILTERED")
                 return False, debug_steps
@@ -235,10 +254,20 @@ class ConversationManager:
             return True, debug_steps
 
     def _is_image_url(self, url: str) -> bool:
-        """Check if a URL points to an image by checking the path extension."""
+        """
+        Check if a URL points to a supported, non-GIF image by checking the
+        path extension and blocking known GIF-hosting domains.
+        """
         try:
-            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
+            # 1. Domain Blacklist for known GIF providers
+            gif_domains = ['tenor.com', 'giphy.com']
             parsed_url = urlparse(url)
+            if any(domain in parsed_url.netloc for domain in gif_domains):
+                logger.debug(f"URL {url} blocked by domain blacklist.")
+                return False
+
+            # 2. Check file extension
+            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
             return any(parsed_url.path.lower().endswith(ext) for ext in image_extensions)
         except Exception:
             return False
@@ -249,29 +278,47 @@ class ConversationManager:
         This is the standardized function for media extraction.
         """
         content = message.content
-        image_urls = set()
+        seen_normalized_urls = set()
+        image_urls = []
         other_urls = set()
+
+        def _normalize_url(url: str) -> str:
+            """Normalizes a URL by removing its query parameters and fragment for deduplication."""
+            try:
+                return url.split('?')[0]
+            except Exception:
+                return url
+
+        def _add_image_url(url: str):
+            """Adds a URL to the list if it's a valid, non-duplicate image."""
+            if not url or not self._is_image_url(url):
+                return
+            normalized_url = _normalize_url(url)
+            if normalized_url not in seen_normalized_urls:
+                image_urls.append(url)
+                seen_normalized_urls.add(normalized_url)
 
         # 1. Process Attachments
         for attachment in message.attachments:
-            # Exclude GIFs and ensure it's a valid image type
-            if attachment.content_type and attachment.content_type.startswith('image/') and 'gif' not in attachment.content_type:
-                if self._is_image_url(attachment.url):
-                    image_urls.add(attachment.url)
+            if attachment.content_type and attachment.content_type.startswith('image/'):
+                _add_image_url(attachment.url)
             else:
                 other_urls.add(attachment.url)
 
         # 2. Process Embeds
         for embed in message.embeds:
+            # An embed can represent a direct image link, which we want to capture.
             if embed.url and self._is_image_url(embed.url):
-                image_urls.add(embed.url)
-            if embed.thumbnail and embed.thumbnail.url and self._is_image_url(embed.thumbnail.url):
-                image_urls.add(embed.thumbnail.url)
-            if embed.image and embed.image.url and self._is_image_url(embed.image.url):
-                image_urls.add(embed.image.url)
-            
-            # Add other URLs from embeds to be filtered from content
-            if embed.url and embed.type not in ['image', 'gifv']:
+                _add_image_url(embed.url)
+
+            # It can also have a separate image or thumbnail attached.
+            if embed.thumbnail and embed.thumbnail.url:
+                _add_image_url(embed.thumbnail.url)
+            if embed.image and embed.image.url:
+                _add_image_url(embed.image.url)
+
+            # If the embed itself is not an image link, treat its URL as something to be stripped.
+            if embed.url and not self._is_image_url(embed.url):
                 other_urls.add(embed.url)
             if embed.video and embed.video.url:
                 other_urls.add(embed.video.url)
@@ -280,22 +327,26 @@ class ConversationManager:
         url_pattern = re.compile(r'https?://\S+')
         found_urls = url_pattern.findall(content)
         for url in found_urls:
-            if self._is_image_url(url):
-                image_urls.add(url)
-            # All URLs found in content should be considered for stripping
+            # Attempt to add as an image, otherwise it will be stripped.
+            _add_image_url(url)
             other_urls.add(url)
 
         # 4. Clean the message content by removing all identified URLs
-        all_urls_to_strip = image_urls.union(other_urls)
+        # We use the original image URLs for stripping, not the normalized ones.
+        all_urls_to_strip = set(image_urls).union(other_urls)
         cleaned_content = content
         for url in all_urls_to_strip:
-            cleaned_content = cleaned_content.replace(url, '')
+            # Use a more robust replacement to avoid partial matches
+            cleaned_content = cleaned_content.replace(url, ' ')
 
         # Final cleanup of whitespace
         cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
         
+        # Ensure that URLs classified as images are not also in the "other" urls list.
+        final_other_urls = other_urls - set(image_urls)
+        
         # Return cleaned content, a list of unique image URLs, and a list of other URLs
-        return cleaned_content, list(image_urls), list(other_urls)
+        return cleaned_content, image_urls, list(final_other_urls)
 
     async def check_duplicate_message(self, guild_id: int, channel_id: int, message_id: int) -> bool:
         """Check if a message is already in the conversation history"""

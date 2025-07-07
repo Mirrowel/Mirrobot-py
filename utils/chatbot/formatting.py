@@ -3,7 +3,7 @@ Formats conversation context for the language model.
 """
 
 import re
-from typing import List
+from typing import List, Union
 
 from utils.chatbot.config import ConfigManager
 from utils.chatbot.conversation import ConversationManager
@@ -59,35 +59,34 @@ class LLMContextFormatter:
             logger.error(f"Error getting prioritized context: {e}", exc_info=True)
             return []
 
-    async def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> str:
+    async def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> Union[str, List[dict]]:
         """
         Private helper to format the content of a single message.
-        It formats user messages with full context but strips prefixes from the bot's own messages
-        to prevent the LLM from parroting its own identity.
+        Returns a list of content parts for multimodal messages, or a single string for text-only.
         """
         # --- Assistant Role (Bot's own messages) ---
-        # For the bot's own messages, we only want the raw content to break the parroting pattern.
         if msg.is_self_bot_response:
-            # Even for the bot's own messages, we might need to include image URLs.
-            line_parts = []
-            if msg.multimodal_content:
-                text_segments = []
-                for part in msg.multimodal_content:
-                    if part.type == "text" and part.text:
-                        text_segments.append(part.text)
-                    elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
-                        if text_segments:
-                            line_parts.append(" ".join(text_segments))
-                            text_segments = []
-                        line_parts.append(f"(Image: {part.image_url['url']})")
-                if text_segments:
-                    line_parts.append(" ".join(text_segments))
-            else: # Fallback for older data
-                line_parts.append(msg.content)
-                if msg.attachment_urls:
-                    line_parts.append(f" (Image: {', '.join(msg.attachment_urls)})")
+            if not msg.multimodal_content:
+                return msg.content or ""
             
-            return " ".join(line_parts).strip()
+            content_parts = []
+            for part in msg.multimodal_content:
+                if part.type == "text" and part.text:
+                    content_parts.append({"type": "text", "text": part.text})
+                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                    content_parts.append({"type": "image_url", "image_url": {"url": part.image_url["url"]}})
+            
+            if not content_parts:
+                return msg.content or ""
+            
+            # If there's only one part, return its text content if it's text, otherwise return the list.
+            if len(content_parts) == 1:
+                if content_parts[0].get("type") == "text":
+                    return content_parts[0].get('text', "")
+                else:
+                    return content_parts # It's a single image, return as a list
+            
+            return content_parts
 
         # --- User Role (User messages) ---
         user_index = await self.index_manager.load_user_index(guild_id)
@@ -98,8 +97,6 @@ class LLMContextFormatter:
             if msg.referenced_message_id in message_id_to_local_index:
                 reply_info = f"[Replying to #{message_id_to_local_index[msg.referenced_message_id]}] "
             else:
-                # This is a performance hit, but necessary for out-of-context replies.
-                # We must load the full, unfiltered history from the index to find messages outside the current context window.
                 full_history = await self.index_manager.get_conversation_history(guild_id, channel_id)
                 original_msg = next((m for m in full_history if m.message_id == msg.referenced_message_id), None)
                 if original_msg:
@@ -107,30 +104,34 @@ class LLMContextFormatter:
                     snippet = self._create_smart_snippet(original_msg.content or "")
                     reply_info = f'[Replying to @{original_author}: "{snippet}"] '
 
-        line_parts = [f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"]
+        prefix = f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"
+        
+        # If there's no special multimodal content, format as a simple string.
+        if not msg.multimodal_content or all(p.type == "text" for p in msg.multimodal_content):
+            text_content = msg.content or ""
+            llm_readable_content = await self._convert_discord_format_to_llm_readable(text_content, guild_id)
+            return f"{prefix}{llm_readable_content}".strip()
 
-        # Use a temporary variable for content to handle cases where multimodal_content is empty
-        content_to_process = msg.multimodal_content if msg.multimodal_content else [ConversationMessage(type="text", text=msg.content)]
+        # Handle multimodal content by creating a list of parts.
+        content_parts = []
+        text_segments = [prefix]
+        
+        for part in msg.multimodal_content:
+            if part.type == "text" and part.text:
+                text_segments.append(await self._convert_discord_format_to_llm_readable(part.text, guild_id))
+            elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                # Add any pending text as a single part first.
+                if len(text_segments) > 0:
+                    content_parts.append({"type": "text", "text": " ".join(text_segments).strip()})
+                    text_segments = [] # Reset for next text block
+                # Add the image part.
+                content_parts.append({"type": "image_url", "image_url": {"url": part.image_url["url"]}})
+        
+        # Add any remaining text at the end.
+        if len(text_segments) > 0:
+             content_parts.append({"type": "text", "text": " ".join(text_segments).strip()})
 
-        if msg.multimodal_content:
-            text_segments = []
-            for part in msg.multimodal_content:
-                if part.type == "text" and part.text:
-                    text_segments.append(await self._convert_discord_format_to_llm_readable(part.text, guild_id))
-                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
-                    if text_segments:
-                        line_parts.append(" ".join(text_segments))
-                        text_segments = []
-                    line_parts.append(f"(Image: {part.image_url['url']})")
-            if text_segments:
-                line_parts.append(" ".join(text_segments))
-        else: # Fallback for older data or non-multimodal messages
-            llm_readable_content = await self._convert_discord_format_to_llm_readable(msg.content, guild_id)
-            if msg.attachment_urls:
-                llm_readable_content += f" (Image: {', '.join(msg.attachment_urls)})"
-            line_parts.append(llm_readable_content)
-
-        return " ".join(line_parts).strip()
+        return content_parts
 
     def _create_smart_snippet(self, text: str) -> str:
         """Creates a context-aware, intelligently truncated snippet of a given text."""
@@ -219,8 +220,8 @@ class LLMContextFormatter:
 
             for i, msg in enumerate(messages):
                 role = "assistant" if msg.is_self_bot_response else "user"
-                content_string = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
-                history_messages.append({"role": role, "content": content_string})
+                content_object = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
+                history_messages.append({"role": role, "content": content_object})
 
             return static_context_string, history_messages
         except Exception as e:
@@ -321,7 +322,9 @@ class LLMContextFormatter:
             creator_username = "⭐ **Mirrowel**"
 
             # 1. Strip "Username:" prefixes, but only if they are at the very start of the message.
-            username_colon_pattern = r'^(?:[a-zA-Z0-9_ -]+):\s*'
+            # This regex is designed to be specific: it matches up to 60 characters that are not a newline or colon,
+            # preventing it from greedily consuming entire paragraphs that don't contain a colon.
+            username_colon_pattern = r'^\s*[^:\n]{1,60}:\s*'
             processed_text = re.sub(username_colon_pattern, '', processed_text).strip()
 
             # 3. Convert all username mentions to display names
@@ -367,8 +370,13 @@ class LLMContextFormatter:
                     processed_text = pattern.sub(replace_func, processed_text)
 
             # 4. Final Cleanup
-            processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+            # Collapse horizontal whitespace, but preserve newlines
+            processed_text = re.sub(r'[ \t]+', ' ', processed_text)
+            # Collapse more than 2 newlines into 2 to preserve paragraphs
+            processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
+            # Remove space before punctuation (this will also join lines if punctuation is on a new line)
             processed_text = re.sub(r'\s+([.,!?:;])', r'\1', processed_text)
+            processed_text = processed_text.strip()
             
             return processed_text
         except Exception as e:

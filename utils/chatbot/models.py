@@ -23,6 +23,7 @@ class ConversationMessage:
     content: str
     timestamp: float
     message_id: int
+    author: Optional[Any] = None # discord.User or discord.Member
     is_bot_response: bool = False
     is_self_bot_response: bool = False # NEW: Is this bot's own response
     referenced_message_id: Optional[int] = None
@@ -32,8 +33,69 @@ class ConversationMessage:
 
     def __post_init__(self):
         """Ensure multimodal_content is a list of ContentPart objects."""
-        if self.multimodal_content and isinstance(self.multimodal_content[0], dict):
+        if self.multimodal_content and isinstance(self.multimodal_content, list) and self.multimodal_content and isinstance(self.multimodal_content[0], dict):
             self.multimodal_content = [ContentPart(**part) for part in self.multimodal_content]
+        
+        if self.author and isinstance(self.author, dict):
+            author_data = self.author
+            # --- Backward Compatibility Layer ---
+            # 1. Handle 'username' vs 'name'
+            if 'username' not in author_data and 'name' in author_data:
+                author_data['username'] = author_data.pop('name')
+            
+            # 2. Add 'discriminator' if missing
+            if 'discriminator' not in author_data:
+                author_data['discriminator'] = '0'
+
+            # 3. Add 'avatar' if missing
+            if 'avatar' not in author_data:
+                author_data['avatar'] = None
+
+            # --- Data Type Correction ---
+            # discord.py's User expects 'id' to be an int.
+            if 'id' in author_data:
+                author_data['id'] = int(author_data['id'])
+
+            from discord import User
+            self.author = User(state=None, data=author_data)
+
+    def to_dict(self):
+        """
+        Manually converts the dataclass to a dictionary to ensure all fields are
+        JSON serializable and avoid deepcopy errors with complex objects.
+        """
+        # Manually construct the dictionary from basic types
+        data = {
+            'user_id': self.user_id,
+            'username': self.username,
+            'content': self.content,
+            'timestamp': self.timestamp,
+            'message_id': self.message_id,
+            'is_bot_response': self.is_bot_response,
+            'is_self_bot_response': self.is_self_bot_response,
+            'referenced_message_id': self.referenced_message_id,
+            'attachment_urls': self.attachment_urls,
+            'embed_urls': self.embed_urls,
+            # Convert ContentPart objects to dicts
+            'multimodal_content': [
+                {'type': part.type, 'text': part.text, 'image_url': part.image_url}
+                for part in self.multimodal_content
+            ]
+        }
+
+        # Safely handle the 'author' field
+        if self.author:
+            data['author'] = {
+                'id': self.author.id,
+                'username': self.author.name,
+                'discriminator': self.author.discriminator,
+                'display_name': self.author.display_name,
+                'avatar': getattr(self.author.avatar, 'key', None)
+            }
+        else:
+            data['author'] = None
+            
+        return data
 
 @dataclass
 class PinnedMessage:

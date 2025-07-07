@@ -1,11 +1,12 @@
 import requests
-from core.ocr import check_image_dimensions, msg_reply
+from core.ocr import check_image_dimensions
 import discord
 from discord.ext import commands
+from utils.discord_utils import reply_or_send
 from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from core.pattern_manager import (
-    load_patterns, save_patterns, find_response, 
+    load_patterns, save_patterns, find_response,
     get_server_patterns, get_next_response_id, get_next_pattern_id,
     REGEX_FLAGS, server_patterns
 )
@@ -68,7 +69,7 @@ class PatternCommandsCog(commands.Cog):
         """List all patterns for this server with configurable verbosity"""
         # Validate verbosity level
         if verbosity not in [1, 2, 3]:
-            await ctx.reply("Invalid verbosity level. Please use 1, 2, or 3.")
+            await reply_or_send(ctx, "Invalid verbosity level. Please use 1, 2, or 3.")
             return
             
         server_id = str(ctx.guild.id)
@@ -85,7 +86,7 @@ class PatternCommandsCog(commands.Cog):
             default = server_patterns["default"]
         
         if not server_specific and not default:
-            await ctx.reply("No patterns found.")
+            await reply_or_send(ctx, "No patterns found.")
             return
         
         embeds = []
@@ -113,7 +114,7 @@ class PatternCommandsCog(commands.Cog):
             embeds.extend(default_embeds)
         
         if not embeds:
-            await ctx.reply("No patterns could be displayed.")
+            await reply_or_send(ctx, "No patterns could be displayed.")
             return
         
         # Set bot avatar as thumbnail if available
@@ -133,7 +134,7 @@ class PatternCommandsCog(commands.Cog):
         
         # Send the first embed and create pagination if needed
         if len(embeds) == 1:
-            await ctx.reply(embed=embeds[0])
+            await reply_or_send(ctx, embed=embeds[0])
         else:
             # Add page numbers to embeds
             for i, embed in enumerate(embeds):
@@ -141,7 +142,7 @@ class PatternCommandsCog(commands.Cog):
             
             # Create pagination with buttons
             view = PaginationView(embeds)
-            message = await ctx.reply(embed=embeds[0], view=view)
+            message = await reply_or_send(ctx, embed=embeds[0], view=view)
             view.message = message
 
     def _create_pattern_embeds(self, patterns, title_prefix, color, icon, verbosity=1):
@@ -251,7 +252,7 @@ class PatternCommandsCog(commands.Cog):
         if name:
             for existing_response in server_patterns[server_id]:
                 if existing_response.get("name", "").lower() == name.lower():
-                    await ctx.reply(f"A response with name '{name}' already exists. Please choose a different name.")
+                    await reply_or_send(ctx, f"A response with name '{name}' already exists. Please choose a different name.")
                     return
         
         # Get the next available response ID
@@ -272,9 +273,9 @@ class PatternCommandsCog(commands.Cog):
         # Save patterns to file
         if save_patterns():
             name_info = f" (Named: '{name}')" if name else ""
-            await ctx.reply(f"Successfully added response ID {response_id}{name_info}: `{response}`\nUse `!add_pattern_to_response {response_id if not name else name} \"your_pattern_here\"` to add patterns to this response.")
+            await reply_or_send(ctx, f"Successfully added response ID {response_id}{name_info}: `{response}`\nUse `!add_pattern_to_response {response_id if not name else name} \"your_pattern_here\"` to add patterns to this response.")
         else:
-            await ctx.reply("Response added to memory but could not be saved to file. Check logs for details.")
+            await reply_or_send(ctx, "Response added to memory but could not be saved to file. Check logs for details.")
 
     @commands.command(name='remove_response', help='Remove a response and all its patterns.\nArguments: response_id_or_name - ID number or name of the response\nExample: !remove_response 5 or !remove_response v6fix_command')
     @has_command_permission()
@@ -284,7 +285,7 @@ class PatternCommandsCog(commands.Cog):
         server_id = str(ctx.guild.id)
         
         if server_id not in server_patterns:
-            await ctx.reply("This server has no custom responses.")
+            await reply_or_send(ctx, "This server has no custom responses.")
             return
         
         # Find the response to remove
@@ -296,12 +297,12 @@ class PatternCommandsCog(commands.Cog):
                 # Save patterns to file
                 if save_patterns():
                     name_info = f" [{removed_response.get('name')}]" if removed_response.get("name") else ""
-                    await ctx.reply(f"Successfully removed response ID {removed_response['response_id']}{name_info}: `{removed_response['response']}` and all {len(removed_response['patterns'])} patterns.")
+                    await reply_or_send(ctx, f"Successfully removed response ID {removed_response['response_id']}{name_info}: `{removed_response['response']}` and all {len(removed_response['patterns'])} patterns.")
                 else:
-                    await ctx.reply("Response removed from memory but could not update the file. Check logs for details.")
+                    await reply_or_send(ctx, "Response removed from memory but could not update the file. Check logs for details.")
                 return
         
-        await ctx.reply(f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
+        await reply_or_send(ctx, f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
 
     @commands.command(name='add_pattern_to_response', help='Add a pattern to an existing response.\nArguments: response_id_or_name - ID number or name of the response\n           pattern (str) - Regex pattern to match\n           [flags] (str) - Optional regex flags (e.g., "DOTALL|IGNORECASE")\n           [name] (str) - Optional friendly name for the pattern\n           [url] (str) - Optional screenshot URL\nExample: !add_pattern_to_response 5 ".*error.*message" "DOTALL" "error_pattern"\nExample: !add_pattern_to_response v6fix_command ".*error.*" "DOTALL"')
     @has_command_permission()
@@ -311,14 +312,14 @@ class PatternCommandsCog(commands.Cog):
         server_id = str(ctx.guild.id)
         
         if server_id not in server_patterns:
-            await ctx.reply("This server has no custom responses.")
+            await reply_or_send(ctx, "This server has no custom responses.")
             return
         
         # Find the response
         response = find_response(server_id, response_id_or_name)
                 
         if not response:
-            await ctx.reply(f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
+            await reply_or_send(ctx, f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
             return
         
         try:
@@ -329,7 +330,7 @@ class PatternCommandsCog(commands.Cog):
                     if flag in REGEX_FLAGS:
                         flag_value |= REGEX_FLAGS[flag]
                     else:
-                        await ctx.reply(f"Invalid flag: {flag}. Valid flags are: {', '.join(REGEX_FLAGS.keys())}")
+                        await reply_or_send(ctx, f"Invalid flag: {flag}. Valid flags are: {', '.join(REGEX_FLAGS.keys())}")
                         return
             
             # Compile the pattern
@@ -355,15 +356,15 @@ class PatternCommandsCog(commands.Cog):
                 response_identifier = f"response ID {response['response_id']}"
                 if response.get("name"):
                     response_identifier += f" [{response['name']}]"
-                await ctx.reply(f"Successfully added pattern {pattern_id} to {response_identifier}.")
+                await reply_or_send(ctx, f"Successfully added pattern {pattern_id} to {response_identifier}.")
             else:
-                await ctx.reply("Pattern added to memory but could not be saved to file. Check logs for details.")
+                await reply_or_send(ctx, "Pattern added to memory but could not be saved to file. Check logs for details.")
         
         except re.error as e:
-            await ctx.reply(f"Error compiling regex pattern: {e}")
+            await reply_or_send(ctx, f"Error compiling regex pattern: {e}")
         except Exception as e:
             logger.error(f"Error adding pattern: {e}")
-            await ctx.reply(f"Error adding pattern: {e}")
+            await reply_or_send(ctx, f"Error adding pattern: {e}")
 
     @commands.command(name='remove_pattern_from_response', help='Remove a pattern from a response.\nArguments: response_id_or_name - ID number or name of the response\n           pattern_id (int) - ID number of the pattern to remove\nExample: !remove_pattern_from_response 5 2\nExample: !remove_pattern_from_response v6fix_command 2')
     @has_command_permission()
@@ -373,14 +374,14 @@ class PatternCommandsCog(commands.Cog):
         server_id = str(ctx.guild.id)
         
         if server_id not in server_patterns:
-            await ctx.reply("This server has no custom responses.")
+            await reply_or_send(ctx, "This server has no custom responses.")
             return
         
         # Find the response
         response = find_response(server_id, response_id_or_name)
                 
         if not response:
-            await ctx.reply(f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
+            await reply_or_send(ctx, f"No response found with ID or name '{response_id_or_name}' in this server's configuration.")
             return
         
         # Find and remove the pattern
@@ -392,7 +393,7 @@ class PatternCommandsCog(commands.Cog):
                 break
         
         if not pattern_found:
-            await ctx.reply(f"No pattern found with ID {pattern_id} in response {response_id_or_name}.")
+            await reply_or_send(ctx, f"No pattern found with ID {pattern_id} in response {response_id_or_name}.")
             return
             
         # Remove the response if no patterns left
@@ -403,17 +404,17 @@ class PatternCommandsCog(commands.Cog):
                     response_identifier = f"response {response['response_id']}"
                     if response.get("name"):
                         response_identifier += f" [{response['name']}]"
-                    await ctx.reply(f"Removed pattern {pattern_id} and also removed {response_identifier} as it no longer has any patterns.")
+                    await reply_or_send(ctx, f"Removed pattern {pattern_id} and also removed {response_identifier} as it no longer has any patterns.")
                     break
         else:
             response_identifier = f"response {response['response_id']}"
             if response.get("name"):
                 response_identifier += f" [{response.get('name')}]"
-            await ctx.reply(f"Successfully removed pattern {pattern_id} from {response_identifier}.")
+            await reply_or_send(ctx, f"Successfully removed pattern {pattern_id} from {response_identifier}.")
         
         # Save patterns to file
         if not save_patterns():
-            await ctx.reply("Warning: Changes made in memory but could not be saved to file. Check logs for details.")
+            await reply_or_send(ctx, "Warning: Changes made in memory but could not be saved to file. Check logs for details.")
 
     @commands.command(name='view_response', help='View details of a specific response.\nArguments: response_id_or_name - ID number or name of the response\nExample: !view_response 5\nExample: !view_response v6fix_command')
     @has_command_permission()
@@ -453,7 +454,7 @@ class PatternCommandsCog(commands.Cog):
                         break
         
         if not response:
-            await ctx.reply(f"No response found with ID or name '{response_id_or_name}'.")
+            await reply_or_send(ctx, f"No response found with ID or name '{response_id_or_name}'.")
             return
         
         # Build detailed response info
@@ -500,9 +501,9 @@ class PatternCommandsCog(commands.Cog):
         if len(response_text) > 2000:
             chunks = [response_text[i:i+1990] for i in range(0, len(response_text), 1990)]
             for i, chunk in enumerate(chunks):
-                await ctx.reply(f"{chunk}\n*Part {i+1}/{len(chunks)}*")
+                await reply_or_send(ctx, f"{chunk}\n*Part {i+1}/{len(chunks)}*")
         else:
-            await ctx.reply(response_text)
+            await reply_or_send(ctx, response_text)
 
     @commands.command(name='extract_text', help='Extract text from an image without matching patterns.\nArguments: [url] (optional) - URL to an image\n           [language] (optional) - Language for OCR (default: eng, options: eng, rus)\nExample: !extract_text https://example.com/image.jpg rus')
     @has_command_permission()
@@ -529,7 +530,7 @@ class PatternCommandsCog(commands.Cog):
         
         # Validate language
         if lang not in ["eng", "rus"]:
-            await ctx.reply("Invalid language. Supported languages are: eng (English), rus (Russian)")
+            await reply_or_send(ctx, "Invalid language. Supported languages are: eng (English), rus (Russian)")
             return
             
         language_name = "English" if lang == "eng" else "Russian"
@@ -555,7 +556,7 @@ class PatternCommandsCog(commands.Cog):
                         await self._extract_and_respond(ctx, attachment, start_time, lang)
             except Exception as e:
                 logger.error(f"Error processing URL: {e}")
-                await ctx.reply(f"Error processing the URL: {e}")
+                await reply_or_send(ctx, f"Error processing the URL: {e}")
         
         elif ctx.message.attachments:
             # Process attachment from the message
@@ -566,12 +567,12 @@ class PatternCommandsCog(commands.Cog):
                 if (attachment.width > 300 and attachment.height > 200):
                     await self._extract_and_respond(ctx, attachment, start_time, lang)
                 else:
-                    await ctx.reply('Images must be at least 300x200 pixels.')
+                    await reply_or_send(ctx, 'Images must be at least 300x200 pixels.')
             else:
-                await ctx.reply('Please attach an image (no GIFs) with a size less than 500KB.')
+                await reply_or_send(ctx, 'Please attach an image (no GIFs) with a size less than 500KB.')
         
         else:
-            await ctx.reply("Please provide either a URL or attach an image to extract text from.")
+            await reply_or_send(ctx, "Please provide either a URL or attach an image to extract text from.")
 
     async def _extract_and_respond(self, ctx, attachment, start_time, lang="eng"):
         """Extract text from attachment and respond directly to the command"""
@@ -592,14 +593,14 @@ class PatternCommandsCog(commands.Cog):
                             # Add language info to the response
                             text_with_info = f"**Text extracted using {language_name}:**\n\n{text}"
                             # Split into chunks if needed
-                            await msg_reply(ctx, text_with_info)
+                            await reply_or_send(ctx, text_with_info)
                         else:
-                            await ctx.reply(f"No text could be extracted from the image using {language_name}.")
+                            await reply_or_send(ctx, f"No text could be extracted from the image using {language_name}.")
                     else:
-                        await ctx.reply(f"Failed to fetch the image. Status code: {resp.status}")
+                        await reply_or_send(ctx, f"Failed to fetch the image. Status code: {resp.status}")
             except Exception as e:
                 logger.error(f"Error in OCR processing: {e}")
-                await ctx.reply(f"Error processing the image: {e}")
+                await reply_or_send(ctx, f"Error processing the image: {e}")
 
 async def setup(bot):
     await bot.add_cog(PatternCommandsCog(bot))

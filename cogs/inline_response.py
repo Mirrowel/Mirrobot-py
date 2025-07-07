@@ -10,6 +10,7 @@ from utils.logging_setup import get_logger
 from utils.chatbot.manager import chatbot_manager
 from cogs.llm_commands import LLMCommands
 from utils.permissions import command_category, has_command_permission
+from utils.discord_utils import reply_or_send
 
 logger = get_logger()
 
@@ -122,6 +123,25 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         # Check for 'everyone' in the effective whitelist
         everyone_whitelisted = everyone_role_id in config.role_whitelist
 
+        # Determine permission source for improved status command
+        channel_conf_raw = {}
+        if resolved_target != 'server':
+            channel_conf_raw = self.manager.config_cache.get("servers", {}).get(str(guild_id), {}).get("channels", {}).get(str(resolved_target.id), {})
+        
+        has_channel_perms = any(key in channel_conf_raw for key in ['role_whitelist', 'member_whitelist', 'role_blacklist', 'member_blacklist'])
+        has_server_perms = any(key in server_conf_raw for key in ['role_whitelist', 'member_whitelist', 'role_blacklist', 'member_blacklist'])
+
+        perm_source_text = ""
+        if has_channel_perms and has_server_perms:
+            perm_source_text = "(Channel & Server Combined)"
+        elif has_channel_perms:
+            perm_source_text = "(Channel Specific)"
+        elif has_server_perms:
+            perm_source_text = "(Server Inherited)"
+        else:
+            perm_source_text = "(Bot Default)"
+
+
         if everyone_whitelisted:
             perm_lines.append("• **Access Mode**: ✅ Everyone Allowed (except blacklisted)")
         else:
@@ -166,7 +186,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if not perm_lines and not everyone_whitelisted:
             perm_lines.append("• No permissions configured. Access is denied by default.")
 
-        status_embed.add_field(name="Permissions", value="\n".join(perm_lines), inline=False)
+        status_embed.add_field(name=f"Permissions {perm_source_text}", value="\n".join(perm_lines), inline=False)
         
         await ctx.send(embed=status_embed)
 
@@ -378,7 +398,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
     3.  **Default:** If a user is not on the blacklist or the whitelist, access is **denied**.
 
     **Configuration Scope:**
-    Permissions can be set server-wide or for specific channels/threads. Channel settings **override** server settings. For example, if you set a whitelist for a channel, only that whitelist is checked for that channel; it does not combine with the server's whitelist.
+    Permissions can be set server-wide or for specific channels/threads. Channel settings are **combined** with server settings. For example, if you set a whitelist for a channel, its members are added to the server's whitelist for that specific channel. The same applies to blacklists.
     """)
     @has_command_permission('manage_guild')
     async def permissions(self, ctx: commands.Context):
@@ -447,12 +467,16 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if message.author == self.bot.user:
             return
 
+
         # 1b. Ignore DMs
         if not message.guild:
             return
 
-        # 1c. Check for mention
-        if self.bot.user not in message.mentions:
+        # 1c. Check for an explicit mention in the message content.
+        # This is to distinguish from implicit mentions from replies.
+        mention_content = self.bot.user.mention
+        legacy_mention_content = mention_content.replace('<@', '<@!')
+        if mention_content not in message.content and legacy_mention_content not in message.content:
             return
 
         # 1d. Check chatbot status (must be disabled)
@@ -523,7 +547,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             logger.info(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
         except Exception as e:
             logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
-            await message.reply("Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
+            await reply_or_send(message, "Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
             return
 
         # Step 2b: Perform non-critical on-the-fly indexing.
@@ -534,7 +558,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
             # Bulk index all unique users from the context.
             if context_messages:
-                unique_users = list({msg.author for msg in context_messages if not msg.author.bot})
+                unique_users = list({msg.author for msg in context_messages if not msg.is_bot_response and msg.author})
                 if unique_users:
                     await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
                     logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
@@ -544,7 +568,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
 
         # 3. Format the context for the LLM
-        static_context, history = chatbot_manager.formatter.format_context_for_llm(
+        static_context, history = await chatbot_manager.formatter.format_context_for_llm(
             messages=context_messages,
             guild_id=message.guild.id,
             channel_id=message.channel.id
@@ -556,47 +580,71 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             logger.error("LLMCommands cog not found, cannot make inline response.")
             return
 
-        # The prompt is the trigger message with the mention removed.
-        prompt = message.content.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
+        # The history from the formatter now includes the trigger message, fully formatted.
+        # We need to separate it to avoid duplication.
+        if not history:
+            logger.error(f"History is empty for message {message.id}, cannot generate response.")
+            return
+
+        # The last message in the history is our trigger message.
+        trigger_message_content = history[-1]['content']
+        
+        # The rest of the history is the actual context.
+        context_history = history[:-1]
+
+        # Extract image URLs from the trigger message content if it's a list of parts
+        image_urls = []
+        if isinstance(trigger_message_content, list):
+            for part in trigger_message_content:
+                if part.get("type") == "image_url":
+                    image_urls.append(part.get("image_url", {}).get("url"))
 
         try:
             async with message.channel.typing():
                 response_text, _ = await llm_cog.make_llm_request(
-                    prompt=prompt,
+                    prompt=trigger_message_content, # The fully formatted message is the prompt
                     model_type=config.model_type,
                     guild_id=message.guild.id,
                     channel_id=message.channel.id,
                     context=static_context,
-                    history=history
+                    history=context_history, # Pass the history without the trigger message
+                    image_urls=image_urls
                 )
+            
+            logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")
 
             # 5. Process and send the response
-            cleaned_response = chatbot_manager.formatter.format_llm_output_for_discord(
+            cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                 response_text,
                 message.guild.id,
                 self.bot.user.id,
                 [self.bot.user.name, self.bot.user.display_name]
             )
+            logger.debug(f"Cleaned LLM response_text for message {message.id}: '{cleaned_response[:500]}...' (truncated)")
 
             response_chunks = split_message(cleaned_response)
+            logger.debug(f"Response chunks length for message {message.id}: {len(response_chunks)}")
+            if response_chunks:
+                logger.debug(f"First response chunk for message {message.id}: '{response_chunks[0][:500]}...' (truncated)")
 
-            if not response_chunks:
-                logger.warning(f"LLM response for message {message.id} was empty after cleaning.")
+
+            if not response_chunks or not response_chunks[0].strip(): # Added check for empty string after stripping whitespace
+                logger.warning(f"LLM response for message {message.id} was empty or whitespace-only after cleaning and splitting. Raw: '{response_text[:100]}', Cleaned: '{cleaned_response[:100]}'")
                 return
-
+ 
             # Send the first chunk as a reply
-            await message.reply(response_chunks[0])
-
+            await reply_or_send(message, response_chunks[0])
+ 
             # Send subsequent chunks as regular messages
             if len(response_chunks) > 1:
                 for chunk in response_chunks[1:]:
                     await message.channel.send(chunk)
             
             logger.info(f"Successfully sent inline response to message {message.id} in {len(response_chunks)} chunks.")
-
+ 
         except Exception as e:
             logger.error(f"Error during inline LLM request for message {message.id}: {e}", exc_info=True)
-            await message.reply("Sorry, I encountered an error while trying to respond.", delete_after=10)
+            await reply_or_send(message, "Sorry, I encountered an error while trying to respond.", delete_after=10)
 
 
 async def setup(bot: commands.Bot):

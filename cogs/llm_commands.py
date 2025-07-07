@@ -27,8 +27,8 @@ class LLMCommands(commands.Cog):
         # Global default models
         self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
-        #self.multimodal_models_whitelist = ["gemini", "gemma"]
-        self.multimodal_models_whitelist = ["big", "balls"]
+        self.multimodal_models_whitelist = ["gemini", "gemma"]
+        #self.multimodal_models_whitelist = ["big", "balls"]
 
     async def cog_load(self):
         """Initialize the LLM client and check provider status on cog load."""
@@ -443,15 +443,27 @@ class LLMCommands(commands.Cog):
 
         # 4. Add the current user's prompt
         if prompt:
-            content_parts = [{"type": "text", "text": prompt}]
+            content_parts = []
+            # The 'prompt' can be a string (from /ask) or a list of parts (from the chatbot formatter)
+            if isinstance(prompt, list):
+                content_parts.extend(prompt)
+            elif isinstance(prompt, str):
+                content_parts.append({"type": "text", "text": prompt})
+
+            # Add any extra image_urls that weren't part of the initial prompt object
             if image_urls and is_multimodal:
                 logger.info(f"Adding {len(image_urls)} image URLs to user message for multimodal model")
                 for url in image_urls:
-                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+                    # Prevent adding duplicate images if they were already processed into the prompt
+                    if not any(part.get("type") == "image_url" and part.get("image_url", {}).get("url") == url for part in content_parts):
+                        content_parts.append({"type": "image_url", "image_url": {"url": url}})
             
+            if not content_parts:
+                return messages # Nothing to add
+
             # If there's only one text part, send it as a simple string for compatibility.
             # Otherwise, send the list of parts.
-            final_prompt_content = content_parts[0]['text'] if len(content_parts) == 1 else content_parts
+            final_prompt_content = content_parts[0]['text'] if len(content_parts) == 1 and content_parts[0]['type'] == 'text' else content_parts
             messages.append({"role": "user", "content": final_prompt_content})
             
         return messages
@@ -576,6 +588,40 @@ class LLMCommands(commands.Cog):
         return cleaned_response, combined_thinking
     
 
+    async def _process_multimodal_input(self, message: discord.Message, question: str) -> Tuple[str, List[str]]:
+        """Helper to process attachments and URLs from a message for multimodal input."""
+        image_urls = []
+        extracted_text = []
+
+        # Process attachments
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith('image/'):
+                image_urls.append(attachment.url)
+            else:
+                text = await extract_text_from_attachment(attachment)
+                if text:
+                    extracted_text.append(text)
+
+        # Process URLs in the question string
+        url_pattern = re.compile(r'https?://\S+')
+        found_urls = url_pattern.findall(question)
+        for url in found_urls:
+            # Check if the URL is an image
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif']):
+                image_urls.append(url)
+                question = question.replace(url, '').strip()
+            # Check if the URL is a text-based file
+            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
+                text = await extract_text_from_url(url)
+                if text:
+                    extracted_text.append(text)
+                question = question.replace(url, '').strip()
+
+        if extracted_text:
+            question = f"{' '.join(extracted_text)}\n\n{question}"
+        
+        return question, image_urls
+
     @commands.command(name='ask', help='Ask the LLM a question')
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
@@ -587,40 +633,15 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        image_urls = []
-        extracted_text = []
-
-        # Process attachments
-        for attachment in ctx.message.attachments:
-            if attachment.content_type.startswith('image/'):
-                image_urls.append(attachment.url)
-            else:
-                text = await extract_text_from_attachment(attachment)
-                if text:
-                    extracted_text.append(text)
-
-        # Process URLs in the question
-        url_pattern = re.compile(r'https?://\S+')
-        found_urls = url_pattern.findall(question)
-        for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                image_urls.append(url)
-                question = question.replace(url, '').strip()
-            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
-                text = await extract_text_from_url(url)
-                if text:
-                    extracted_text.append(text)
-                question = question.replace(url, '').strip()
-
         async with ctx.typing():
             try:
+                # Use the helper to process multimodal input
+                question, image_urls = await self._process_multimodal_input(ctx.message, question)
+                
                 guild_id = ctx.guild.id if ctx.guild else None
                 channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
                 user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
-
-                if extracted_text:
-                    question = f"{' '.join(extracted_text)}\n\n{question}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
@@ -653,40 +674,15 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        image_urls = []
-        extracted_text = []
-
-        # Process attachments
-        for attachment in ctx.message.attachments:
-            if attachment.content_type.startswith('image/'):
-                image_urls.append(attachment.url)
-            else:
-                text = await extract_text_from_attachment(attachment)
-                if text:
-                    extracted_text.append(text)
-
-        # Process URLs in the question
-        url_pattern = re.compile(r'https?://\S+')
-        found_urls = url_pattern.findall(question)
-        for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                image_urls.append(url)
-                question = question.replace(url, '').strip()
-            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
-                text = await extract_text_from_url(url)
-                if text:
-                    extracted_text.append(text)
-                question = question.replace(url, '').strip()
-
         async with ctx.typing():
             try:
+                # Use the helper to process multimodal input
+                question, image_urls = await self._process_multimodal_input(ctx.message, question)
+
                 guild_id = ctx.guild.id if ctx.guild else None
                 channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
                 user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
-
-                if extracted_text:
-                    question = f"{' '.join(extracted_text)}\n\n{question}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
@@ -1059,26 +1055,12 @@ class LLMCommands(commands.Cog):
             
             if success:
                 # Clear conversation history when disabling chatbot
-                history_cleared = await chatbot_manager.save_conversation_history(guild_id, channel_id, [])
-                
-                # Also delete the physical conversation file
-                conversation_file_path = chatbot_manager.get_conversation_file_path(guild_id, channel_id)
-                file_deleted = False
-                try:
-                    if os.path.exists(conversation_file_path):
-                        os.remove(conversation_file_path)
-                        file_deleted = True
-                        logger.debug(f"Deleted conversation file: {conversation_file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete conversation file {conversation_file_path}: {e}")
+                await chatbot_manager.clear_conversation_history(guild_id, channel_id)
+                history_cleared = True  # Assume success if no exception is raised
                 
                 history_msg = ""
                 if history_cleared and message_count > 0:
-                    history_msg = f"\n\n🗑️ Cleared {message_count} messages from conversation history"
-                    if file_deleted:
-                        history_msg += " and deleted conversation file."
-                    else:
-                        history_msg += "."
+                    history_msg = f"\n\n🗑️ Cleared {message_count} messages from conversation history and deleted the conversation file."
                 
                 await create_embed_response(
                     ctx,

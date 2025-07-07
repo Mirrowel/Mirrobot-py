@@ -7,6 +7,7 @@ import discord
 from utils.chatbot.models import ConversationMessage, ContentPart
 from utils.chatbot.persistence import JsonStorageManager
 from utils.logging_setup import get_logger
+from utils.chatbot.manager import chatbot_manager # Import the global manager
 
 logger = get_logger()
 
@@ -221,7 +222,8 @@ class InlineResponseManager:
         # 5. Convert to ConversationMessage
         context_messages = []
         for msg in sorted_messages:
-            cleaned_content, image_urls, _ = _process_discord_message_for_context(msg)
+            # Use the centralized function from the chatbot manager's conversation utility
+            cleaned_content, image_urls, _ = chatbot_manager.conversation_manager._process_discord_message_for_context(msg)
             
             multimodal_content = []
             if cleaned_content:
@@ -248,70 +250,16 @@ class InlineResponseManager:
         return context_messages
 
 
-def _is_image_url(url: str) -> bool:
-    """Check if a URL points to an image by checking the path extension."""
-    try:
-        image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
-        parsed_url = urlparse(url)
-        return any(parsed_url.path.lower().endswith(ext) for ext in image_extensions)
-    except Exception:
-        return False
-
-def _process_discord_message_for_context(message: discord.Message) -> Tuple[str, List[str], List[str]]:
-    """
-    Processes a discord.Message to extract content, filter media, and prepare for context.
-    This is a standalone version of the logic from ConversationManager.
-    """
-    content = message.content
-    image_urls = set()
-    other_urls = set()
-
-    # 1. Process Attachments
-    for attachment in message.attachments:
-        if attachment.content_type and attachment.content_type.startswith('image/') and 'gif' not in attachment.content_type:
-            if _is_image_url(attachment.url):
-                image_urls.add(attachment.url)
-        else:
-            other_urls.add(attachment.url)
-
-    # 2. Process Embeds
-    for embed in message.embeds:
-        if embed.url and _is_image_url(embed.url):
-            image_urls.add(embed.url)
-        if embed.thumbnail and embed.thumbnail.url and _is_image_url(embed.thumbnail.url):
-            image_urls.add(embed.thumbnail.url)
-        if embed.image and embed.image.url and _is_image_url(embed.image.url):
-            image_urls.add(embed.image.url)
-        
-        if embed.url and embed.type not in ['image', 'gifv']:
-            other_urls.add(embed.url)
-        if embed.video and embed.video.url:
-            other_urls.add(embed.video.url)
-
-    # 3. Process URLs in the message content
-    url_pattern = re.compile(r'https?://\S+')
-    found_urls = url_pattern.findall(content)
-    for url in found_urls:
-        if _is_image_url(url):
-            image_urls.add(url)
-        other_urls.add(url)
-
-    # 4. Clean the message content by removing all identified URLs
-    all_urls_to_strip = image_urls.union(other_urls)
-    cleaned_content = content
-    for url in all_urls_to_strip:
-        cleaned_content = cleaned_content.replace(url, '')
-
-    # Final cleanup of whitespace
-    cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
-    
-    return cleaned_content, list(image_urls), list(other_urls)
-
 def split_message(text: str, limit: int = 2000) -> List[str]:
     """
     Splits a string of text into a list of smaller strings, each under the
     specified character limit, without breaking words or formatting.
+    Returns an empty list if the input text is empty or just whitespace.
     """
+    if not text or text.isspace():
+        logger.warning("split_message received empty or whitespace-only text. Returning empty list.")
+        return []
+
     if len(text) <= limit:
         return [text]
 
@@ -360,14 +308,29 @@ def split_message(text: str, limit: int = 2000) -> List[str]:
             words = chunk.split(' ')
             new_chunk = ""
             for word in words:
+                # If a single word is over the limit, it must be split forcefully
+                if len(word) > limit:
+                    if new_chunk: # Add whatever was in new_chunk before this monster word
+                        final_chunks.append(new_chunk.strip())
+                    # Split the monster word itself
+                    for i in range(0, len(word), limit):
+                        final_chunks.append(word[i:i+limit])
+                    new_chunk = "" # Reset new_chunk
+                    continue
+
                 if len(new_chunk) + len(word) + 1 > limit:
-                    final_chunks.append(new_chunk)
+                    if new_chunk: # Ensure we don't add empty strings
+                        final_chunks.append(new_chunk.strip())
                     new_chunk = word
                 else:
-                    new_chunk += f" {word}"
-            if new_chunk:
-                final_chunks.append(new_chunk)
+                    if new_chunk:
+                        new_chunk += f" {word}"
+                    else:
+                        new_chunk = word
+            if new_chunk: # Add the last part
+                final_chunks.append(new_chunk.strip())
         else:
             final_chunks.append(chunk)
             
-    return final_chunks
+    # Final filter to remove any empty strings that might have slipped through
+    return [c for c in final_chunks if c and not c.isspace()]
