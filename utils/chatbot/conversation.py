@@ -2,6 +2,7 @@
 Manages conversation history and lifecycle.
 """
 
+import asyncio
 import json
 import os
 import re
