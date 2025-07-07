@@ -223,7 +223,7 @@ class InlineResponseManager:
         context_messages = []
         for msg in sorted_messages:
             # Use the centralized function from the chatbot manager's conversation utility
-            cleaned_content, image_urls, _ = chatbot_manager.conversation._process_discord_message_for_context(msg)
+            cleaned_content, image_urls, _ = chatbot_manager.conversation_manager._process_discord_message_for_context(msg)
             
             multimodal_content = []
             if cleaned_content:

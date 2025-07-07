@@ -553,7 +553,16 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
             # Bulk index all unique users from the context.
             if context_messages:
-                unique_users = list({msg.author for msg in context_messages if not msg.author.bot})
+                unique_user_ids = {msg.user_id for msg in context_messages if not msg.is_bot_response}
+                unique_users = []
+                for user_id in unique_user_ids:
+                    try:
+                        user = message.guild.get_member(user_id) or await self.bot.fetch_user(user_id)
+                        if user:
+                            unique_users.append(user)
+                    except discord.NotFound:
+                        logger.warning(f"Could not find user {user_id} for on-the-fly indexing.")
+
                 if unique_users:
                     await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
                     logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
@@ -563,7 +572,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
 
         # 3. Format the context for the LLM
-        static_context, history = chatbot_manager.formatter.format_context_for_llm(
+        static_context, history = await chatbot_manager.formatter.format_context_for_llm(
             messages=context_messages,
             guild_id=message.guild.id,
             channel_id=message.channel.id
@@ -579,7 +588,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         prompt = message.content.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
         
         # Process the trigger message for multimodal content (images)
-        cleaned_prompt, image_urls, _ = chatbot_manager.conversation._process_discord_message_for_context(message)
+        cleaned_prompt, image_urls, _ = chatbot_manager.conversation_manager._process_discord_message_for_context(message)
         # We use the cleaned_prompt which has URLs stripped.
         prompt = cleaned_prompt.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
 
