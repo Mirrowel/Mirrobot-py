@@ -24,7 +24,7 @@ class ChatbotManager:
     def __init__(self, bot_user_id: Optional[int] = None):
         self.storage_manager = JsonStorageManager()
         self.config_manager = ConfigManager(self.storage_manager)
-        self.indexing_manager = IndexingManager(self.storage_manager, bot_user_id)
+        self.indexing_manager = IndexingManager(self.storage_manager, self.config_manager, bot_user_id)
         self.conversation_manager = ConversationManager(self.storage_manager, self.config_manager, self.indexing_manager, bot_user_id)
         self.formatter = LLMContextFormatter(self.config_manager, self.conversation_manager, self.indexing_manager)
         
@@ -46,7 +46,7 @@ class ChatbotManager:
             try:
                 await self.index_chatbot_channel(guild_id, channel_id, channel)
                 if isinstance(channel, (discord.TextChannel, discord.Thread)):
-                    await self.index_pinned_messages(guild_id, channel_id, channel)
+                    await self.index_pinned_messages(channel)
                 logger.info(f"Indexed chatbot channel and pins for #{channel.name}")
             except Exception as e:
                 logger.error(f"Error indexing channel on enable: {e}", exc_info=True)
@@ -143,16 +143,20 @@ class ChatbotManager:
                 history_iterator = channel.history(limit=None, after=after_param)
                 messages_to_add = [msg async for msg in history_iterator if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
             else:
-                logger.debug(f"Performing full history index for #{channel.name} in batches of {HISTORY_FETCH_LIMIT}")
-                last_message_id = None
-                while True:
-                    batch_history = [msg async for msg in channel.history(limit=HISTORY_FETCH_LIMIT, before=discord.Object(id=last_message_id) if last_message_id else None) if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
-                    if not batch_history:
-                        break
-                    messages_to_add.extend(batch_history)
-                    last_message_id = batch_history[-1].id
-                    logger.debug(f"Fetched batch of {len(batch_history)} messages for #{channel.name}. Oldest message ID: {last_message_id}")
+                # This is a full scan. Fetch the most recent N messages first, then filter by time.
+                limit = config.max_context_messages
+                logger.debug(f"Performing full history scan for #{channel.name} with a limit of {limit} messages.")
+                
+                # 1. Fetch the most recent N messages
+                recent_messages = [msg async for msg in channel.history(limit=limit) if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
+                
+                # 2. Filter these messages by the time window
+                time_window_cutoff = time.time() - (config.context_window_hours * 3600)
+                messages_to_add = [msg for msg in recent_messages if msg.created_at.timestamp() >= time_window_cutoff]
+                
+                # 3. Reverse to get chronological order
                 messages_to_add.reverse()
+                logger.debug(f"Fetched {len(recent_messages)} recent messages, {len(messages_to_add)} are within the time window.")
 
             if not messages_to_add:
                 logger.info(f"No new messages to index for #{channel.name}.")
@@ -176,7 +180,7 @@ class ChatbotManager:
             logger.error(f"Error indexing chatbot channel #{channel.name}: {e}", exc_info=True)
             return False
 
-    async def index_pinned_messages(self, guild_id: int, channel_id: int, channel: discord.abc.Messageable):
+    async def index_pinned_messages(self, channel: discord.abc.Messageable):
         """Index pinned messages, passing the validation and processing functions from the conversation manager."""
         return await self.indexing_manager.index_pinned_messages(
             channel,

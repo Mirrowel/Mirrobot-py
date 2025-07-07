@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Set, Union
 from collections import defaultdict
 
 import discord
+from utils.chatbot.config import ConfigManager
 from utils.chatbot.models import ChannelIndexEntry, PinnedMessage, UserIndexEntry, ConversationMessage
 from utils.chatbot.persistence import JsonStorageManager
 from utils.logging_setup import get_logger
@@ -37,8 +38,9 @@ class IndexingManager:
     to ensure high performance and data integrity.
     """
 
-    def __init__(self, storage_manager: JsonStorageManager, bot_user_id: int = None):
+    def __init__(self, storage_manager: JsonStorageManager, config_manager: ConfigManager, bot_user_id: int = None):
         self.storage_manager = storage_manager
+        self.config_manager = config_manager
         self.bot_user_id = bot_user_id
 
         self._user_indexes: Dict[int, Dict[int, UserIndexEntry]] = {}
@@ -391,11 +393,18 @@ class IndexingManager:
 
     async def add_message_to_history(self, guild_id: int, channel_id: int, message: ConversationMessage):
         """
-        Adds a message to the in-memory cache and marks the guild as dirty.
+        Adds a message to the in-memory cache, prunes if necessary, and marks the guild as dirty.
         """
         async with self._guild_locks[guild_id]:
             history = await self.get_conversation_history(guild_id, channel_id)
             history.append(message)
+
+            # Prune the history in-memory if it exceeds the max length
+            channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
+            if len(history) > channel_config.max_context_messages:
+                self._conversation_caches[guild_id][channel_id] = history[-channel_config.max_context_messages:]
+                logger.debug(f"Pruned conversation cache for channel {channel_id} to {len(self._conversation_caches[guild_id][channel_id])} messages.")
+
             self._dirty_guilds.add(guild_id)
             self._touch_guild_cache(guild_id)
 
