@@ -373,30 +373,39 @@ class IndexingManager:
             logger.error(f"Error saving conversation history to {file_path}: {e}", exc_info=True)
 
     # --- Public Conversation Methods ---
+    async def _get_conversation_history_unsafe(self, guild_id: int, channel_id: int) -> List[ConversationMessage]:
+        """
+        (Unsafe) Gets conversation history, assuming a lock is already held.
+        Loads from disk if not in cache.
+        """
+        await self._initialize_guild_cache(guild_id)
+        
+        if guild_id not in self._conversation_caches:
+            self._conversation_caches[guild_id] = {}
+
+        if channel_id not in self._conversation_caches[guild_id]:
+            messages = await self._load_conversation_history_from_disk(guild_id, channel_id)
+            self._conversation_caches[guild_id][channel_id] = messages
+            logger.debug(f"Loaded conversation for channel {channel_id} into cache.")
+        
+        self._touch_guild_cache(guild_id)
+        return self._conversation_caches[guild_id].get(channel_id, [])
+
     async def get_conversation_history(self, guild_id: int, channel_id: int) -> List[ConversationMessage]:
         """
-        Gets a conversation history from the cache, loading it from disk if necessary.
+        (Safe) Gets a conversation history from the cache, loading it from disk if necessary.
+        Acquires a lock to ensure thread-safe access.
         """
         async with self._guild_locks[guild_id]:
-            await self._initialize_guild_cache(guild_id)
-            
-            if guild_id not in self._conversation_caches:
-                self._conversation_caches[guild_id] = {}
-
-            if channel_id not in self._conversation_caches[guild_id]:
-                messages = await self._load_conversation_history_from_disk(guild_id, channel_id)
-                self._conversation_caches[guild_id][channel_id] = messages
-                logger.debug(f"Loaded conversation for channel {channel_id} into cache.")
-            
-            self._touch_guild_cache(guild_id)
-            return self._conversation_caches[guild_id].get(channel_id, [])
+            return await self._get_conversation_history_unsafe(guild_id, channel_id)
 
     async def add_message_to_history(self, guild_id: int, channel_id: int, message: ConversationMessage):
         """
         Adds a message to the in-memory cache, prunes if necessary, and marks the guild as dirty.
         """
         async with self._guild_locks[guild_id]:
-            history = await self.get_conversation_history(guild_id, channel_id)
+            # Use the unsafe method here because we already have the lock.
+            history = await self._get_conversation_history_unsafe(guild_id, channel_id)
             history.append(message)
 
             # Prune the history in-memory if it exceeds the max length
