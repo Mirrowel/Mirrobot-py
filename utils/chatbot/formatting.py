@@ -78,7 +78,7 @@ class LLMContextFormatter:
                     snippet = (original_msg.content or "")[:75] + ("..." if len(original_msg.content or "") > 75 else "")
                     reply_info = f'[Replying to @{original_author}: "{snippet}"] '
 
-        line_parts = [f"[{local_id}] [UserID: {msg.user_id}] {role_label}: {reply_info}"]
+        line_parts = [f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"]
 
         # Use a temporary variable for content to handle cases where multimodal_content is empty
         content_to_process = msg.multimodal_content if msg.multimodal_content else [ConversationMessage(type="text", text=msg.content)]
