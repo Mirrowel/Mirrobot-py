@@ -250,5 +250,67 @@ class InlineResponseManager:
         return context_messages
 
 
-# This function is now centralized in a different utility file.
-# It is removed from here to avoid duplication.
+def split_message(text: str, limit: int = 2000) -> List[str]:
+    """
+    Splits a string of text into a list of smaller strings, each under the
+    specified character limit, without breaking words or formatting.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+    
+    # Preserve paragraphs by splitting by them first
+    paragraphs = text.split('\n\n')
+    
+    for i, paragraph in enumerate(paragraphs):
+        # If a single paragraph is over the limit, split it by lines
+        if len(paragraph) > limit:
+            lines = paragraph.split('\n')
+            for line in lines:
+                if len(current_chunk) + len(line) + 1 > limit:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = line
+                else:
+                    current_chunk += f"\n{line}"
+            continue # Move to the next paragraph
+
+        # Check if adding the next paragraph fits
+        if len(current_chunk) + len(paragraph) + 2 > limit:
+            chunks.append(current_chunk.strip())
+            current_chunk = paragraph
+        else:
+            if current_chunk:
+                current_chunk += f"\n\n{paragraph}"
+            else:
+                current_chunk = paragraph
+        
+        # Add paragraph separator back if it's not the last one
+        if i < len(paragraphs) - 1:
+            # This check is to avoid adding separators if the next chunk starts fresh
+            if len(current_chunk) + 2 <= limit:
+                 pass # Separator is handled by the logic above
+
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+
+    # Final check for any chunks that might still be over the limit due to long lines
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) > limit:
+            # Force split the oversized chunk by words
+            words = chunk.split(' ')
+            new_chunk = ""
+            for word in words:
+                if len(new_chunk) + len(word) + 1 > limit:
+                    final_chunks.append(new_chunk)
+                    new_chunk = word
+                else:
+                    new_chunk += f" {word}"
+            if new_chunk:
+                final_chunks.append(new_chunk)
+        else:
+            final_chunks.append(chunk)
+            
+    return final_chunks
