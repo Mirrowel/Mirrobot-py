@@ -360,63 +360,35 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if ctx.invoked_subcommand is None:
             await self._send_subcommand_help(ctx)
 
-    @permissions.group(name="whitelist", help="""
+    @permissions.command(name="whitelist", help="""
     Manages the whitelist of users and roles allowed to trigger inline responses.
-    If the whitelist is empty (and does not contain @everyone), access is denied by default.
+    - To allow all non-blacklisted users, add the `@everyone` role.
+    - Usage: `!inline permissions whitelist <add|remove> <@role|@member|"everyone"> [target]`
     """)
     @has_command_permission('manage_guild')
-    async def permissions_whitelist(self, ctx: commands.Context):
-        """Manage the whitelist."""
-        if ctx.invoked_subcommand is None:
-            await self._send_subcommand_help(ctx)
+    @app_commands.describe(
+        action="Choose whether to 'add' or 'remove' from the whitelist.",
+        entity="The role, member, or the word 'everyone'.",
+        target="Optional: 'server', a #channel/thread, or a channel/thread ID."
+    )
+    async def permissions_whitelist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: Union[discord.Role, discord.Member, Literal['everyone']], target: str = None):
+        """Adds or removes an entity from the whitelist."""
+        await self._update_permissions(ctx, action, 'whitelist', entity, target)
 
-    @permissions_whitelist.command(name="add", help="""
-    Adds a role, member, or the special 'everyone' designation to the whitelist for a target.
-    - To allow all non-blacklisted users, add the `@everyone` role (or use the string 'everyone').
-    - Usage: `!inline permissions whitelist add <@role|@member|"everyone"> [target]`
-    """)
-    @has_command_permission('manage_guild')
-    @app_commands.describe(entity="The role, member, or the word 'everyone'.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
-    async def permissions_whitelist_add(self, ctx: commands.Context, entity: Union[discord.Role, discord.Member, Literal['everyone']], target: str = None):
-        await self._update_permissions(ctx, 'add', 'whitelist', entity, target)
-
-    @permissions_whitelist.command(name="remove", help="""
-    Removes a role, member, or 'everyone' from the whitelist for a target.
-    - Usage: `!inline permissions whitelist remove <@role|@member|"everyone"> [target]`
-    """)
-    @has_command_permission('manage_guild')
-    @app_commands.describe(entity="The role, member, or the word 'everyone'.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
-    async def permissions_whitelist_remove(self, ctx: commands.Context, entity: Union[discord.Role, discord.Member, Literal['everyone']], target: str = None):
-        await self._update_permissions(ctx, 'remove', 'whitelist', entity, target)
-
-    @permissions.group(name="blacklist", help="""
+    @permissions.command(name="blacklist", help="""
     Manages the blacklist of users and roles explicitly denied from triggering inline responses.
-    The blacklist **always** takes priority. A blacklisted user or role can never trigger a response, even if they are on the whitelist.
+    - The blacklist **always** takes priority over the whitelist.
+    - Usage: `!inline permissions blacklist <add|remove> <@role|@member> [target]`
     """)
     @has_command_permission('manage_guild')
-    async def permissions_blacklist(self, ctx: commands.Context):
-        """Manage the blacklist."""
-        if ctx.invoked_subcommand is None:
-            await self._send_subcommand_help(ctx)
-
-    @permissions_blacklist.command(name="add", help="""
-    Adds a role or member to the blacklist for a target.
-    - Note: You cannot add the `@everyone` role to the blacklist.
-    - Usage: `!inline permissions blacklist add <@role|@member> [target]`
-    """)
-    @has_command_permission('manage_guild')
-    @app_commands.describe(entity="The role or member to blacklist.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
-    async def permissions_blacklist_add(self, ctx: commands.Context, entity: Union[discord.Role, discord.Member], target: str = None):
-        await self._update_permissions(ctx, 'add', 'blacklist', entity, target)
-
-    @permissions_blacklist.command(name="remove", help="""
-    Removes a role or member from the blacklist for a target.
-    - Usage: `!inline permissions blacklist remove <@role|@member> [target]`
-    """)
-    @has_command_permission('manage_guild')
-    @app_commands.describe(entity="The role or member to remove from the blacklist.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
-    async def permissions_blacklist_remove(self, ctx: commands.Context, entity: Union[discord.Role, discord.Member], target: str = None):
-        await self._update_permissions(ctx, 'remove', 'blacklist', entity, target)
+    @app_commands.describe(
+        action="Choose whether to 'add' or 'remove' from the blacklist.",
+        entity="The role or member to blacklist. You cannot blacklist @everyone.",
+        target="Optional: 'server', a #channel/thread, or a channel/thread ID."
+    )
+    async def permissions_blacklist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: Union[discord.Role, discord.Member], target: str = None):
+        """Adds or removes an entity from the blacklist."""
+        await self._update_permissions(ctx, action, 'blacklist', entity, target)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
