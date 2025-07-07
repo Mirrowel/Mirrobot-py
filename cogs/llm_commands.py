@@ -1697,8 +1697,8 @@ class LLMCommands(commands.Cog):
             content_lines.append("CONTEXT STATISTICS:")
             content_lines.append("-" * 40)
             content_lines.append(f"Total messages in context: {len(context_messages)}")
-            content_lines.append(f"Messages from target user: {len([msg for msg in context_messages if msg.user_id == target_user_id])}")
-            content_lines.append(f"Messages from other users: {len([msg for msg in context_messages if msg.user_id != target_user_id and not msg.is_bot_response])}")
+            content_lines.append(f"Messages from target user: {len([msg for msg in context_messages if int(msg.user_id) == target_user_id])}")
+            content_lines.append(f"Messages from other users: {len([msg for msg in context_messages if int(msg.user_id) != target_user_id and not msg.is_bot_response])}")
             content_lines.append(f"Bot responses: {len([msg for msg in context_messages if msg.is_bot_response])}")
             
             # Get indexing stats

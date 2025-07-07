@@ -34,8 +34,8 @@ class LLMContextFormatter:
             
             recent_messages = all_messages[-channel_config.max_context_messages:]
             
-            requesting_user_messages = [msg for msg in recent_messages if msg.user_id == requesting_user_id]
-            other_messages = [msg for msg in recent_messages if msg.user_id != requesting_user_id]
+            requesting_user_messages = [msg for msg in recent_messages if int(msg.user_id) == requesting_user_id]
+            other_messages = [msg for msg in recent_messages if int(msg.user_id) != requesting_user_id]
             
             prioritized_messages = requesting_user_messages[-channel_config.max_user_context_messages:]
             
@@ -50,7 +50,7 @@ class LLMContextFormatter:
             if len(prioritized_messages) > channel_config.max_context_messages:
                 prioritized_messages = prioritized_messages[-channel_config.max_context_messages:]
             
-            user_msg_count = len([msg for msg in prioritized_messages if msg.user_id == requesting_user_id])
+            user_msg_count = len([msg for msg in prioritized_messages if int(msg.user_id) == requesting_user_id])
             other_msg_count = len(prioritized_messages) - user_msg_count
             
             logger.debug(f"Generated prioritized context with {len(prioritized_messages)} messages for user {requesting_user_id} ({user_msg_count} user, {other_msg_count} other)")
@@ -266,11 +266,11 @@ class LLMContextFormatter:
                             return match.group(0)
 
                         # Special case for the creator
-                        if user.user_id == creator_id:
+                        if int(user.user_id) == creator_id:
                             return creator_username
                         
                         # Handle bot self-mentions that might have been missed
-                        if bot_names and user.user_id == bot_user_id:
+                        if bot_names and int(user.user_id) == bot_user_id:
                             return ""
 
                         # Default to display name
