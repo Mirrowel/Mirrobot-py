@@ -33,13 +33,31 @@ class ConversationMessage:
 
     def __post_init__(self):
         """Ensure multimodal_content is a list of ContentPart objects."""
-        if self.multimodal_content and isinstance(self.multimodal_content[0], dict):
+        if self.multimodal_content and self.multimodal_content and isinstance(self.multimodal_content[0], dict):
             self.multimodal_content = [ContentPart(**part) for part in self.multimodal_content]
         if self.author and isinstance(self.author, dict):
             # This is a simple deserialization. For a more robust solution,
             # you might need a more complex User/Member object reconstruction.
             from discord import User
             self.author = User(state=None, data=self.author)
+
+    def to_dict(self):
+        """Converts the dataclass to a dictionary, handling non-serializable fields."""
+        # Start with the basic dataclass-to-dict conversion
+        data = dataclasses.asdict(self)
+        
+        # Manually handle the 'author' field
+        if self.author:
+            # Replace the complex discord.User/Member object with a simple dict
+            data['author'] = {
+                'id': self.author.id,
+                'name': self.author.name,
+                'display_name': self.author.display_name
+            }
+        else:
+            data['author'] = None
+            
+        return data
 
 @dataclass
 class PinnedMessage:

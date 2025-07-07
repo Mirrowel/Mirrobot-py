@@ -379,7 +379,7 @@ class IndexingManager:
         file_path = self.get_conversation_file_path(guild_id, channel_id)
         try:
             data = {
-                "messages": [asdict(msg) for msg in messages],
+                "messages": [msg.to_dict() for msg in messages],
                 "last_updated": time.time()
             }
             await asyncio.to_thread(self.storage_manager.write, file_path, data)

@@ -75,7 +75,18 @@ class LLMContextFormatter:
                     content_parts.append({"type": "text", "text": part.text})
                 elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
                     content_parts.append({"type": "image_url", "image_url": {"url": part.image_url["url"]}})
-            return content_parts if len(content_parts) > 1 else (content_parts[0]['text'] if content_parts else "")
+            
+            if not content_parts:
+                return msg.content or ""
+            
+            # If there's only one part, return its text content if it's text, otherwise return the list.
+            if len(content_parts) == 1:
+                if content_parts[0].get("type") == "text":
+                    return content_parts[0].get('text', "")
+                else:
+                    return content_parts # It's a single image, return as a list
+            
+            return content_parts
 
         # --- User Role (User messages) ---
         user_index = await self.index_manager.load_user_index(guild_id)
