@@ -1,113 +1,84 @@
 # Moderation Commands
 
-## Thread Management
+These commands are for managing threads and channels, including automated purging of inactive threads.
 
-### Watch Forum
-Add a channel to the watchlist for automatic thread purging.
+### `watch_forum`
+Adds a forum channel to the watchlist for automatic thread purging. The bot will periodically check this channel and purge threads that have been inactive for the specified duration.
 
-**Command:** `!watch_forum <channel> <time_period>`
+- **Usage:** `!watch_forum <channel> <inactivity_period>`
+- **Arguments:**
+    - `<channel>` (Required): The forum channel to watch (e.g., `#help-forum`).
+    - `<inactivity_period>` (Required): The period of inactivity after which threads should be purged. Supports formats like `7d` (7 days), `24h` (24 hours), `30m` (30 minutes).
+- **Example:** `!watch_forum #help-forum 7d`
+- **Permissions:** `manage_channels`
 
-**Arguments:**
-- `<channel>` - The channel to watch (can be a forum channel, text channel, or voice channel)
-- `<time_period>` - Inactivity threshold (format: 3d, 12h, 30m, 45s)
+### `unwatch_forum`
+Removes a forum channel from the watchlist, stopping automatic thread purging for that channel.
 
-**Examples:**
-- `!watch_forum #help-forum 7d` - Purge threads after 7 days of inactivity
-- `!watch_forum #general 24h` - Purge threads after 24 hours of inactivity
+- **Usage:** `!unwatch_forum <channel>`
+- **Arguments:**
+    - `<channel>` (Required): The forum channel to unwatch (e.g., `#help-forum`).
+- **Example:** `!unwatch_forum #help-forum`
+- **Permissions:** `manage_channels`
 
-### Unwatch Forum
-Remove a channel from the watchlist.
+### `purge_threads`
+Manually purges inactive threads from a specified channel. This command allows for immediate cleanup of old or resolved threads.
 
-**Command:** `!unwatch_forum <channel>`
+- **Usage:** `!purge_threads <channel> <inactivity_period>`
+- **Arguments:**
+    - `<channel>` (Required): The channel from which to purge threads (e.g., `#help-forum`).
+    - `<inactivity_period>` (Required): The period of inactivity after which threads should be purged. Supports formats like `7d` (7 days), `24h` (24 hours), `30m` (30 minutes).
+- **Example:** `!purge_threads #help-forum 30d`
+- **Permissions:** `manage_channels`
 
-**Arguments:**
-- `<channel>` - The channel to remove from the watchlist
+### `ignore_thread`
+Adds a specific thread to the ignore list, preventing it from being automatically purged by the bot's thread management system. This is useful for important or ongoing discussions that should not be closed due to inactivity.
 
-**Examples:**
-- `!unwatch_forum #help-forum`
+- **Usage:** `!ignore_thread <thread>`
+- **Arguments:**
+    - `<thread>` (Required): The thread to ignore (e.g., `#important-discussion`).
+- **Example:** `!ignore_thread #important-announcements`
+- **Permissions:** `manage_channels`
 
-### Purge Threads
-Manually purge inactive threads from a channel.
+### `unignore_thread`
+Removes a thread from the ignore list, allowing it to be subject to automatic purging based on the channel's `watch_forum` settings.
 
-**Command:** `!purge_threads <channel> <time_period>`
+- **Usage:** `!unignore_thread <thread>`
+- **Arguments:**
+    - `<thread>` (Required): The thread to unignore (e.g., `#no-longer-important-thread`).
+- **Example:** `!unignore_thread #old-discussion`
+- **Permissions:** `manage_channels`
 
-**Arguments:**
-- `<channel>` - The channel containing threads to purge
-- `<time_period>` - Inactivity threshold (format: 3d, 12h, 30m, 45s)
+### `ignore_tag`
+Adds a specific thread tag to the ignore list. Threads within watched forum channels that have this tag will be excluded from automatic purging, regardless of their inactivity.
 
-**Examples:**
-- `!purge_threads #help-forum 7d` - Purge threads inactive for 7 days
-- `!purge_threads #general 2h` - Purge threads inactive for 2 hours
+- **Usage:** `!ignore_tag <tag_name>`
+- **Arguments:**
+    - `<tag_name>` (Required): The exact name of the thread tag to ignore. Enclose in quotes if the tag name contains spaces.
+- **Example:** `!ignore_tag "In Progress"`
+- **Permissions:** `manage_channels`
 
-### Ignore Thread
-Add a thread to the ignore list to prevent it from being purged.
+### `unignore_tag`
+Removes a thread tag from the ignore list, allowing threads with that tag to be subject to automatic purging based on the channel's `watch_forum` settings.
 
-**Command:** `!ignore_thread <thread>`
+- **Usage:** `!unignore_tag <tag_name>`
+- **Arguments:**
+    - `<tag_name>` (Required): The exact name of the thread tag to unignore. Enclose in quotes if the tag name contains spaces.
+- **Example:** `!unignore_tag "Resolved"`
+- **Permissions:** `manage_channels`
 
-**Arguments:**
-- `<thread>` - The thread to add to the ignore list
+### `list_thread_settings`
+Lists the current thread management settings for the server. This includes channels being watched for automatic purging, individual threads being ignored, and thread tags that prevent purging.
 
-**Examples:**
-- `!ignore_thread #important-thread`
-
-### Unignore Thread
-Remove a thread from the ignore list.
-
-**Command:** `!unignore_thread <thread>`
-
-**Arguments:**
-- `<thread>` - The thread to remove from the ignore list
-
-**Examples:**
-- `!unignore_thread #no-longer-important-thread`
-
-### Ignore Tag
-Add a thread tag to the ignore list to prevent threads with that tag from being purged.
-
-**Command:** `!ignore_tag <tag_name>`
-
-**Arguments:**
-- `<tag_name>` - The name of the tag to ignore
-
-**Examples:**
-- `!ignore_tag important`
-- `!ignore_tag "do not delete"`
-
-### Unignore Tag
-Remove a thread tag from the ignore list.
-
-**Command:** `!unignore_tag <tag_name>`
-
-**Arguments:**
-- `<tag_name>` - The name of the tag to remove from the ignore list
-
-**Examples:**
-- `!unignore_tag important`
-
-### List Thread Settings
-List thread management settings for this server.
-
-**Command:** `!list_thread_settings [type]`
-
-**Arguments:**
-- `[type]` (optional) - Filter by "watched", "ignored", or "tags" (default: all)
-
-**Examples:**
-- `!list_thread_settings` - Show all settings
-- `!list_thread_settings watched` - Show only watched channels
-- `!list_thread_settings ignored` - Show only ignored threads
-- `!list_thread_settings tags` - Show only ignored tags
-
-## Best Practices
-
-1. Use reasonable inactivity thresholds based on your channel's purpose
-   - High-traffic channels may need shorter thresholds (1-3 days)
-   - Low-traffic channels may need longer thresholds (7-30 days)
-
-2. Always ignore important reference threads using the `ignore_thread` command
-
-3. Communicate your thread purging policy to your community
-
-4. Consider pinning important threads (pinned threads are automatically excluded from purging)
-
-5. Use the `purge_threads` command to clean up channels on demand before setting up automatic purging
+- **Usage:** `!list_thread_settings [type]`
+- **Arguments:**
+    - `[type]` (Optional): A filter to display specific settings:
+        - `watched`: Shows only channels configured for automatic purging.
+        - `ignored`: Shows only individual threads that are being ignored.
+        - `tags`: Shows only thread tags that are being ignored.
+        - Defaults to `all` if no type is specified.
+- **Examples:**
+    - `!list_thread_settings`: Lists all thread management settings.
+    - `!list_thread_settings watched`: Shows only watched forum channels.
+    - `!list_thread_settings tags`: Shows only ignored thread tags.
+- **Permissions:** `manage_channels`

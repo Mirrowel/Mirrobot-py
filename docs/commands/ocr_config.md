@@ -1,101 +1,70 @@
 # OCR Configuration Commands
 
-This document describes the commands available for configuring the OCR functionality of Mirrobot.
+These commands are for setting up and managing OCR (Optical Character Recognition) functionality.
+(TO BE DEPRECATED IN FAVOR OF LLM-BASED OCR)
 
-## OCR Overview
+### `add_ocr_read_channel`
+Adds a specified channel to the list of channels where the bot will automatically scan images for OCR (Optical Character Recognition) processing. When an image is posted in a read channel, the bot will attempt to extract text from it.
 
-Mirrobot uses Optical Character Recognition (OCR) to scan images posted in designated channels, extract text, and respond based on pattern matching. The following commands allow you to configure which channels are monitored and how responses are handled.
+- **Usage:** `!add_ocr_read_channel <channel> [language]`
+- **Arguments:**
+    - `<channel>` (Required): The channel to add (mention, ID, or name).
+    - `[language]` (Optional): The language code for OCR processing in this channel. Supported options are `eng` (English) and `rus` (Russian). Defaults to `eng`.
+- **Example:** `!add_ocr_read_channel #screenshots rus`
+- **Permissions:** `has_command_permission`
 
-## Command Reference
+### `remove_ocr_read_channel`
+Removes a specified channel from the list of channels where the bot performs OCR processing on images. The bot will no longer scan images posted in this channel.
 
-### add_ocr_read_channel
-Add a channel to the list of channels where the bot will scan images for OCR processing.
+- **Usage:** `!remove_ocr_read_channel <channel>`
+- **Arguments:**
+    - `<channel>` (Required): The channel to remove (mention, ID, or name).
+- **Example:** `!remove_ocr_read_channel #screenshots`
+- **Permissions:** `has_command_permission`
 
-- **Usage**: `!add_ocr_read_channel <channel> [language]`
-- **Arguments**: 
-  - `channel` (required): The channel to add (can be a mention, ID, or name)
-  - `language` (optional): Language code for OCR (default: eng, options: eng, rus)
-- **Examples**: 
-  - `!add_ocr_read_channel #support-channel`
-  - `!add_ocr_read_channel 123456789012345678 rus`
-  - `!add_ocr_read_channel support-channel eng`
-- **Permissions**: Requires bot manager or specific command permission
+### `set_ocr_language`
+Sets the OCR language for a specific channel that is configured for OCR reading. This allows the bot to accurately extract text from images in different languages.
 
-### remove_ocr_read_channel
-Remove a channel from the OCR reading list.
+- **Usage:** `!set_ocr_language <channel> <language>`
+- **Arguments:**
+    - `<channel>` (Required): The channel to configure (mention, ID, or name).
+    - `<language>` (Required): The language code for OCR processing. Supported options are `eng` (English) and `rus` (Russian).
+- **Example:** `!set_ocr_language #russian-support rus`
+- **Permissions:** `has_command_permission`
 
-- **Usage**: `!remove_ocr_read_channel <channel>`
-- **Arguments**: 
-  - `channel` (required): The channel to remove (can be a mention, ID, or name)
-- **Examples**: 
-  - `!remove_ocr_read_channel #support-channel`
-  - `!remove_ocr_read_channel support-channel`
-- **Permissions**: Requires bot manager or specific command permission
+### `add_ocr_response_channel`
+Adds a specified channel to the list of channels where the bot will post the results of its OCR analysis. When text is successfully extracted from an image in an OCR read channel, the bot will send the extracted text to a configured response channel.
 
-### set_ocr_language
-Set the OCR language for a channel.
+- **Usage:** `!add_ocr_response_channel <channel> [language]`
+- **Arguments:**
+    - `<channel>` (Required): The channel to add (mention, ID, or name).
+    - `[language]` (Optional): The language associated with this response channel. This is useful if you have different response channels for different OCR languages. Supported options are `eng` (English) and `rus` (Russian). Defaults to `eng`.
+- **Example:** `!add_ocr_response_channel #ocr-results rus`
+- **Permissions:** `has_command_permission`
 
-- **Usage**: `!set_ocr_language <channel> <language>`
-- **Arguments**: 
-  - `channel` (required): The channel to configure (can be a mention, ID, or name)
-  - `language` (required): Language code for OCR (options: eng, rus)
-- **Examples**: 
-  - `!set_ocr_language #russian-support rus`
-  - `!set_ocr_language russian-support rus`
-- **Permissions**: Requires bot manager or specific command permission
+### `remove_ocr_response_channel`
+Removes a specified channel from the list of channels where the bot posts OCR analysis results. The bot will no longer send OCR output to this channel.
 
-### add_ocr_response_channel
-Add a channel where bot will post OCR analysis results.
+- **Usage:** `!remove_ocr_response_channel <channel>`
+- **Arguments:**
+    - `<channel>` (Required): The channel to remove (mention, ID, or name).
+- **Example:** `!remove_ocr_response_channel #ocr-results`
+- **Permissions:** `has_command_permission`
 
-- **Usage**: `!add_ocr_response_channel <channel> [language]`
-- **Arguments**: 
-  - `channel` (required): The channel to add (can be a mention, ID, or name)
-  - `language` (optional): Language code for OCR (default: eng, options: eng, rus)
-- **Examples**: 
-  - `!add_ocr_response_channel #bot-responses rus`
-  - `!add_ocr_response_channel bot-responses eng`
-- **Permissions**: Requires bot manager or specific command permission
+### `add_ocr_response_fallback`
+Adds a specified channel as a fallback for OCR responses. If the bot cannot post OCR analysis results to the designated `ocr_response_channel` (e.g., due to permissions or channel deletion), it will attempt to send the results to this fallback channel instead.
 
-### remove_ocr_response_channel
-Remove a channel from the OCR response list.
+- **Usage:** `!add_ocr_response_fallback <channel>`
+- **Arguments:**
+    - `<channel>` (Required): The channel to set as the fallback (mention, ID, or name).
+- **Example:** `!add_ocr_response_fallback #bot-logs`
+- **Permissions:** `has_command_permission`
 
-- **Usage**: `!remove_ocr_response_channel <channel>`
-- **Arguments**: 
-  - `channel` (required): The channel to remove (can be a mention, ID, or name)
-- **Examples**: 
-  - `!remove_ocr_response_channel #bot-responses`
-  - `!remove_ocr_response_channel bot-responses`
-- **Permissions**: Requires bot manager or specific command permission
+### `remove_ocr_response_fallback`
+Removes a specified channel from the OCR response fallback list. The bot will no longer attempt to send OCR analysis results to this channel if the primary response channel is unavailable.
 
-### add_ocr_response_fallback
-Add a fallback channel for OCR responses if no regular response channel is available.
-
-- **Usage**: `!add_ocr_response_fallback <channel>`
-- **Arguments**: 
-  - `channel` (required): The channel to add (can be a mention, ID, or name)
-- **Examples**: 
-  - `!add_ocr_response_fallback #general-bot`
-  - `!add_ocr_response_fallback general-bot`
-- **Permissions**: Requires bot manager or specific command permission
-
-### remove_ocr_response_fallback
-Remove a channel from the OCR response fallback list.
-
-- **Usage**: `!remove_ocr_response_fallback <channel>`
-- **Arguments**: 
-  - `channel` (required): The channel to remove (can be a mention, ID, or name)
-- **Examples**: 
-  - `!remove_ocr_response_fallback #general-bot`
-  - `!remove_ocr_response_fallback general-bot`
-- **Permissions**: Requires bot manager or specific command permission
-
-## OCR Channel Flow
-
-The OCR process follows this flow when determining where to send responses:
-
-1. Images are scanned in channels added with `add_ocr_read_channel`
-2. If a matching pattern is found, the response is sent to:
-   - A language-matching channel from `add_ocr_response_channel` if available
-   - The first available response channel if no language match
-   - A fallback channel from `add_ocr_response_fallback` if no response channel
-   - As a direct reply to the original message if no channels are configured
+- **Usage:** `!remove_ocr_response_fallback <channel>`
+- **Arguments:**
+    - `<channel>` (Required): The channel to remove (mention, ID, or name).
+- **Example:** `!remove_ocr_response_fallback #bot-logs`
+- **Permissions:** `has_command_permission`
