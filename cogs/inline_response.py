@@ -10,6 +10,7 @@ from utils.logging_setup import get_logger
 from utils.chatbot.manager import chatbot_manager
 from cogs.llm_commands import LLMCommands
 from utils.permissions import command_category, has_command_permission
+from utils.discord_utils import reply_or_send
 
 logger = get_logger()
 
@@ -542,7 +543,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             logger.info(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
         except Exception as e:
             logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
-            await message.reply("Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
+            await reply_or_send(message, "Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
             return
 
         # Step 2b: Perform non-critical on-the-fly indexing.
@@ -619,20 +620,20 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             if not response_chunks:
                 logger.warning(f"LLM response for message {message.id} was empty after cleaning.")
                 return
-
+ 
             # Send the first chunk as a reply
-            await message.reply(response_chunks[0])
-
+            await reply_or_send(message, response_chunks[0])
+ 
             # Send subsequent chunks as regular messages
             if len(response_chunks) > 1:
                 for chunk in response_chunks[1:]:
                     await message.channel.send(chunk)
             
             logger.info(f"Successfully sent inline response to message {message.id} in {len(response_chunks)} chunks.")
-
+ 
         except Exception as e:
             logger.error(f"Error during inline LLM request for message {message.id}: {e}", exc_info=True)
-            await message.reply("Sorry, I encountered an error while trying to respond.", delete_after=10)
+            await reply_or_send(message, "Sorry, I encountered an error while trying to respond.", delete_after=10)
 
 
 async def setup(bot: commands.Bot):

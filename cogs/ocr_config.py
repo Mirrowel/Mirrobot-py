@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from utils.discord_utils import reply_or_send
 from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category, check_target_permissions
 from config.config_manager import save_config
@@ -19,7 +20,7 @@ class OCRConfigCog(commands.Cog):
         # Validate language
         valid_languages = ["eng", "rus"]
         if language.lower() not in valid_languages:
-            await ctx.reply(f"Invalid language code. Supported languages: {', '.join(valid_languages)}")
+            await reply_or_send(ctx, f"Invalid language code. Supported languages: {', '.join(valid_languages)}")
             return
             
         # Convert to lowercase for consistency
@@ -40,14 +41,14 @@ class OCRConfigCog(commands.Cog):
             response = f'Channel {channel.mention} is not in this server'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
         
         if str(channel.type) not in ['text', 'public_thread', 'private_thread']:
             response = f'Channel {channel.mention} is not a valid text channel or thread'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         # Check if the bot has required permissions in the channel
@@ -85,7 +86,7 @@ class OCRConfigCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='set_ocr_language', help='Set the OCR language for a channel.\nArguments: channel - The channel to configure (mention, ID, or name)\n           language (str) - Language code for OCR (options: eng, rus)\nExample: !set_ocr_language #general rus')
     @has_command_permission()
@@ -96,7 +97,7 @@ class OCRConfigCog(commands.Cog):
         # Validate language
         valid_languages = ["eng", "rus"]
         if language.lower() not in valid_languages:
-            await ctx.reply(f"Invalid language code. Supported languages: {', '.join(valid_languages)}")
+            await reply_or_send(ctx, f"Invalid language code. Supported languages: {', '.join(valid_languages)}")
             return
             
         # Convert to lowercase for consistency
@@ -108,7 +109,7 @@ class OCRConfigCog(commands.Cog):
         
         if channel.guild.id != ctx.guild.id:
             response = f'Channel {channel.mention} is not in this server'
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         guild_id = str(ctx.guild.id)
@@ -142,14 +143,14 @@ class OCRConfigCog(commands.Cog):
             updates.append("response")
             
         if not updates:
-            await ctx.reply(f'Channel {channel.mention} is not configured as an OCR read or response channel.')
+            await reply_or_send(ctx, f'Channel {channel.mention} is not configured as an OCR read or response channel.')
             return
             
         save_config(config)
         language_name = "English" if language == "eng" else "Russian"
         response = f'Updated OCR language to {language_name} for channel {channel.mention}'
         
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     # Modify server_info command in bot_config.py to show language settings
     # This would be in bot_config.py but showing a sample here
@@ -170,7 +171,7 @@ class OCRConfigCog(commands.Cog):
             response = f'Channel {channel.mention} is not in this server'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         # Check if the bot has required permissions in the channel
@@ -189,7 +190,7 @@ class OCRConfigCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='add_ocr_response_channel', help='Add a channel where bot will post OCR analysis results.\nArguments: channel - The channel to add (mention, ID, or name)\n           [language] (str) - Optional language code for OCR (default: eng, options: eng, rus)\nExample: !add_ocr_response_channel #results rus')
     @has_command_permission()
@@ -200,7 +201,7 @@ class OCRConfigCog(commands.Cog):
         # Validate language
         valid_languages = ["eng", "rus"]
         if language.lower() not in valid_languages:
-            await ctx.reply(f"Invalid language code. Supported languages: {', '.join(valid_languages)}")
+            await reply_or_send(ctx, f"Invalid language code. Supported languages: {', '.join(valid_languages)}")
             return
             
         # Convert to lowercase for consistency
@@ -217,14 +218,14 @@ class OCRConfigCog(commands.Cog):
             response = f'Channel {channel.mention} is not in this server'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
         
         if str(channel.type) not in ['text', 'public_thread', 'private_thread']:
             response = f'Channel {channel.mention} is not a valid text channel or thread'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         # Check if the bot has required permissions in the channel
@@ -260,7 +261,7 @@ class OCRConfigCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='remove_ocr_response_channel', help='Remove a channel from the OCR response list.\nArguments: channel - The channel to remove (mention, ID, or name)\nExample: !remove_ocr_response_channel #results')
     @has_command_permission()
@@ -273,7 +274,7 @@ class OCRConfigCog(commands.Cog):
             response = f'Channel {channel.mention} is not in this server'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         # Check if the bot has required permissions in the channel
@@ -292,7 +293,7 @@ class OCRConfigCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='add_ocr_response_fallback', help='Add a fallback channel for OCR responses if no regular response channel is available.\nArguments: channel - The channel to add (mention, ID, or name)\nExample: !add_ocr_response_fallback #fallback-channel')
     @has_command_permission()
@@ -305,14 +306,14 @@ class OCRConfigCog(commands.Cog):
             response = f'Channel {channel.mention} is not in this server'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
         
         if str(channel.type) not in ['text', 'public_thread', 'private_thread']:
             response = f'Channel {channel.mention} is not a valid text channel or thread'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         guild_id = str(ctx.guild.id)
@@ -338,7 +339,7 @@ class OCRConfigCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='remove_ocr_response_fallback', help='Remove a channel from the OCR response fallback list.\nArguments: channel - The channel to remove (mention, ID, or name)\nExample: !remove_ocr_response_fallback #fallback-channel')
     @has_command_permission()
@@ -351,7 +352,7 @@ class OCRConfigCog(commands.Cog):
             response = f'Channel {channel.mention} is not in this server'
             logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
             logger.debug(f"Response: {response}")
-            await ctx.reply(response)
+            await reply_or_send(ctx, response)
             return
 
         # Check if the bot has required permissions in the channel
@@ -370,7 +371,7 @@ class OCRConfigCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
 async def setup(bot):
     await bot.add_cog(OCRConfigCog(bot))

@@ -254,7 +254,12 @@ def split_message(text: str, limit: int = 2000) -> List[str]:
     """
     Splits a string of text into a list of smaller strings, each under the
     specified character limit, without breaking words or formatting.
+    Returns an empty list if the input text is empty or just whitespace.
     """
+    if not text or text.isspace():
+        logger.warning("split_message received empty or whitespace-only text. Returning empty list.")
+        return []
+
     if len(text) <= limit:
         return [text]
 
