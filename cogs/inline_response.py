@@ -122,6 +122,25 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         # Check for 'everyone' in the effective whitelist
         everyone_whitelisted = everyone_role_id in config.role_whitelist
 
+        # Determine permission source for improved status command
+        channel_conf_raw = {}
+        if resolved_target != 'server':
+            channel_conf_raw = self.manager.config_cache.get("servers", {}).get(str(guild_id), {}).get("channels", {}).get(str(resolved_target.id), {})
+        
+        has_channel_perms = any(key in channel_conf_raw for key in ['role_whitelist', 'member_whitelist', 'role_blacklist', 'member_blacklist'])
+        has_server_perms = any(key in server_conf_raw for key in ['role_whitelist', 'member_whitelist', 'role_blacklist', 'member_blacklist'])
+
+        perm_source_text = ""
+        if has_channel_perms and has_server_perms:
+            perm_source_text = "(Channel & Server Combined)"
+        elif has_channel_perms:
+            perm_source_text = "(Channel Specific)"
+        elif has_server_perms:
+            perm_source_text = "(Server Inherited)"
+        else:
+            perm_source_text = "(Bot Default)"
+
+
         if everyone_whitelisted:
             perm_lines.append("• **Access Mode**: ✅ Everyone Allowed (except blacklisted)")
         else:
@@ -166,7 +185,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if not perm_lines and not everyone_whitelisted:
             perm_lines.append("• No permissions configured. Access is denied by default.")
 
-        status_embed.add_field(name="Permissions", value="\n".join(perm_lines), inline=False)
+        status_embed.add_field(name=f"Permissions {perm_source_text}", value="\n".join(perm_lines), inline=False)
         
         await ctx.send(embed=status_embed)
 
@@ -378,7 +397,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
     3.  **Default:** If a user is not on the blacklist or the whitelist, access is **denied**.
 
     **Configuration Scope:**
-    Permissions can be set server-wide or for specific channels/threads. Channel settings **override** server settings. For example, if you set a whitelist for a channel, only that whitelist is checked for that channel; it does not combine with the server's whitelist.
+    Permissions can be set server-wide or for specific channels/threads. Channel settings are **combined** with server settings. For example, if you set a whitelist for a channel, its members are added to the server's whitelist for that specific channel. The same applies to blacklists.
     """)
     @has_command_permission('manage_guild')
     async def permissions(self, ctx: commands.Context):
