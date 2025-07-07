@@ -70,8 +70,8 @@ class LLMContextFormatter:
                 reply_info = f"[Replying to #{message_id_to_local_index[msg.referenced_message_id]}] "
             else:
                 # This is a performance hit, but necessary for out-of-context replies.
-                # Consider caching full history if this becomes a bottleneck.
-                full_history = await self.conv_manager.load_conversation_history(guild_id, channel_id)
+                # We must load the full, unfiltered history from the index to find messages outside the current context window.
+                full_history = await self.index_manager.get_conversation_history(guild_id, channel_id)
                 original_msg = next((m for m in full_history if m.message_id == msg.referenced_message_id), None)
                 if original_msg:
                     original_author = (user_index.get(original_msg.user_id).username if user_index.get(original_msg.user_id) else original_msg.username)
