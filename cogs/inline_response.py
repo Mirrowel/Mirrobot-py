@@ -575,25 +575,35 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             logger.error("LLMCommands cog not found, cannot make inline response.")
             return
 
-        # The prompt is the trigger message with the mention removed.
-        prompt = message.content.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
-        
-        # Process the trigger message for multimodal content (images)
-        cleaned_prompt, image_urls, _ = chatbot_manager.conversation_manager._process_discord_message_for_context(message)
-        # We use the cleaned_prompt which has URLs stripped.
-        prompt = cleaned_prompt.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
+        # The history from the formatter now includes the trigger message, fully formatted.
+        # We need to separate it to avoid duplication.
+        if not history:
+            logger.error(f"History is empty for message {message.id}, cannot generate response.")
+            return
 
+        # The last message in the history is our trigger message.
+        trigger_message_content = history[-1]['content']
+        
+        # The rest of the history is the actual context.
+        context_history = history[:-1]
+
+        # Extract image URLs from the trigger message content if it's a list of parts
+        image_urls = []
+        if isinstance(trigger_message_content, list):
+            for part in trigger_message_content:
+                if part.get("type") == "image_url":
+                    image_urls.append(part.get("image_url", {}).get("url"))
 
         try:
             async with message.channel.typing():
                 response_text, _ = await llm_cog.make_llm_request(
-                    prompt=prompt,
+                    prompt=trigger_message_content, # The fully formatted message is the prompt
                     model_type=config.model_type,
                     guild_id=message.guild.id,
                     channel_id=message.channel.id,
                     context=static_context,
-                    history=history,
-                    image_urls=image_urls # Pass the extracted image URLs
+                    history=context_history, # Pass the history without the trigger message
+                    image_urls=image_urls
                 )
 
             # 5. Process and send the response
