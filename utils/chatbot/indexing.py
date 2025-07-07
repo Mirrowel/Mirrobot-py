@@ -5,6 +5,7 @@ asynchronous file I/O, and concurrency control to prevent race conditions.
 
 import os
 import re
+import shutil
 import time
 import asyncio
 import dataclasses
@@ -13,7 +14,7 @@ from typing import Any, Dict, List, Set, Union
 from collections import defaultdict
 
 import discord
-from utils.chatbot.models import ChannelIndexEntry, PinnedMessage, UserIndexEntry
+from utils.chatbot.models import ChannelIndexEntry, PinnedMessage, UserIndexEntry, ConversationMessage
 from utils.chatbot.persistence import JsonStorageManager
 from utils.logging_setup import get_logger
 
@@ -22,6 +23,7 @@ logger = get_logger()
 DATA_FORMAT_VERSION = 1
 USER_INDEX_DIR = "data/user_index"
 CHANNEL_INDEX_DIR = "data/channel_index"
+CONVERSATION_DATA_DIR = "data/conversations"
 PINNED_MESSAGES_DIR = "data/pins"
 SAVE_INTERVAL_SECONDS = 30  # Save dirty indexes every 30 seconds
 CACHE_INACTIVITY_THRESHOLD_SECONDS = 900  # 15 minutes
@@ -41,6 +43,7 @@ class IndexingManager:
 
         self._user_indexes: Dict[int, Dict[int, UserIndexEntry]] = {}
         self._channel_indexes: Dict[int, Dict[int, ChannelIndexEntry]] = {}
+        self._conversation_caches: Dict[int, Dict[int, List[ConversationMessage]]] = {}
         self._last_access_time: Dict[int, float] = {}
         self._guild_locks: Dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._dirty_guilds: Set[int] = set()
@@ -124,11 +127,15 @@ class IndexingManager:
                                 await self._save_user_index_to_disk(guild_id, self._user_indexes[guild_id])
                             if guild_id in self._channel_indexes:
                                 await self._save_channel_index_to_disk(guild_id, self._channel_indexes[guild_id])
+                            if guild_id in self._conversation_caches:
+                                for channel_id, messages in self._conversation_caches[guild_id].items():
+                                    await self._save_conversation_history_to_disk(guild_id, channel_id, messages)
                             self._dirty_guilds.remove(guild_id)
 
                         # Evict from all caches
                         self._user_indexes.pop(guild_id, None)
                         self._channel_indexes.pop(guild_id, None)
+                        self._conversation_caches.pop(guild_id, None)
                         self._last_access_time.pop(guild_id, None)
                         evicted_count += 1
                     except Exception as e:
@@ -161,6 +168,9 @@ class IndexingManager:
                         await self._save_user_index_to_disk(guild_id, self._user_indexes[guild_id])
                     if guild_id in self._channel_indexes:
                         await self._save_channel_index_to_disk(guild_id, self._channel_indexes[guild_id])
+                    if guild_id in self._conversation_caches:
+                        for channel_id, messages in self._conversation_caches[guild_id].items():
+                            await self._save_conversation_history_to_disk(guild_id, channel_id, messages)
                     
                     # Only remove from dirty set if save was successful
                     self._dirty_guilds.discard(guild_id)
@@ -326,6 +336,97 @@ class IndexingManager:
             self._dirty_guilds.add(guild_id)
         logger.debug(f"Updated channel {channel.name} in memory for guild {guild_id}.")
 
+    # --- Conversation History Caching ---
+    def get_conversation_file_path(self, guild_id: int, channel_id: int) -> str:
+        """Gets the file path for a channel's conversation history."""
+        return os.path.join(CONVERSATION_DATA_DIR, f"guild_{guild_id}", f"channel_{channel_id}.json")
+
+    async def _load_conversation_history_from_disk(self, guild_id: int, channel_id: int) -> List[ConversationMessage]:
+        """Loads a single conversation history file from disk."""
+        file_path = self.get_conversation_file_path(guild_id, channel_id)
+        try:
+            data = await asyncio.to_thread(self.storage_manager.read, file_path)
+            if not data:
+                return []
+            # Ensure data is properly deserialized into ConversationMessage objects
+            messages = [ConversationMessage(**msg) for msg in data.get("messages", [])]
+            # Sort by timestamp just in case they are out of order
+            messages.sort(key=lambda m: m.timestamp)
+            return messages
+        except Exception as e:
+            logger.error(f"Error loading conversation history from {file_path}: {e}", exc_info=True)
+            return []
+
+    async def _save_conversation_history_to_disk(self, guild_id: int, channel_id: int, messages: List[ConversationMessage]):
+        """Saves a single conversation history to disk."""
+        file_path = self.get_conversation_file_path(guild_id, channel_id)
+        try:
+            data = {
+                "messages": [asdict(msg) for msg in messages],
+                "last_updated": time.time()
+            }
+            await asyncio.to_thread(self.storage_manager.write, file_path, data)
+            logger.debug(f"Saved conversation with {len(messages)} messages to {file_path}")
+        except Exception as e:
+            logger.error(f"Error saving conversation history to {file_path}: {e}", exc_info=True)
+
+    # --- Public Conversation Methods ---
+    async def get_conversation_history(self, guild_id: int, channel_id: int) -> List[ConversationMessage]:
+        """
+        Gets a conversation history from the cache, loading it from disk if necessary.
+        """
+        async with self._guild_locks[guild_id]:
+            await self._initialize_guild_cache(guild_id)
+            
+            if guild_id not in self._conversation_caches:
+                self._conversation_caches[guild_id] = {}
+
+            if channel_id not in self._conversation_caches[guild_id]:
+                messages = await self._load_conversation_history_from_disk(guild_id, channel_id)
+                self._conversation_caches[guild_id][channel_id] = messages
+                logger.debug(f"Loaded conversation for channel {channel_id} into cache.")
+            
+            self._touch_guild_cache(guild_id)
+            return self._conversation_caches[guild_id].get(channel_id, [])
+
+    async def add_message_to_history(self, guild_id: int, channel_id: int, message: ConversationMessage):
+        """
+        Adds a message to the in-memory cache and marks the guild as dirty.
+        """
+        async with self._guild_locks[guild_id]:
+            history = await self.get_conversation_history(guild_id, channel_id)
+            history.append(message)
+            self._dirty_guilds.add(guild_id)
+            self._touch_guild_cache(guild_id)
+
+    async def replace_conversation_history(self, guild_id: int, channel_id: int, messages: List[ConversationMessage]):
+        """Replaces the entire conversation history for a channel in the cache."""
+        async with self._guild_locks[guild_id]:
+            await self._initialize_guild_cache(guild_id)
+            if guild_id not in self._conversation_caches:
+                self._conversation_caches[guild_id] = {}
+            
+            messages.sort(key=lambda m: m.timestamp)
+            self._conversation_caches[guild_id][channel_id] = messages
+            self._dirty_guilds.add(guild_id)
+            self._touch_guild_cache(guild_id)
+
+    async def clear_conversation_history_cache(self, guild_id: int, channel_id: int):
+        """Clears a conversation history from both cache and disk."""
+        async with self._guild_locks[guild_id]:
+            if guild_id in self._conversation_caches and channel_id in self._conversation_caches[guild_id]:
+                self._conversation_caches[guild_id][channel_id] = []
+            
+            file_path = self.get_conversation_file_path(guild_id, channel_id)
+            if os.path.exists(file_path):
+                try:
+                    await asyncio.to_thread(os.remove, file_path)
+                except OSError as e:
+                    logger.error(f"Error deleting conversation file {file_path}: {e}", exc_info=True)
+            
+            self._dirty_guilds.add(guild_id)
+            self._touch_guild_cache(guild_id)
+
     # --- Pinned Messages & Helpers (largely unchanged, but made async where needed) ---
     def get_pinned_messages_file_path(self, guild_id: int, channel_id: int) -> str:
         return os.path.join(PINNED_MESSAGES_DIR, f"guild_{guild_id}_channel_{channel_id}_pins.json")
@@ -438,44 +539,61 @@ class IndexingManager:
             logger.info(f"Cleaned up a total of {total_cleaned} stale users across all guilds.")
             return total_cleaned
     
-        async def remove_guild_indexes(self, guild_id: int):
-            """Completely remove all index files and caches for a guild."""
-            async with self._guild_locks[guild_id]:
-                # Remove from cache
-                self._user_indexes.pop(guild_id, None)
-                self._channel_indexes.pop(guild_id, None)
-                self._last_access_time.pop(guild_id, None)
-                self._dirty_guilds.discard(guild_id)
+    async def remove_guild_indexes(self, guild_id: int):
+        """Completely remove all index files and caches for a guild."""
+        async with self._guild_locks[guild_id]:
+            # Remove from cache
+            self._user_indexes.pop(guild_id, None)
+            self._channel_indexes.pop(guild_id, None)
+            self._conversation_caches.pop(guild_id, None)
+            self._last_access_time.pop(guild_id, None)
+            self._dirty_guilds.discard(guild_id)
+
+            # Delete files from disk
+            user_file = self.get_user_index_file_path(guild_id)
+            channel_file = self.get_channel_index_file_path(guild_id)
+            
+            if os.path.exists(user_file):
+                await asyncio.to_thread(os.remove, user_file)
+            if os.path.exists(channel_file):
+                await asyncio.to_thread(os.remove, channel_file)
+
+            # Remove conversation data
+            guild_convo_dir = os.path.join(CONVERSATION_DATA_DIR, f"guild_{guild_id}")
+            if os.path.isdir(guild_convo_dir):
+                try:
+                    await asyncio.to_thread(shutil.rmtree, guild_convo_dir)
+                except OSError as e:
+                    logger.error(f"Error removing conversation directory {guild_convo_dir}: {e}", exc_info=True)
+
+            # Also remove pinned messages for all channels in that guild
+            pins_dir = PINNED_MESSAGES_DIR
+            if os.path.exists(pins_dir):
+                for filename in os.listdir(pins_dir):
+                    if filename.startswith(f"guild_{guild_id}_"):
+                        await asyncio.to_thread(os.remove, os.path.join(pins_dir, filename))
+
+        logger.info(f"Removed all index data for guild {guild_id}.")
     
-                # Delete files from disk
-                user_file = self.get_user_index_file_path(guild_id)
-                channel_file = self.get_channel_index_file_path(guild_id)
-                
-                if os.path.exists(user_file):
-                    await asyncio.to_thread(os.remove, user_file)
-                if os.path.exists(channel_file):
-                    await asyncio.to_thread(os.remove, channel_file)
-                
-                # Also remove pinned messages for all channels in that guild
-                pins_dir = PINNED_MESSAGES_DIR
-                if os.path.exists(pins_dir):
-                    for filename in os.listdir(pins_dir):
-                        if filename.startswith(f"guild_{guild_id}_"):
-                            await asyncio.to_thread(os.remove, os.path.join(pins_dir, filename))
-    
-            logger.info(f"Removed all index data for guild {guild_id}.")
-    
-        async def get_indexing_stats(self, guild_id: int) -> Dict[str, int]:
-            """Get statistics about current indexing for a guild from the in-memory cache."""
-            async with self._guild_locks[guild_id]:
-                await self._initialize_guild_cache(guild_id)
-                user_index = self._user_indexes.get(guild_id, {})
-                channel_index = self._channel_indexes.get(guild_id, {})
-                return {
-                    "users_indexed": len(user_index),
-                    "channels_indexed": len(channel_index),
-                    "total_user_messages": sum(user.message_count for user in user_index.values())
-                }
+    async def get_indexing_stats(self, guild_id: int) -> Dict[str, Any]:
+        """Get statistics about current indexing for a guild from the in-memory cache."""
+        async with self._guild_locks[guild_id]:
+            await self._initialize_guild_cache(guild_id)
+            user_index = self._user_indexes.get(guild_id, {})
+            channel_index = self._channel_indexes.get(guild_id, {})
+            convo_cache = self._conversation_caches.get(guild_id, {})
+            
+            total_messages = 0
+            for channel_history in convo_cache.values():
+                total_messages += len(channel_history)
+
+            return {
+                "users_indexed": len(user_index),
+                "channels_indexed": len(channel_index),
+                "conversations_cached": len(convo_cache),
+                "total_user_messages_indexed": sum(user.message_count for user in user_index.values()),
+                "total_conversation_messages_cached": total_messages,
+            }
 
     # --- Helper methods (unchanged) ---
     def extract_user_data(self, user, guild_id: int = None) -> Dict[str, Any]:

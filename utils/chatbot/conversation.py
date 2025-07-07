@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 import discord
 from utils.chatbot.config import ConfigManager
+from utils.chatbot.indexing import IndexingManager
 from utils.chatbot.models import ConversationMessage, ContentPart
 from utils.chatbot.persistence import JsonStorageManager
 from utils.logging_setup import get_logger
@@ -24,9 +25,10 @@ CONVERSATION_DATA_DIR = "data/conversations"
 class ConversationManager:
     """Manages the lifecycle of conversation histories."""
 
-    def __init__(self, storage_manager: JsonStorageManager, config_manager: ConfigManager, bot_user_id: int = None):
+    def __init__(self, storage_manager: JsonStorageManager, config_manager: ConfigManager, index_manager: IndexingManager, bot_user_id: int = None):
         self.storage_manager = storage_manager
         self.config_manager = config_manager
+        self.index_manager = index_manager
         self.bot_user_id = bot_user_id
 
     def set_bot_user_id(self, bot_id: int):
@@ -35,29 +37,15 @@ class ConversationManager:
     def get_conversation_file_path(self, guild_id: int, channel_id: int) -> str:
         return os.path.join(CONVERSATION_DATA_DIR, f"guild_{guild_id}", f"channel_{channel_id}.json")
 
-    def clear_conversation_history(self, guild_id: int, channel_id: int) -> bool:
-        """Clear conversation history for a specific channel."""
-        file_path = self.get_conversation_file_path(guild_id, channel_id)
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.debug(f"Cleared conversation history for channel {channel_id} in guild {guild_id}")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error clearing conversation history for {file_path}: {e}", exc_info=True)
-            return False
+    async def clear_conversation_history(self, guild_id: int, channel_id: int):
+        """Clear conversation history for a specific channel from cache and disk."""
+        await self.index_manager.clear_conversation_history_cache(guild_id, channel_id)
+        logger.debug(f"Cleared conversation history for channel {channel_id} in guild {guild_id}")
 
     async def load_conversation_history(self, guild_id: int, channel_id: int) -> List[ConversationMessage]:
-        """Load conversation history for a specific channel"""
-        file_path = self.get_conversation_file_path(guild_id, channel_id)
-        
+        """Load conversation history for a specific channel from the cache."""
         try:
-            data = await asyncio.to_thread(self.storage_manager.read, file_path)
-            if not data:
-                return []
-
-            messages = [ConversationMessage(**msg) for msg in data.get("messages", [])]
+            messages = await self.index_manager.get_conversation_history(guild_id, channel_id)
             
             channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
             
@@ -66,27 +54,16 @@ class ConversationManager:
             checkpoint_cutoff = channel_config.last_cleared_timestamp or 0
             final_cutoff = max(time_window_cutoff, checkpoint_cutoff)
             
-            return [
+            # Filter messages based on the cutoff time and validity.
+            valid_messages = [
                 msg for msg in messages
                 if msg.timestamp >= final_cutoff and self._is_valid_context_message(msg)[0]
             ]
+            
+            return valid_messages
         except Exception as e:
-            logger.error(f"Error loading conversation history for {file_path}: {e}", exc_info=True)
+            logger.error(f"Error loading conversation history for channel {channel_id}: {e}", exc_info=True)
             return []
-
-    async def save_conversation_history(self, guild_id: int, channel_id: int, messages: List[ConversationMessage]) -> bool:
-        """Save conversation history for a specific channel"""
-        file_path = self.get_conversation_file_path(guild_id, channel_id)
-        
-        try:
-            data = {
-                "messages": [asdict(msg) for msg in messages],
-                "last_updated": time.time()
-            }
-            return await asyncio.to_thread(self.storage_manager.write, file_path, data)
-        except Exception as e:
-            logger.error(f"Error saving conversation history to {file_path}: {e}", exc_info=True)
-            return False
 
     async def add_message_to_conversation(self, guild_id: int, channel_id: int, message: discord.Message) -> Tuple[bool, List[discord.User]]:
         """
@@ -123,15 +100,14 @@ class ConversationManager:
             if not is_valid:
                 return False, []
 
-            messages = await self.load_conversation_history(guild_id, channel_id)
-            messages.append(conv_message)
+            # Add message directly to the cache via IndexingManager
+            await self.index_manager.add_message_to_history(guild_id, channel_id, conv_message)
             
-            if len(messages) > channel_config.max_context_messages:
-                messages = messages[-channel_config.max_context_messages:]
+            # Pruning logic can be handled here or in a separate maintenance task
+            # For now, let's keep it simple and rely on periodic pruning.
             
-            success = await self.save_conversation_history(guild_id, channel_id, messages)
-            users_to_index = [message.author] if success else []
-            return success, users_to_index
+            users_to_index = [message.author]
+            return True, users_to_index
 
         except Exception as e:
             logger.error(f"Error adding message to conversation for channel {channel_id}: {e}", exc_info=True)
@@ -195,7 +171,7 @@ class ConversationManager:
             if len(combined_messages) > channel_config.max_context_messages:
                 combined_messages = combined_messages[-channel_config.max_context_messages:]
             
-            await self.save_conversation_history(guild_id, channel_id, combined_messages)
+            await self.index_manager.replace_conversation_history(guild_id, channel_id, combined_messages)
             return len(converted_messages), list(users_to_update)
             
         except Exception as e:
@@ -342,8 +318,9 @@ class ConversationManager:
             messages = [msg for msg in messages if msg.message_id != message_id]
             
             if len(messages) < original_length:
+                await self.index_manager.replace_conversation_history(guild_id, channel_id, messages)
                 logger.debug(f"Removed message {message_id} from conversation history")
-                return await self.save_conversation_history(guild_id, channel_id, messages)
+                return True
             else:
                 logger.debug(f"Message {message_id} not found for deletion")
                 return False
@@ -367,7 +344,8 @@ class ConversationManager:
                     break
             
             if message_found:
-                return await self.save_conversation_history(guild_id, channel_id, messages)
+                await self.index_manager.replace_conversation_history(guild_id, channel_id, messages)
+                return True
             else:
                 logger.debug(f"Message {message_id} not found for editing")
                 return False
@@ -419,13 +397,13 @@ class ConversationManager:
 
             num_pruned = 0
             if len(pruned_messages) != original_count:
-                if await self.save_conversation_history(guild_id, channel_id, pruned_messages):
-                    num_pruned = original_count - len(pruned_messages)
-                    logger.debug(f"Pruned {num_pruned} old messages from {file_path}")
+                await self.index_manager.replace_conversation_history(guild_id, channel_id, pruned_messages)
+                num_pruned = original_count - len(pruned_messages)
+                logger.debug(f"Pruned {num_pruned} old messages from channel {channel_id}")
             
-            if not pruned_messages and os.path.exists(file_path):
-                await asyncio.to_thread(os.remove, file_path)
-                logger.debug(f"Removed empty conversation file: {file_path}")
+            if not pruned_messages:
+                await self.index_manager.clear_conversation_history_cache(guild_id, channel_id)
+                logger.debug(f"Removed empty conversation file for channel {channel_id}")
             
             return num_pruned
         except Exception as e:

@@ -25,7 +25,7 @@ class ChatbotManager:
         self.storage_manager = JsonStorageManager()
         self.config_manager = ConfigManager(self.storage_manager)
         self.indexing_manager = IndexingManager(self.storage_manager, bot_user_id)
-        self.conversation_manager = ConversationManager(self.storage_manager, self.config_manager, bot_user_id)
+        self.conversation_manager = ConversationManager(self.storage_manager, self.config_manager, self.indexing_manager, bot_user_id)
         self.formatter = LLMContextFormatter(self.config_manager, self.conversation_manager, self.indexing_manager)
         
         if bot_user_id:
@@ -176,7 +176,7 @@ class ChatbotManager:
             logger.error(f"Error indexing chatbot channel #{channel.name}: {e}", exc_info=True)
             return False
 
-    async def index_pinned_messages(self, channel: discord.abc.Messageable):
+    async def index_pinned_messages(self, guild_id: int, channel_id: int, channel: discord.abc.Messageable):
         """Index pinned messages, passing the validation and processing functions from the conversation manager."""
         return await self.indexing_manager.index_pinned_messages(
             channel,
