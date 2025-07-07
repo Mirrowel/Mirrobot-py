@@ -3,7 +3,7 @@ Formats conversation context for the language model.
 """
 
 import re
-from typing import List
+from typing import List, Union
 
 from utils.chatbot.config import ConfigManager
 from utils.chatbot.conversation import ConversationManager
