@@ -42,13 +42,31 @@ class ConversationMessage:
             self.author = User(state=None, data=self.author)
 
     def to_dict(self):
-        """Converts the dataclass to a dictionary, handling non-serializable fields."""
-        # Start with the basic dataclass-to-dict conversion
-        data = dataclasses.asdict(self)
-        
-        # Manually handle the 'author' field
+        """
+        Manually converts the dataclass to a dictionary to ensure all fields are
+        JSON serializable and avoid deepcopy errors with complex objects.
+        """
+        # Manually construct the dictionary from basic types
+        data = {
+            'user_id': self.user_id,
+            'username': self.username,
+            'content': self.content,
+            'timestamp': self.timestamp,
+            'message_id': self.message_id,
+            'is_bot_response': self.is_bot_response,
+            'is_self_bot_response': self.is_self_bot_response,
+            'referenced_message_id': self.referenced_message_id,
+            'attachment_urls': self.attachment_urls,
+            'embed_urls': self.embed_urls,
+            # Convert ContentPart objects to dicts
+            'multimodal_content': [
+                {'type': part.type, 'text': part.text, 'image_url': part.image_url}
+                for part in self.multimodal_content
+            ]
+        }
+
+        # Safely handle the 'author' field
         if self.author:
-            # Replace the complex discord.User/Member object with a simple dict
             data['author'] = {
                 'id': self.author.id,
                 'name': self.author.name,

@@ -196,6 +196,10 @@ class ConversationManager:
                 if debug_mode: debug_steps.append("❌ **Filter Result:** Empty message and no attachments - FILTERED")
                 return False, debug_steps
             
+            if msg.embed_urls:
+                if debug_mode: debug_steps.append("❌ **Filter Result:** Message contains embeds - FILTERED")
+                return False, debug_steps
+            
             mention_pattern = r'<@!?(\d+)>'
             emoji_pattern = r'<a?:\w+:\d+>'
             mentions = re.findall(mention_pattern, content)
