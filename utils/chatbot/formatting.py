@@ -59,35 +59,23 @@ class LLMContextFormatter:
             logger.error(f"Error getting prioritized context: {e}", exc_info=True)
             return []
 
-    async def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> str:
+    async def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> Union[str, List[dict]]:
         """
         Private helper to format the content of a single message.
-        It formats user messages with full context but strips prefixes from the bot's own messages
-        to prevent the LLM from parroting its own identity.
+        Returns a list of content parts for multimodal messages, or a single string for text-only.
         """
         # --- Assistant Role (Bot's own messages) ---
-        # For the bot's own messages, we only want the raw content to break the parroting pattern.
         if msg.is_self_bot_response:
-            # Even for the bot's own messages, we might need to include image URLs.
-            line_parts = []
-            if msg.multimodal_content:
-                text_segments = []
-                for part in msg.multimodal_content:
-                    if part.type == "text" and part.text:
-                        text_segments.append(part.text)
-                    elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
-                        if text_segments:
-                            line_parts.append(" ".join(text_segments))
-                            text_segments = []
-                        line_parts.append(f"(Image: {part.image_url['url']})")
-                if text_segments:
-                    line_parts.append(" ".join(text_segments))
-            else: # Fallback for older data
-                line_parts.append(msg.content)
-                if msg.attachment_urls:
-                    line_parts.append(f" (Image: {', '.join(msg.attachment_urls)})")
+            if not msg.multimodal_content:
+                return msg.content or ""
             
-            return " ".join(line_parts).strip()
+            content_parts = []
+            for part in msg.multimodal_content:
+                if part.type == "text" and part.text:
+                    content_parts.append({"type": "text", "text": part.text})
+                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                    content_parts.append({"type": "image_url", "image_url": {"url": part.image_url["url"]}})
+            return content_parts if len(content_parts) > 1 else (content_parts[0]['text'] if content_parts else "")
 
         # --- User Role (User messages) ---
         user_index = await self.index_manager.load_user_index(guild_id)
@@ -105,27 +93,34 @@ class LLMContextFormatter:
                     snippet = self._create_smart_snippet(original_msg.content or "")
                     reply_info = f'[Replying to @{original_author}: "{snippet}"] '
 
-        line_parts = [f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"]
+        prefix = f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"
+        
+        # If there's no special multimodal content, format as a simple string.
+        if not msg.multimodal_content or all(p.type == "text" for p in msg.multimodal_content):
+            text_content = msg.content or ""
+            llm_readable_content = await self._convert_discord_format_to_llm_readable(text_content, guild_id)
+            return f"{prefix}{llm_readable_content}".strip()
 
-        if msg.multimodal_content:
-            text_segments = []
-            for part in msg.multimodal_content:
-                if part.type == "text" and part.text:
-                    text_segments.append(await self._convert_discord_format_to_llm_readable(part.text, guild_id))
-                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
-                    if text_segments:
-                        line_parts.append(" ".join(text_segments))
-                        text_segments = []
-                    line_parts.append(f"(Image: {part.image_url['url']})")
-            if text_segments:
-                line_parts.append(" ".join(text_segments))
-        else: # Fallback for older data
-            llm_readable_content = await self._convert_discord_format_to_llm_readable(msg.content, guild_id)
-            if msg.attachment_urls:
-                llm_readable_content += f" (Image: {', '.join(msg.attachment_urls)})"
-            line_parts.append(llm_readable_content)
+        # Handle multimodal content by creating a list of parts.
+        content_parts = []
+        text_segments = [prefix]
+        
+        for part in msg.multimodal_content:
+            if part.type == "text" and part.text:
+                text_segments.append(await self._convert_discord_format_to_llm_readable(part.text, guild_id))
+            elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                # Add any pending text as a single part first.
+                if len(text_segments) > 0:
+                    content_parts.append({"type": "text", "text": " ".join(text_segments).strip()})
+                    text_segments = [] # Reset for next text block
+                # Add the image part.
+                content_parts.append({"type": "image_url", "image_url": {"url": part.image_url["url"]}})
+        
+        # Add any remaining text at the end.
+        if len(text_segments) > 0:
+             content_parts.append({"type": "text", "text": " ".join(text_segments).strip()})
 
-        return " ".join(line_parts).strip()
+        return content_parts
 
     def _create_smart_snippet(self, text: str) -> str:
         """Creates a context-aware, intelligently truncated snippet of a given text."""
@@ -214,8 +209,8 @@ class LLMContextFormatter:
 
             for i, msg in enumerate(messages):
                 role = "assistant" if msg.is_self_bot_response else "user"
-                content_string = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
-                history_messages.append({"role": role, "content": content_string})
+                content_object = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
+                history_messages.append({"role": role, "content": content_object})
 
             return static_context_string, history_messages
         except Exception as e:
