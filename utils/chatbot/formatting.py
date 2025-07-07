@@ -78,7 +78,7 @@ class LLMContextFormatter:
                     snippet = (original_msg.content or "")[:75] + ("..." if len(original_msg.content or "") > 75 else "")
                     reply_info = f'[Replying to @{original_author}: "{snippet}"] '
 
-        line_parts = [f"[{local_id}] {role_label}: {reply_info}"]
+        line_parts = [f"[{local_id}] [UserID: {msg.user_id}] {role_label}: {reply_info}"]
 
         # Use a temporary variable for content to handle cases where multimodal_content is empty
         content_to_process = msg.multimodal_content if msg.multimodal_content else [ConversationMessage(type="text", text=msg.content)]
@@ -345,10 +345,14 @@ class LLMContextFormatter:
             for user_id in user_ids:
                 if user_id in user_index:
                     user = user_index[user_id]
-                    user_info = [f"• User: @{user.username} (ID: {user.user_id})"]
-                    if user.username != user.display_name: user_info.append(f"  Nickname: {user.display_name}")
-                    if user.roles: user_info.append(f"  Roles: {', '.join(user.roles)}")
-                    lines.append("\n".join(user_info))
+                    parts = [
+                        f"ID: {user.user_id}",
+                        f"Handle: @{user.username}",
+                        f"Nickname: {user.display_name}"
+                    ]
+                    if user.roles:
+                        parts.append(f"Roles: {', '.join(user.roles)}")
+                    lines.append(f"• {' | '.join(parts)}")
             lines.append("=== End of Known Users ===\n")
             return "\n".join(lines)
         except Exception as e:
