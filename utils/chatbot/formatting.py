@@ -3,12 +3,12 @@ Formats conversation context for the language model.
 """
 
 import re
-from typing import List, Union, Dict, Any
+from typing import List
 
 from utils.chatbot.config import ConfigManager
 from utils.chatbot.conversation import ConversationManager
 from utils.chatbot.indexing import IndexingManager
-from utils.chatbot.models import ConversationMessage, ContentPart
+from utils.chatbot.models import ConversationMessage
 from utils.logging_setup import get_logger
 
 logger = get_logger()
@@ -59,132 +59,35 @@ class LLMContextFormatter:
             logger.error(f"Error getting prioritized context: {e}", exc_info=True)
             return []
 
-    async def get_context_for_command(self, message: discord.Message, context_messages_max: int, user_context_messages_max: int) -> List[ConversationMessage]:
+    async def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> str:
         """
-        Unified entrypoint for gathering context for any command.
-        It uses stored history if available, otherwise builds it dynamically.
-        """
-        guild_id = message.guild.id
-        channel_id = message.channel.id
-
-        # Check if a stored history file exists for this channel.
-        history_path = self.conv_manager.get_conversation_file_path(guild_id, channel_id)
-        
-        if os.path.exists(history_path):
-            # If history exists, use the efficient, prioritized method.
-            logger.debug(f"Stored history found for channel {channel_id}. Using get_prioritized_context.")
-            return await self.get_prioritized_context(guild_id, channel_id, message.author.id)
-        else:
-            # If no history exists, build it dynamically.
-            logger.debug(f"No stored history for channel {channel_id}. Using build_dynamic_context.")
-            dynamic_messages = await self.build_dynamic_context(message, context_messages_max, user_context_messages_max)
-            
-            # Opportunistically index the dynamically fetched messages for next time.
-            if dynamic_messages:
-                await self.conv_manager.add_messages_to_history_if_not_exists(guild_id, channel_id, dynamic_messages)
-            
-            return dynamic_messages
-
-    async def build_dynamic_context(self, message: discord.Message, context_messages_max: int, user_context_messages_max: int) -> List[ConversationMessage]:
-        """Builds a context on-the-fly by fetching messages directly from Discord's API."""
-        all_messages: Dict[int, discord.Message] = {}
-
-        # 1. Fetch replied-to message
-        if message.reference and message.reference.message_id:
-            try:
-                replied_to_message = await message.channel.fetch_message(message.reference.message_id)
-                all_messages[replied_to_message.id] = replied_to_message
-            except discord.NotFound:
-                logger.warning(f"Could not find replied-to message {message.reference.message_id}")
-            except discord.HTTPException as e:
-                logger.error(f"Failed to fetch replied-to message: {e}")
-
-        # 2. Fetch general channel history
-        if context_messages_max > 0:
-            async for history_message in message.channel.history(limit=context_messages_max, before=message):
-                all_messages[history_message.id] = history_message
-
-        # 3. Fetch user-specific history and the messages they replied to
-        if user_context_messages_max > 0:
-            user_messages_found = 0
-            user_messages_for_reply_check = []
-            # We search a bit wider to find user messages
-            async for history_message in message.channel.history(limit=100, before=message):
-                if history_message.author.id == message.author.id:
-                    if history_message.id not in all_messages:
-                        all_messages[history_message.id] = history_message
-                        user_messages_for_reply_check.append(history_message)
-                    user_messages_found += 1
-                    if user_messages_found >= user_context_messages_max:
-                        break
-            
-            # For each of the user's messages, fetch any message they replied to
-            for user_msg in user_messages_for_reply_check:
-                if user_msg.reference and user_msg.reference.message_id:
-                    if user_msg.reference.message_id not in all_messages:
-                        try:
-                            if user_msg.reference.resolved and isinstance(user_msg.reference.resolved, discord.Message):
-                                replied_to_message = user_msg.reference.resolved
-                            else:
-                                replied_to_message = await message.channel.fetch_message(user_msg.reference.message_id)
-                            all_messages[replied_to_message.id] = replied_to_message
-                        except discord.NotFound:
-                            logger.warning(f"Could not find replied-to message {user_msg.reference.message_id} from user's history.")
-                        except discord.HTTPException as e:
-                            logger.error(f"Failed to fetch replied-to message {user_msg.reference.message_id}: {e}")
-        
-        # Add the trigger message itself
-        all_messages[message.id] = message
-
-        # 4. Sort chronologically
-        sorted_messages = sorted(all_messages.values(), key=lambda m: m.created_at)
-
-        # 5. Convert to ConversationMessage objects
-        context_messages = []
-        for msg in sorted_messages:
-            # Use the centralized processing logic from the conversation manager
-            cleaned_content, image_urls, _ = await self.conv_manager._process_discord_message_for_context(msg)
-            
-            multimodal_content = []
-            if cleaned_content:
-                multimodal_content.append(ContentPart(type="text", text=cleaned_content))
-            for url in image_urls:
-                multimodal_content.append(ContentPart(type="image_url", image_url={"url": url}))
-
-            if not multimodal_content and not cleaned_content:
-                continue
-
-            context_messages.append(ConversationMessage(
-                user_id=msg.author.id,
-                username=msg.author.display_name,
-                content=cleaned_content,
-                timestamp=msg.created_at.timestamp(),
-                message_id=msg.id,
-                is_bot_response=msg.author.bot,
-                is_self_bot_response=(msg.author.id == msg.guild.me.id),
-                referenced_message_id=getattr(msg.reference, 'message_id', None) if msg.reference else None,
-                attachment_urls=image_urls,
-                multimodal_content=multimodal_content
-            ))
-            
-        return context_messages
-
-    async def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> Union[str, List[Dict[str, Any]]]:
-        """
-        Private helper to format the content of a single message for the LLM.
-        - For multimodal messages, returns a list of content parts (text, image_url).
-        - For text-only messages, returns a single formatted string.
-        - Strips prefixes from the bot's own messages to prevent parroting.
+        Private helper to format the content of a single message.
+        It formats user messages with full context but strips prefixes from the bot's own messages
+        to prevent the LLM from parroting its own identity.
         """
         # --- Assistant Role (Bot's own messages) ---
+        # For the bot's own messages, we only want the raw content to break the parroting pattern.
         if msg.is_self_bot_response:
-            # For bot's own responses, return the raw content parts to avoid parroting prefixes.
-            # If the message has structured multimodal content, return it directly.
+            # Even for the bot's own messages, we might need to include image URLs.
+            line_parts = []
             if msg.multimodal_content:
-                # Convert ContentPart objects to dictionaries for the API
-                return [part.__dict__ for part in msg.multimodal_content]
-            # Fallback for older data: return just the text content.
-            return msg.content
+                text_segments = []
+                for part in msg.multimodal_content:
+                    if part.type == "text" and part.text:
+                        text_segments.append(part.text)
+                    elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                        if text_segments:
+                            line_parts.append(" ".join(text_segments))
+                            text_segments = []
+                        line_parts.append(f"(Image: {part.image_url['url']})")
+                if text_segments:
+                    line_parts.append(" ".join(text_segments))
+            else: # Fallback for older data
+                line_parts.append(msg.content)
+                if msg.attachment_urls:
+                    line_parts.append(f" (Image: {', '.join(msg.attachment_urls)})")
+            
+            return " ".join(line_parts).strip()
 
         # --- User Role (User messages) ---
         user_index = await self.index_manager.load_user_index(guild_id)
@@ -202,37 +105,27 @@ class LLMContextFormatter:
                     snippet = self._create_smart_snippet(original_msg.content or "")
                     reply_info = f'[Replying to @{original_author}: "{snippet}"] '
 
-        # This prefix contains all the metadata about the message.
-        text_prefix = f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"
+        line_parts = [f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"]
 
-        # If the message is not multimodal, format as a simple string.
-        if not msg.multimodal_content or all(part.type == 'text' for part in msg.multimodal_content):
+        if msg.multimodal_content:
+            text_segments = []
+            for part in msg.multimodal_content:
+                if part.type == "text" and part.text:
+                    text_segments.append(await self._convert_discord_format_to_llm_readable(part.text, guild_id))
+                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                    if text_segments:
+                        line_parts.append(" ".join(text_segments))
+                        text_segments = []
+                    line_parts.append(f"(Image: {part.image_url['url']})")
+            if text_segments:
+                line_parts.append(" ".join(text_segments))
+        else: # Fallback for older data
             llm_readable_content = await self._convert_discord_format_to_llm_readable(msg.content, guild_id)
-            return f"{text_prefix}{llm_readable_content}".strip()
+            if msg.attachment_urls:
+                llm_readable_content += f" (Image: {', '.join(msg.attachment_urls)})"
+            line_parts.append(llm_readable_content)
 
-        # If the message IS multimodal, construct a list of content parts.
-        final_content_parts = []
-        text_segments = [text_prefix]
-
-        for part in msg.multimodal_content:
-            if part.type == "text" and part.text:
-                text_segments.append(await self._convert_discord_format_to_llm_readable(part.text, guild_id))
-            elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
-                # If there's pending text, add it as a text part first.
-                if len(text_segments) > 0:
-                    final_content_parts.append({"type": "text", "text": " ".join(text_segments).strip()})
-                    text_segments = []
-                # Add the image part.
-                final_content_parts.append({"type": "image_url", "image_url": part.image_url})
-        
-        # Add any remaining text segments.
-        if len(text_segments) > 0:
-            # If there are no other parts, this is a text-only message.
-            if not final_content_parts:
-                 return " ".join(text_segments).strip()
-            final_content_parts.append({"type": "text", "text": " ".join(text_segments).strip()})
-
-        return final_content_parts
+        return " ".join(line_parts).strip()
 
     def _create_smart_snippet(self, text: str) -> str:
         """Creates a context-aware, intelligently truncated snippet of a given text."""
@@ -293,51 +186,47 @@ class LLMContextFormatter:
             final_length = max(SNIPPET_MIN_LENGTH, min(target_length, SNIPPET_MAX_LENGTH))
             return intelligent_truncate(text, final_length)
 
-    async def format_context_for_llm(self, messages: List[ConversationMessage], guild_id: int, channel_id: int) -> List[Dict[str, Any]]:
+    async def format_context_for_llm(self, messages: List[ConversationMessage], guild_id: int, channel_id: int) -> tuple[str, List[dict]]:
         """
-        Formats all context into a structured list of message dictionaries suitable for an LLM.
-        Static context (channel info, user info, pins) is injected as system messages.
+        Formats all context into a static string and a structured list of message dictionaries.
+        Returns a tuple: (static_context_string, history_messages_list).
         """
         try:
-            # This list will hold the final payload for the LLM.
-            llm_messages = []
-
-            # Part 1: Inject static context as system messages
+            # Part 1: Assemble the static context string
+            static_context_parts = []
             if guild_id and channel_id:
-                channel_context = await self.get_channel_context_for_llm(guild_id, channel_id)
-                if channel_context:
-                    llm_messages.append({"role": "system", "content": channel_context})
-            
+                static_context_parts.append(await self.get_channel_context_for_llm(guild_id, channel_id))
             if guild_id and messages:
                 unique_user_ids = list(set(msg.user_id for msg in messages if not msg.is_bot_response))
                 if unique_user_ids:
-                    user_context = await self.get_user_context_for_llm(guild_id, unique_user_ids)
-                    if user_context:
-                        llm_messages.append({"role": "system", "content": user_context})
-
+                    static_context_parts.append(await self.get_user_context_for_llm(guild_id, unique_user_ids))
             if guild_id and channel_id:
-                pinned_context = await self.get_pinned_context_for_llm(guild_id, channel_id)
-                if pinned_context:
-                    llm_messages.append({"role": "system", "content": pinned_context})
+                static_context_parts.append(await self.get_pinned_context_for_llm(guild_id, channel_id))
+            
+            static_context_string = "\n".join(filter(None, static_context_parts))
 
             # Part 2: Assemble the structured conversation history
             if not messages:
-                return llm_messages
+                return static_context_string, []
 
+            history_messages = []
             message_id_to_local_index = {msg.message_id: i + 1 for i, msg in enumerate(messages)}
 
             for i, msg in enumerate(messages):
                 role = "assistant" if msg.is_self_bot_response else "user"
-                # This now returns either a string or a list of content parts
-                formatted_content = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
-                
-                if formatted_content: # Ensure we don't add empty messages
-                    llm_messages.append({"role": role, "content": formatted_content})
+                content_string = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
+                history_messages.append({"role": role, "content": content_string})
 
-            return llm_messages
+            return static_context_string, history_messages
         except Exception as e:
             logger.error(f"Error formatting context for LLM: {e}", exc_info=True)
-            return []
+            return "", []
+
+    async def format_single_message(self, msg: ConversationMessage, history_messages: List[ConversationMessage], guild_id: int, channel_id: int) -> str:
+        """Formats a single message using the same logic as the history formatter."""
+        local_id = len(history_messages) + 1
+        message_id_to_local_index = {m.message_id: i + 1 for i, m in enumerate(history_messages)}
+        return await self._format_message_content(msg, local_id, guild_id, channel_id, message_id_to_local_index)
 
     async def _convert_discord_format_to_llm_readable(self, content: str, guild_id: int) -> str:
         """

@@ -27,8 +27,8 @@ class LLMCommands(commands.Cog):
         # Global default models
         self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
-        # The multimodal_models_whitelist is now deprecated.
-        # Multimodal capability will be determined by the model's configuration.
+        #self.multimodal_models_whitelist = ["gemini", "gemma"]
+        self.multimodal_models_whitelist = ["big", "balls"]
 
     async def cog_load(self):
         """Initialize the LLM client and check provider status on cog load."""
@@ -238,8 +238,20 @@ class LLMCommands(commands.Cog):
         if not target_model:
             raise ValueError("No model specified and no default model configured.")
 
-        # The calling function is now responsible for building the complete `messages` list,
-        # including any system prompts and the final user prompt with images.
+        # Prepare prompts
+        system_prompt, context = self._prepare_prompts(system_prompt, context, model_type, guild_id)
+        
+        is_multimodal = any(keyword in target_model for keyword in self.multimodal_models_whitelist)
+        
+        # Build the messages list using the new structured history
+        messages = self._build_messages_list(
+            system_prompt=system_prompt,
+            static_context=context,
+            history=history,
+            prompt=prompt,
+            image_urls=image_urls,
+            is_multimodal=is_multimodal
+        )
         
         # Prepare kwargs for the rotating client
         request_kwargs = {
@@ -444,7 +456,46 @@ class LLMCommands(commands.Cog):
             
         return messages
 
+    def _add_parsed_message(self, messages: List[Dict[str, str]], current_role: str,
+                          current_content: List[str]):
+        """Add a parsed message to the messages list, mapping roles to 'user'/'assistant'."""
+        # This function is now largely superseded by the logic in _parse_conversation_history_block,
+        # but we'll keep it for now in case it's used elsewhere.
+        # The new implementation in _parse_conversation_history_block is more robust for multimodal content.
+        
+        # Map specific roles to 'assistant', otherwise 'user'
+        if current_role in ["Mirrobot", "Other Bot"]:
+            role = "assistant"
+        else:
+            role = "user"
+        
+        # Always combine content before adding to ensure a single string
+        combined_content = "\n".join(current_content).strip()
+        
+        if role == "assistant":
+            # For assistant messages, only add if there's actual content
+            if combined_content:
+                messages.append({"role": "assistant", "content": combined_content})
+        else: # For user messages, always add, preserving original username as part of content if needed
+            if combined_content:
+                # Include username for user messages in the content to help LLM distinguish speakers
+                messages.append({"role": "user", "content": f"{current_role}: {combined_content}"})
 
+    def _extract_content_from_response(self, result: dict) -> Optional[str]:
+        """Extract content from different API response formats (OpenAI-compatible, Ollama)"""
+        # OpenAI format
+        if 'choices' in result and result['choices']:
+            return result['choices'][0].get('message', {}).get('content', '')
+        
+        # Ollama format
+        elif 'response' in result:
+            return result['response']
+        
+        # Generic format
+        elif 'text' in result:
+            return result['text']
+            
+        return None
     
     async def send_llm_response(self, ctx, response: str, question: str, model_type: str = "default", performance_metrics: Optional[Dict[str, Any]] = None):
         """Helper function to send LLM response using the new unified embed system"""
@@ -564,27 +615,21 @@ class LLMCommands(commands.Cog):
         async with ctx.typing():
             try:
                 guild_id = ctx.guild.id if ctx.guild else None
+                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                context = f"{channel_context}\n{user_context}"
 
-                # Ask/Think commands do not use conversation history.
-                # We pass an empty list to get the static context (system prompts, etc.).
-                llm_messages = await chatbot_manager.formatter.format_context_for_llm([], guild_id, ctx.channel.id)
-
-                # Add the current user's prompt to the message list
                 if extracted_text:
                     question = f"{' '.join(extracted_text)}\n\n{question}"
-                
-                user_prompt_content = [{"type": "text", "text": f"{ctx.author.display_name}: {question}"}]
-                if image_urls:
-                    for url in image_urls:
-                        user_prompt_content.append({"type": "image_url", "image_url": {"url": url}})
-                
-                llm_messages.append({"role": "user", "content": user_prompt_content})
 
+                formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
-                    messages=llm_messages,
+                    prompt=formatted_prompt,
                     model_type="ask",
                     guild_id=guild_id,
-                    channel_id=ctx.channel.id
+                    channel_id=ctx.channel.id,
+                    image_urls=image_urls,
+                    context=context
                 )
                 cleaned_response, _ = self.strip_thinking_tokens(response)
                 final_response = await chatbot_manager.formatter.format_llm_output_for_discord(
@@ -636,27 +681,21 @@ class LLMCommands(commands.Cog):
         async with ctx.typing():
             try:
                 guild_id = ctx.guild.id if ctx.guild else None
-                
-                # Ask/Think commands do not use conversation history.
-                # We pass an empty list to get the static context (system prompts, etc.).
-                llm_messages = await chatbot_manager.formatter.format_context_for_llm([], guild_id, ctx.channel.id)
+                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                context = f"{channel_context}\n{user_context}"
 
-                # Add the current user's prompt to the message list
                 if extracted_text:
                     question = f"{' '.join(extracted_text)}\n\n{question}"
 
-                user_prompt_content = [{"type": "text", "text": f"{ctx.author.display_name}: {question}"}]
-                if image_urls:
-                    for url in image_urls:
-                        user_prompt_content.append({"type": "image_url", "image_url": {"url": url}})
-                
-                llm_messages.append({"role": "user", "content": user_prompt_content})
-
+                formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
-                    messages=llm_messages,
+                    prompt=formatted_prompt,
                     model_type="think",
                     guild_id=guild_id,
-                    channel_id=ctx.channel.id
+                    channel_id=ctx.channel.id,
+                    image_urls=image_urls,
+                    context=context
                 )
                 
                 formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
@@ -1621,7 +1660,7 @@ class LLMCommands(commands.Cog):
             
             # Get all context components
             context_messages = await chatbot_manager.get_prioritized_context(guild_id, channel_id, target_user_id)
-            llm_messages = await chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
+            conversation_context, _ = await chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
             system_prompt = self.load_system_prompt(guild_id)
             server_context_file_content = self.load_context(guild_id) # Renamed to avoid confusion with conversation context
             channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
@@ -1699,9 +1738,8 @@ class LLMCommands(commands.Cog):
             # Full conversation context
             content_lines.append("FORMATTED CONVERSATION CONTEXT (as sent to LLM):")
             content_lines.append("-" * 40)
-            if llm_messages:
-                # Use json.dumps to nicely format the list of message dictionaries
-                content_lines.append(json.dumps(llm_messages, indent=2))
+            if conversation_context:
+                content_lines.append(conversation_context)
             else:
                 content_lines.append("*No conversation history available*")
             content_lines.append("")

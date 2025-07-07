@@ -353,15 +353,3 @@ class ConversationManager:
             logger.error(f"Error editing message in conversation: {e}", exc_info=True)
             return False
 
-    async def add_messages_to_history_if_not_exists(self, guild_id: int, channel_id: int, messages: List[ConversationMessage]):
-        """
-        Adds a list of messages to a new history file, but only if one doesn't already exist.
-        This is for opportunistic indexing of on-the-fly command contexts.
-        """
-        history_path = self.get_conversation_file_path(guild_id, channel_id)
-        if os.path.exists(history_path):
-            return # History already exists, do nothing.
-
-        logger.info(f"Opportunistically creating new history cache for channel {channel_id} with {len(messages)} messages.")
-        await self.index_manager.replace_conversation_history(guild_id, channel_id, messages)
-
