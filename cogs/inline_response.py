@@ -467,12 +467,16 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if message.author == self.bot.user:
             return
 
+
         # 1b. Ignore DMs
         if not message.guild:
             return
 
-        # 1c. Check for mention
-        if self.bot.user not in message.mentions:
+        # 1c. Check for an explicit mention in the message content.
+        # This is to distinguish from implicit mentions from replies.
+        mention_content = self.bot.user.mention
+        legacy_mention_content = mention_content.replace('<@', '<@!')
+        if mention_content not in message.content and legacy_mention_content not in message.content:
             return
 
         # 1d. Check chatbot status (must be disabled)
