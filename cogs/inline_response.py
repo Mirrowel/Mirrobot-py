@@ -558,6 +558,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
         # The prompt is the trigger message with the mention removed.
         prompt = message.content.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
+        
+        # Process the trigger message for multimodal content (images)
+        cleaned_prompt, image_urls, _ = chatbot_manager.conversation._process_discord_message_for_context(message)
+        # We use the cleaned_prompt which has URLs stripped.
+        prompt = cleaned_prompt.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
+
 
         try:
             async with message.channel.typing():
@@ -567,7 +573,8 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                     guild_id=message.guild.id,
                     channel_id=message.channel.id,
                     context=static_context,
-                    history=history
+                    history=history,
+                    image_urls=image_urls # Pass the extracted image URLs
                 )
 
             # 5. Process and send the response

@@ -221,7 +221,8 @@ class InlineResponseManager:
         # 5. Convert to ConversationMessage
         context_messages = []
         for msg in sorted_messages:
-            cleaned_content, image_urls, _ = _process_discord_message_for_context(msg)
+            # Use the centralized function from the chatbot manager's conversation utility
+            cleaned_content, image_urls, _ = self.storage_manager.chatbot_manager.conversation._process_discord_message_for_context(msg)
             
             multimodal_content = []
             if cleaned_content:
@@ -247,65 +248,6 @@ class InlineResponseManager:
             
         return context_messages
 
-
-def _is_image_url(url: str) -> bool:
-    """Check if a URL points to an image by checking the path extension."""
-    try:
-        image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
-        parsed_url = urlparse(url)
-        return any(parsed_url.path.lower().endswith(ext) for ext in image_extensions)
-    except Exception:
-        return False
-
-def _process_discord_message_for_context(message: discord.Message) -> Tuple[str, List[str], List[str]]:
-    """
-    Processes a discord.Message to extract content, filter media, and prepare for context.
-    This is a standalone version of the logic from ConversationManager.
-    """
-    content = message.content
-    image_urls = set()
-    other_urls = set()
-
-    # 1. Process Attachments
-    for attachment in message.attachments:
-        if attachment.content_type and attachment.content_type.startswith('image/') and 'gif' not in attachment.content_type:
-            if _is_image_url(attachment.url):
-                image_urls.add(attachment.url)
-        else:
-            other_urls.add(attachment.url)
-
-    # 2. Process Embeds
-    for embed in message.embeds:
-        if embed.url and _is_image_url(embed.url):
-            image_urls.add(embed.url)
-        if embed.thumbnail and embed.thumbnail.url and _is_image_url(embed.thumbnail.url):
-            image_urls.add(embed.thumbnail.url)
-        if embed.image and embed.image.url and _is_image_url(embed.image.url):
-            image_urls.add(embed.image.url)
-        
-        if embed.url and embed.type not in ['image', 'gifv']:
-            other_urls.add(embed.url)
-        if embed.video and embed.video.url:
-            other_urls.add(embed.video.url)
-
-    # 3. Process URLs in the message content
-    url_pattern = re.compile(r'https?://\S+')
-    found_urls = url_pattern.findall(content)
-    for url in found_urls:
-        if _is_image_url(url):
-            image_urls.add(url)
-        other_urls.add(url)
-
-    # 4. Clean the message content by removing all identified URLs
-    all_urls_to_strip = image_urls.union(other_urls)
-    cleaned_content = content
-    for url in all_urls_to_strip:
-        cleaned_content = cleaned_content.replace(url, '')
-
-    # Final cleanup of whitespace
-    cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
-    
-    return cleaned_content, list(image_urls), list(other_urls)
 
 def split_message(text: str, limit: int = 2000) -> List[str]:
     """

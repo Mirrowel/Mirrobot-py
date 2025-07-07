@@ -576,6 +576,40 @@ class LLMCommands(commands.Cog):
         return cleaned_response, combined_thinking
     
 
+    async def _process_multimodal_input(self, message: discord.Message, question: str) -> Tuple[str, List[str]]:
+        """Helper to process attachments and URLs from a message for multimodal input."""
+        image_urls = []
+        extracted_text = []
+
+        # Process attachments
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith('image/'):
+                image_urls.append(attachment.url)
+            else:
+                text = await extract_text_from_attachment(attachment)
+                if text:
+                    extracted_text.append(text)
+
+        # Process URLs in the question string
+        url_pattern = re.compile(r'https?://\S+')
+        found_urls = url_pattern.findall(question)
+        for url in found_urls:
+            # Check if the URL is an image
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif']):
+                image_urls.append(url)
+                question = question.replace(url, '').strip()
+            # Check if the URL is a text-based file
+            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
+                text = await extract_text_from_url(url)
+                if text:
+                    extracted_text.append(text)
+                question = question.replace(url, '').strip()
+
+        if extracted_text:
+            question = f"{' '.join(extracted_text)}\n\n{question}"
+        
+        return question, image_urls
+
     @commands.command(name='ask', help='Ask the LLM a question')
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
@@ -587,40 +621,15 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        image_urls = []
-        extracted_text = []
-
-        # Process attachments
-        for attachment in ctx.message.attachments:
-            if attachment.content_type.startswith('image/'):
-                image_urls.append(attachment.url)
-            else:
-                text = await extract_text_from_attachment(attachment)
-                if text:
-                    extracted_text.append(text)
-
-        # Process URLs in the question
-        url_pattern = re.compile(r'https?://\S+')
-        found_urls = url_pattern.findall(question)
-        for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                image_urls.append(url)
-                question = question.replace(url, '').strip()
-            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
-                text = await extract_text_from_url(url)
-                if text:
-                    extracted_text.append(text)
-                question = question.replace(url, '').strip()
-
         async with ctx.typing():
             try:
+                # Use the helper to process multimodal input
+                question, image_urls = await self._process_multimodal_input(ctx.message, question)
+                
                 guild_id = ctx.guild.id if ctx.guild else None
                 channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
                 user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
-
-                if extracted_text:
-                    question = f"{' '.join(extracted_text)}\n\n{question}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
@@ -653,40 +662,15 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        image_urls = []
-        extracted_text = []
-
-        # Process attachments
-        for attachment in ctx.message.attachments:
-            if attachment.content_type.startswith('image/'):
-                image_urls.append(attachment.url)
-            else:
-                text = await extract_text_from_attachment(attachment)
-                if text:
-                    extracted_text.append(text)
-
-        # Process URLs in the question
-        url_pattern = re.compile(r'https?://\S+')
-        found_urls = url_pattern.findall(question)
-        for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                image_urls.append(url)
-                question = question.replace(url, '').strip()
-            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
-                text = await extract_text_from_url(url)
-                if text:
-                    extracted_text.append(text)
-                question = question.replace(url, '').strip()
-
         async with ctx.typing():
             try:
+                # Use the helper to process multimodal input
+                question, image_urls = await self._process_multimodal_input(ctx.message, question)
+
                 guild_id = ctx.guild.id if ctx.guild else None
                 channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
                 user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
-
-                if extracted_text:
-                    question = f"{' '.join(extracted_text)}\n\n{question}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
