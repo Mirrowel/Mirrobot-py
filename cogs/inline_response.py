@@ -515,37 +515,18 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         # If all conditions are met, build the context and log it.
         logger.info(f"Inline response triggered for message {message.id} in channel {message.channel.id}")
 
-        # 2. Build context and perform on-the-fly indexing
-        context_messages = []
-        try:
-            # Step 2a: Build the context. This is critical for a quality response.
-            context_messages = await self.manager.build_context(message)
-            logger.info(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
-        except Exception as e:
-            logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
-            await message.reply("Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
-            return
-
-        # Step 2b: Perform non-critical on-the-fly indexing.
-        # A failure here should be logged but not prevent the bot from responding.
-        try:
-            # Index the current channel.
-            await chatbot_manager.index_manager.update_channel_index(message.channel)
-
-            # Bulk index all unique users from the context.
-            if context_messages:
-                unique_users = list({msg.author for msg in context_messages if not msg.author.bot})
-                if unique_users:
-                    await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
-                    logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
-        except Exception as e:
-            logger.warning(f"Non-critical error during on-the-fly indexing for message {message.id}: {e}", exc_info=True)
-            # Do not abort; proceed with the response using the built context.
-
+        # 2. Get conversation history using the new unified entrypoint
+        history_messages = await chatbot_manager.formatter.get_context_for_command(
+            message,
+            context_messages_max=config.context_messages,
+            user_context_messages_max=config.user_context_messages
+        )
+        logger.info(f"Built context with {len(history_messages)} messages for inline response to {message.id}.")
 
         # 3. Format the context for the LLM
-        static_context, history = chatbot_manager.formatter.format_context_for_llm(
-            messages=context_messages,
+        # This now returns a single list of message dictionaries, including system prompts for context.
+        llm_messages = await chatbot_manager.formatter.format_context_for_llm(
+            messages=history_messages,
             guild_id=message.guild.id,
             channel_id=message.channel.id
         )
@@ -556,22 +537,31 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             logger.error("LLMCommands cog not found, cannot make inline response.")
             return
 
+        # Process the trigger message for multimodal content
+        cleaned_prompt, image_urls, _ = await chatbot_manager.conversation_manager._process_discord_message_for_context(message)
+        
         # The prompt is the trigger message with the mention removed.
-        prompt = message.content.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
+        prompt_text = cleaned_prompt.replace(self.bot.user.mention, "", 1).replace(legacy_mention_content, "", 1).strip()
+
+        # Construct the final user message, including images
+        user_prompt_content = [{"type": "text", "text": prompt_text}]
+        if image_urls:
+            for url in image_urls:
+                user_prompt_content.append({"type": "image_url", "image_url": {"url": url}})
+        
+        llm_messages.append({"role": "user", "content": user_prompt_content})
 
         try:
             async with message.channel.typing():
                 response_text, _ = await llm_cog.make_llm_request(
-                    prompt=prompt,
+                    messages=llm_messages,
                     model_type=config.model_type,
                     guild_id=message.guild.id,
-                    channel_id=message.channel.id,
-                    context=static_context,
-                    history=history
+                    channel_id=message.channel.id
                 )
 
             # 5. Process and send the response
-            cleaned_response = chatbot_manager.formatter.format_llm_output_for_discord(
+            cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                 response_text,
                 message.guild.id,
                 self.bot.user.id,
