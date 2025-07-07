@@ -284,7 +284,7 @@ def create_bot(config):
             # Check if chatbot mode is enabled for this channel
             if chatbot_manager.is_chatbot_enabled(guild_id, channel_id):
                 #logger.debug(f"Attempting to edit message {message_id} in conversation history via raw event")
-                result = chatbot_manager.edit_message_in_conversation(guild_id, channel_id, message_id, new_content)
+                result = await chatbot_manager.edit_message_in_conversation(guild_id, channel_id, message_id, new_content)
                 #logger.debug(f"Raw edit result: {result}")
             #else:
                 #logger.debug("Chatbot not enabled for this channel for raw edit")
@@ -313,7 +313,7 @@ def create_bot(config):
             # Check if chatbot mode is enabled for this channel
             if chatbot_manager.is_chatbot_enabled(guild_id, channel_id):
                 #logger.debug(f"Attempting to delete message {message_id} from conversation history via raw event")
-                result = chatbot_manager.delete_message_from_conversation(guild_id, channel_id, message_id)
+                result = await chatbot_manager.delete_message_from_conversation(guild_id, channel_id, message_id)
                 #logger.debug(f"Raw delete result: {result}")
             #else:
                 #logger.debug("Chatbot not enabled for this channel for raw delete")

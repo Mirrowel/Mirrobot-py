@@ -1052,14 +1052,14 @@ class LLMCommands(commands.Cog):
                 )
                 return
             # Get current conversation history count before clearing
-            current_history = chatbot_manager.load_conversation_history(guild_id, channel_id)
+            current_history = await chatbot_manager.load_conversation_history(guild_id, channel_id)
             message_count = len(current_history)
             
             success = chatbot_manager.disable_chatbot(guild_id, channel_id)
             
             if success:
                 # Clear conversation history when disabling chatbot
-                history_cleared = chatbot_manager.save_conversation_history(guild_id, channel_id, [])
+                history_cleared = await chatbot_manager.save_conversation_history(guild_id, channel_id, [])
                 
                 # Also delete the physical conversation file
                 conversation_file_path = chatbot_manager.get_conversation_file_path(guild_id, channel_id)
@@ -1127,7 +1127,7 @@ class LLMCommands(commands.Cog):
                 return
             
             channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
-            conversation_history = chatbot_manager.load_conversation_history(guild_id, channel_id)
+            conversation_history = await chatbot_manager.load_conversation_history(guild_id, channel_id)
             
             status_emoji = "🟢" if channel_config.enabled else "🔴"
             status_text = "Enabled" if channel_config.enabled else "Disabled"
@@ -1659,14 +1659,14 @@ class LLMCommands(commands.Cog):
             target_user_id = user_id if user_id else ctx.author.id
             
             # Get all context components
-            context_messages = chatbot_manager.get_prioritized_context(guild_id, channel_id, target_user_id)
-            conversation_context = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
+            context_messages = await chatbot_manager.get_prioritized_context(guild_id, channel_id, target_user_id)
+            conversation_context, _ = await chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
             system_prompt = self.load_system_prompt(guild_id)
             server_context_file_content = self.load_context(guild_id) # Renamed to avoid confusion with conversation context
             channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
             
             # NEW: Get pinned messages context
-            pinned_messages_context = chatbot_manager.get_pinned_context_for_llm(guild_id, channel_id)
+            pinned_messages_context = await chatbot_manager.get_pinned_context_for_llm(guild_id, channel_id)
 
             # Build complete context file
             content_lines = []

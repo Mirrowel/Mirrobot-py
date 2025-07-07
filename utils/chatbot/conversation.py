@@ -331,10 +331,10 @@ class ConversationManager:
             logger.error(f"Error checking for duplicate message in channel {channel_id}: {e}", exc_info=True)
             return False
 
-    def delete_message_from_conversation(self, guild_id: int, channel_id: int, message_id: int) -> bool:
+    async def delete_message_from_conversation(self, guild_id: int, channel_id: int, message_id: int) -> bool:
         """Remove a message from conversation history."""
         try:
-            messages = self.load_conversation_history(guild_id, channel_id)
+            messages = await self.load_conversation_history(guild_id, channel_id)
             if not messages:
                 return False
             
@@ -343,7 +343,7 @@ class ConversationManager:
             
             if len(messages) < original_length:
                 logger.debug(f"Removed message {message_id} from conversation history")
-                return self.save_conversation_history(guild_id, channel_id, messages)
+                return await self.save_conversation_history(guild_id, channel_id, messages)
             else:
                 logger.debug(f"Message {message_id} not found for deletion")
                 return False
@@ -351,10 +351,10 @@ class ConversationManager:
             logger.error(f"Error deleting message from conversation: {e}", exc_info=True)
             return False
 
-    def edit_message_in_conversation(self, guild_id: int, channel_id: int, message_id: int, new_content: str) -> bool:
+    async def edit_message_in_conversation(self, guild_id: int, channel_id: int, message_id: int, new_content: str) -> bool:
         """Update the content of an existing message in conversation history."""
         try:
-            messages = self.load_conversation_history(guild_id, channel_id)
+            messages = await self.load_conversation_history(guild_id, channel_id)
             if not messages:
                 return False
             
@@ -367,7 +367,7 @@ class ConversationManager:
                     break
             
             if message_found:
-                return self.save_conversation_history(guild_id, channel_id, messages)
+                return await self.save_conversation_history(guild_id, channel_id, messages)
             else:
                 logger.debug(f"Message {message_id} not found for editing")
                 return False
@@ -375,10 +375,12 @@ class ConversationManager:
             logger.error(f"Error editing message in conversation: {e}", exc_info=True)
             return False
 
-    def prune_old_conversations(self) -> int:
-        """Prune old conversation data to save space."""
+    async def prune_old_conversations(self) -> int:
+        """Prune old conversation data to save space by running prunes concurrently."""
         pruned_count = 0
         config = self.config_manager.config_cache
+        prune_tasks = []
+
         for guild_key, guild_channels in config.get("channels", {}).items():
             guild_id = int(guild_key)
             guild_path = os.path.join(CONVERSATION_DATA_DIR, f"guild_{guild_id}")
@@ -387,37 +389,45 @@ class ConversationManager:
 
             for channel_key in guild_channels:
                 channel_id = int(channel_key)
-                channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
-                if not channel_config.auto_prune_enabled:
-                    continue
+                prune_tasks.append(self._prune_single_channel(guild_id, channel_id))
 
-                file_path = self.get_conversation_file_path(guild_id, channel_id)
-                if not os.path.exists(file_path):
-                    continue
-
-                try:
-                    messages = self.load_conversation_history(guild_id, channel_id)
-                    original_count = len(messages)
-                    
-                    # load_conversation_history already filters by time, so we just need to check max messages
-                    if len(messages) > channel_config.max_context_messages:
-                        pruned_messages = messages[-channel_config.max_context_messages:]
-                    else:
-                        pruned_messages = messages
-
-                    if len(pruned_messages) != original_count:
-                        if self.save_conversation_history(guild_id, channel_id, pruned_messages):
-                            num_pruned = original_count - len(pruned_messages)
-                            pruned_count += num_pruned
-                            logger.debug(f"Pruned {num_pruned} old messages from {file_path}")
-                    
-                    if not pruned_messages and os.path.exists(file_path):
-                        os.remove(file_path)
-                        logger.debug(f"Removed empty conversation file: {file_path}")
-
-                except Exception as e:
-                    logger.error(f"Error processing conversation file {file_path}: {e}", exc_info=True)
+        results = await asyncio.gather(*prune_tasks)
+        pruned_count = sum(filter(None, results))
 
         if pruned_count > 0:
             logger.info(f"Total pruned {pruned_count} old conversation messages across all channels.")
         return pruned_count
+
+    async def _prune_single_channel(self, guild_id: int, channel_id: int) -> int:
+        """Helper to prune a single channel's conversation."""
+        try:
+            channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
+            if not channel_config.auto_prune_enabled:
+                return 0
+
+            file_path = self.get_conversation_file_path(guild_id, channel_id)
+            if not os.path.exists(file_path):
+                return 0
+
+            messages = await self.load_conversation_history(guild_id, channel_id)
+            original_count = len(messages)
+            
+            if len(messages) > channel_config.max_context_messages:
+                pruned_messages = messages[-channel_config.max_context_messages:]
+            else:
+                pruned_messages = messages
+
+            num_pruned = 0
+            if len(pruned_messages) != original_count:
+                if await self.save_conversation_history(guild_id, channel_id, pruned_messages):
+                    num_pruned = original_count - len(pruned_messages)
+                    logger.debug(f"Pruned {num_pruned} old messages from {file_path}")
+            
+            if not pruned_messages and os.path.exists(file_path):
+                await asyncio.to_thread(os.remove, file_path)
+                logger.debug(f"Removed empty conversation file: {file_path}")
+            
+            return num_pruned
+        except Exception as e:
+            logger.error(f"Error processing conversation file for channel {channel_id}: {e}", exc_info=True)
+            return 0
