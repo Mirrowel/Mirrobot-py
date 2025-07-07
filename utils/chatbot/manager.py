@@ -138,25 +138,25 @@ class ChatbotManager:
                 after_param = discord.Object(id=after_message_id)
 
             messages_to_add = []
-            if after_param:
-                logger.debug(f"Performing incremental index for #{channel.name} after ID {after_param.id}")
-                history_iterator = channel.history(limit=None, after=after_param)
-                messages_to_add = [msg async for msg in history_iterator if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
-            else:
-                # This is a full scan. Fetch the most recent N messages first, then filter by time.
-                limit = config.max_context_messages
-                logger.debug(f"Performing full history scan for #{channel.name} with a limit of {limit} messages.")
-                
-                # 1. Fetch the most recent N messages
-                recent_messages = [msg async for msg in channel.history(limit=limit) if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
-                
-                # 2. Filter these messages by the time window
-                time_window_cutoff = time.time() - (config.context_window_hours * 3600)
-                messages_to_add = [msg for msg in recent_messages if msg.created_at.timestamp() >= time_window_cutoff]
-                
-                # 3. Reverse to get chronological order
-                messages_to_add.reverse()
-                logger.debug(f"Fetched {len(recent_messages)} recent messages, {len(messages_to_add)} are within the time window.")
+            # Unified logic: Always fetch a limited number of recent messages, then filter.
+            limit = config.max_context_messages
+            logger.debug(f"Fetching up to {limit} recent messages for #{channel.name} to check against criteria.")
+
+            # 1. Fetch the most recent N messages.
+            # If after_param is set, it acts as a starting point for the fetch.
+            # If not, it fetches the absolute most recent messages in the channel.
+            history_iterator = channel.history(limit=limit, after=after_param)
+            recent_messages = [msg async for msg in history_iterator if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
+
+            # 2. Filter these messages by the time window.
+            # This is a secondary check to ensure we don't include messages from outside the window,
+            # even if they are within the message limit.
+            time_window_cutoff = time.time() - (config.context_window_hours * 3600)
+            messages_to_add = [msg for msg in recent_messages if msg.created_at.timestamp() >= time_window_cutoff]
+
+            # 3. Reverse to get chronological order for processing.
+            messages_to_add.reverse()
+            logger.debug(f"Fetched {len(recent_messages)} messages, {len(messages_to_add)} are within the final time window and limits.")
 
             if not messages_to_add:
                 logger.info(f"No new messages to index for #{channel.name}.")
