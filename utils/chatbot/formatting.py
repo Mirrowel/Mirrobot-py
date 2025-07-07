@@ -75,7 +75,7 @@ class LLMContextFormatter:
                 original_msg = next((m for m in full_history if m.message_id == msg.referenced_message_id), None)
                 if original_msg:
                     original_author = (user_index.get(original_msg.user_id).username if user_index.get(original_msg.user_id) else original_msg.username)
-                    snippet = (original_msg.content or "")[:75] + ("..." if len(original_msg.content or "") > 75 else "")
+                    snippet = self._create_smart_snippet(original_msg.content or "")
                     reply_info = f'[Replying to @{original_author}: "{snippet}"] '
 
         line_parts = [f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"]
@@ -102,6 +102,65 @@ class LLMContextFormatter:
             line_parts.append(llm_readable_content)
 
         return " ".join(line_parts).strip()
+
+    def _create_smart_snippet(self, text: str) -> str:
+        """Creates a context-aware, intelligently truncated snippet of a given text."""
+        SNIPPET_TARGET_PERCENTAGE = 0.3
+        SNIPPET_MIN_LENGTH = 30
+        SNIPPET_MAX_LENGTH = 150
+        LONG_MESSAGE_THRESHOLD = 500
+
+        if not text:
+            return ""
+
+        original_length = len(text)
+
+        # If the text is short, return it as is.
+        if original_length <= SNIPPET_MAX_LENGTH:
+            return text
+
+        def intelligent_truncate(content: str, max_len: int) -> str:
+            """Truncates text to a max length, preferring to end on a sentence or phrase boundary."""
+            if len(content) <= max_len:
+                return content
+            
+            truncated = content[:max_len]
+            
+            # Try to find a sentence-ending punctuation mark.
+            sentence_end_pos = -1
+            for p in ['.', '!', '?']:
+                sentence_end_pos = max(sentence_end_pos, truncated.rfind(p))
+            
+            if sentence_end_pos > 0:
+                return truncated[:sentence_end_pos + 1]
+
+            # Fallback to phrase-ending punctuation.
+            phrase_end_pos = -1
+            for p in [',', ';', ':']:
+                phrase_end_pos = max(phrase_end_pos, truncated.rfind(p))
+            
+            if phrase_end_pos > 0:
+                return truncated[:phrase_end_pos + 1]
+
+            # Fallback to the last space to avoid cutting a word.
+            last_space = truncated.rfind(' ')
+            if last_space > 0:
+                return truncated[:last_space] + "..."
+
+            # Absolute fallback: hard truncate.
+            return truncated + "..."
+
+        # For long messages, create a dual-part snippet.
+        if original_length > LONG_MESSAGE_THRESHOLD:
+            start_snippet = intelligent_truncate(text, SNIPPET_MAX_LENGTH // 2)
+            end_snippet = intelligent_truncate(text[-(SNIPPET_MAX_LENGTH // 2):], SNIPPET_MAX_LENGTH // 2)
+            return f"{start_snippet} ... {end_snippet}"
+        
+        # For medium messages, create a single, percentage-based snippet.
+        else:
+            target_length = int(original_length * SNIPPET_TARGET_PERCENTAGE)
+            final_length = max(SNIPPET_MIN_LENGTH, min(target_length, SNIPPET_MAX_LENGTH))
+            return intelligent_truncate(text, final_length)
 
     async def format_context_for_llm(self, messages: List[ConversationMessage], guild_id: int, channel_id: int) -> tuple[str, List[dict]]:
         """
