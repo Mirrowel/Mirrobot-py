@@ -180,9 +180,24 @@ class IndexingManager:
                     logger.error(f"Failed to save index for guild {guild_id} during periodic save: {e}", exc_info=True)
 
     def _touch_guild_cache(self, guild_id: int):
-        """Updates the last access time for a guild's cache."""
-        self._last_access_time[guild_id] = time.time()
-        logger.debug(f"Cache touched for guild {guild_id}")
+        """Updates the last access time for a guild's cache, rate-limited to ensure correct cache eviction and prevent log spam."""
+        now = time.time()
+        # Only update the timestamp and log if it's been more than 1 second since the last touch.
+        if now - self._last_access_time.get(guild_id, 0) > 1:
+            # Update last access time
+            self._last_access_time[guild_id] = now
+
+            # Initialize touch count dict if not present
+            if not hasattr(self, "_touch_counts"):
+                self._touch_counts: Dict[int, int] = {}
+
+            # Increment and log touch count
+            self._touch_counts[guild_id] = self._touch_counts.get(guild_id, 0) + 1
+            logger.debug(
+                f"Cache touched for guild {guild_id} "
+                f"(touched {self._touch_counts[guild_id]} times)"
+            )
+
 
     async def _initialize_guild_cache(self, guild_id: int):
         """Loads indexes for a guild into the cache if not already present."""
