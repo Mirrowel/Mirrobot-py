@@ -13,6 +13,7 @@ from utils.chatbot.manager import chatbot_manager
 from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 from utils.chatbot.models import ConversationMessage, ContentPart
+from utils.discord_utils import reply_or_send
 
 logger = get_logger()
 
@@ -115,9 +116,9 @@ def create_bot(config):
     async def on_ready():
         logger.info(f'Logged in as {bot.user.name}!')
 
-        # --- Set bot's user ID in chatbot_manager ---
-        # from utils.chatbot.manager import chatbot_manager # Already imported above
+        # --- Set bot's user ID in chatbot_manager and start it ---
         chatbot_manager.set_bot_user_id(bot.user.id)
+        await chatbot_manager.index_manager.start()
         # --- END NEW ---
 
         # Get worker count from config (default to 2 workers if not specified)
@@ -141,13 +142,16 @@ def create_bot(config):
         async def cleanup_user_index_task():
             while True:
                 try:
-                    await asyncio.sleep(3600)  # Wait 1 hour before first cleanup
-                    from utils.chatbot.manager import chatbot_manager
-                    total_cleaned = chatbot_manager.cleanup_all_stale_users(bot.guilds)
+                    # Wait 24 hours before first cleanup and between subsequent cleanups
+                    await asyncio.sleep(86400)
+                    logger.info("Starting daily stale user cleanup...")
+                    total_cleaned = await chatbot_manager.cleanup_all_stale_users(bot.guilds)
                     if total_cleaned > 0:
-                        logger.info(f"Periodic cleanup: removed {total_cleaned} stale users")
+                        logger.info(f"Daily cleanup complete: removed {total_cleaned} stale users.")
+                    else:
+                        logger.info("Daily cleanup complete: no stale users found.")
                 except Exception as e:
-                    logger.error(f"Error in periodic user index cleanup: {e}")
+                    logger.error(f"Error in periodic user index cleanup: {e}", exc_info=True)
                 
         bot.log_cleanup_task = asyncio.create_task(cleanup_logs_task())
         bot.user_cleanup_task = asyncio.create_task(cleanup_user_index_task())
@@ -175,13 +179,11 @@ def create_bot(config):
                     """Helper function to index a channel and its pins, returning results."""
                     try:
                         logger.debug(f"Starting indexing for #{channel.name} in {guild.name}")
-                        # Index channel history
                         history_success = await chatbot_manager.index_chatbot_channel(guild.id, channel.id, channel)
                         
-                        # Index pinned messages
                         pins_indexed = 0
                         if history_success and isinstance(channel, (discord.TextChannel, discord.Thread)):
-                            pins_indexed = await chatbot_manager.index_pinned_messages(guild.id, channel.id, channel)
+                            pins_indexed = await chatbot_manager.index_pinned_messages(channel)
                         
                         logger.debug(f"Finished indexing for #{channel.name}. Success: {history_success}, Pins: {pins_indexed}")
                         return {"success": history_success, "pins": pins_indexed, "guild_id": guild.id}
@@ -224,7 +226,7 @@ def create_bot(config):
                     logger.info(f"Cleaning up stale users for {len(guilds_with_indexed_channels)} guilds.")
                     for guild_id in guilds_with_indexed_channels:
                         try:
-                            cleaned_count = chatbot_manager.cleanup_stale_users(guild_id)
+                            cleaned_count = await chatbot_manager.cleanup_stale_users(guild_id)
                             total_users_cleaned += cleaned_count
                         except Exception as e:
                             logger.error(f"Error during user cleanup for guild {guild_id}: {e}")
@@ -283,7 +285,7 @@ def create_bot(config):
             # Check if chatbot mode is enabled for this channel
             if chatbot_manager.is_chatbot_enabled(guild_id, channel_id):
                 #logger.debug(f"Attempting to edit message {message_id} in conversation history via raw event")
-                result = chatbot_manager.edit_message_in_conversation(guild_id, channel_id, message_id, new_content)
+                result = await chatbot_manager.edit_message_in_conversation(guild_id, channel_id, message_id, new_content)
                 #logger.debug(f"Raw edit result: {result}")
             #else:
                 #logger.debug("Chatbot not enabled for this channel for raw edit")
@@ -312,14 +314,33 @@ def create_bot(config):
             # Check if chatbot mode is enabled for this channel
             if chatbot_manager.is_chatbot_enabled(guild_id, channel_id):
                 #logger.debug(f"Attempting to delete message {message_id} from conversation history via raw event")
-                result = chatbot_manager.delete_message_from_conversation(guild_id, channel_id, message_id)
+                result = await chatbot_manager.delete_message_from_conversation(guild_id, channel_id, message_id)
                 #logger.debug(f"Raw delete result: {result}")
             #else:
                 #logger.debug("Chatbot not enabled for this channel for raw delete")
         except Exception as e:
             logger.error(f"Error handling raw deleted message: {e}", exc_info=True)
+
+    @bot.event
+    async def on_guild_remove(guild):
+        """Handle the bot being removed from a guild."""
+        logger.warning(f"Bot removed from guild: {guild.name} ({guild.id}). Cleaning up all associated data.")
+        await chatbot_manager.cleanup_guild_data(guild.id)
+
+    @bot.event
+    async def on_guild_channel_delete(channel):
+        """Handle a channel being deleted."""
+        logger.info(f"Channel #{channel.name} ({channel.id}) deleted in guild {channel.guild.name}. Cleaning up associated data.")
+        await chatbot_manager.cleanup_channel_data(channel.guild.id, channel.id)
     
     # Global error handler
+    @bot.event
+    async def on_close():
+        """Handle bot shutdown gracefully."""
+        logger.info("Bot is shutting down. Performing cleanup...")
+        await chatbot_manager.index_manager.shutdown()
+        logger.info("Cleanup complete.")
+
     @bot.event
     async def on_command_error(ctx, error):
         if isinstance(error, commands.BotMissingPermissions):
@@ -354,7 +375,7 @@ def create_bot(config):
             
             # Send a generic error message to the user for unhandled errors
             try:
-                await ctx.send(f"An unexpected error occurred: ```{error_details}```", delete_after=20)
+                await reply_or_send(ctx, f"An unexpected error occurred: ```{error_details}```", delete_after=20)
             except Exception as send_error:
                 logger.error(f"Failed to send error message to user: {send_error}", exc_info=True)
 
@@ -504,7 +525,7 @@ async def process_chatbot_message(bot, message):
             asyncio.create_task(handle_chatbot_response(bot, message))
         else:
             # If not responding, just add the message to the history for context
-            chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
+            await chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
         
     except Exception as e:
         logger.error(f"Error processing chatbot message: {e}")
@@ -541,10 +562,10 @@ async def handle_chatbot_response(bot, message):
         async with message.channel.typing():
             try:
                 # Get prioritized context messages. This history does NOT include the current message.
-                context_messages = chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
+                context_messages = await chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
                 
                 # Format context into static info and structured history
-                static_context, history_messages = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
+                static_context, history_messages = await chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
                 
                 # Load system prompt (this loads from file and applies thinking mode if configured)
                 system_prompt_for_llm = llm_cog.load_system_prompt(guild_id, prompt_type="chat")
@@ -558,7 +579,7 @@ async def handle_chatbot_response(bot, message):
                     logger.debug(f"Prepended bot mention to message {message.id} for history and prompt.")
 
                 # 2. Save the (now modified) message to history
-                chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
+                await chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
 
                 # 3. Prepare the prompt for the LLM
                 # Get the cleaned content from the (now modified) message
@@ -600,7 +621,7 @@ async def handle_chatbot_response(bot, message):
                 )
 
                 # Format the single prompt message using the same logic as the history
-                user_prompt_content = chatbot_manager.formatter.format_single_message(
+                user_prompt_content = await chatbot_manager.formatter.format_single_message(
                     msg=prompt_conv_message,
                     history_messages=context_messages, # Pass historical messages for reply context
                     guild_id=guild_id,
@@ -640,7 +661,7 @@ async def handle_chatbot_response(bot, message):
 
                 if response_text:
                     # First, format the raw response to strip any parroted context and handle names.
-                    formatted_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                    formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                         text=response_text,
                         guild_id=message.guild.id,
                         bot_user_id=bot.user.id,
@@ -681,23 +702,23 @@ async def handle_chatbot_response(bot, message):
                         final_response = truncate_to_last_sentence(final_response, 2000)
 
                     # Send the response as a reply
-                    sent_message = await message.reply(final_response)
-
+                    sent_message = await reply_or_send(message, final_response)
+ 
                     # Add the bot's response to conversation history
-                    chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
+                    await chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
                     
                     logger.info(f"Sent chatbot response to message {message.id} in channel {channel_id}")
                 else:
-                    await message.reply("I'm having trouble generating a response right now. Please try again.")
+                    await reply_or_send(message, "I'm having trouble generating a response right now. Please try again.")
                     
             except Exception as llm_error:
                 logger.error(f"Error generating LLM response for chatbot: {llm_error}")
-                await message.reply("I encountered an error while thinking of a response. Please try again.", delete_after=10)
+                await reply_or_send(message, "I encountered an error while thinking of a response. Please try again.", delete_after=10)
         
     except Exception as e:
         logger.error(f"Error handling chatbot response: {e}")
         try:
-            # await message.reply("I encountered an unexpected error. Please try again.") # Avoid excessive error messages
+            # await reply_or_send(message, "I encountered an unexpected error. Please try again.") # Avoid excessive error messages
             pass
         except:
             pass  # Ignore if we can't even send error message

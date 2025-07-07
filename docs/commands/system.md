@@ -1,80 +1,70 @@
 # System Commands
 
-This document describes the various system-level commands available in Mirrobot.
+These commands provide general information about the bot and the system it's running on.
 
-## Command Reference
+### `help`
+Displays information about the bot and its commands. You can get a general overview or detailed help on a specific command.
 
-### help
-Shows information about available commands.
+- **Usage:** `!help [command_name]`
+- **Arguments:**
+    - `[command_name]` (Optional): The name of a specific command to get detailed help for (e.g., `set_prefix`, `purge_threads`).
+- **Examples:**
+    - `!help`: Shows a general help message.
+    - `!help set_prefix`: Shows detailed help for the `set_prefix` command.
+- **Alias:** `info`
+- **Permissions:** Everyone
 
-- **Usage**: `!help [command]`
-- **Arguments**: 
-  - `command` (optional): Shows detailed help for a specific command
-- **Examples**: 
-  - `!help` - List all available commands
-  - `!help add_ocr_read_channel` - Show detailed help for the add_ocr_read_channel command
+### `helpmenu`
+Displays an interactive help menu with dropdown categories and command pagination. This provides a user-friendly way to browse all available commands and their descriptions directly within Discord.
 
-### helpmenu
-Shows an interactive help menu with dropdown categories and command pagination.
+- **Usage:** `!helpmenu`
+- **Permissions:** Everyone
 
-- **Usage**: `!helpmenu`
-- **Arguments**: None
-- **Example**: `!helpmenu`
+### `ping`
+Checks the bot's current latency (response time) to the Discord API. This is useful for diagnosing connection issues or general bot responsiveness.
 
-### ping
-Check the bot's current latency.
+- **Usage:** `!ping`
+- **Permissions:** Everyone
 
-- **Usage**: `!ping`
-- **Arguments**: None
-- **Example**: `!ping`
+### `uptime`
+Displays how long the bot has been continuously running since its last restart.
 
-### uptime
-Display how long the bot has been running.
+- **Usage:** `!uptime`
+- **Permissions:** Everyone
 
-- **Usage**: `!uptime`
-- **Arguments**: None
-- **Example**: `!uptime`
+### `status`
+Displays the bot's current operational status, including its uptime, server count, user count, and other relevant statistics.
 
-### status
-Display bot status, uptime, and statistics.
+- **Usage:** `!status`
+- **Permissions:** Everyone
 
-- **Usage**: `!status`
-- **Arguments**: None
-- **Example**: `!status`
-- **Output**: Shows information about:
-  - Bot uptime
-  - OCR performance statistics
-  - Queue statistics
-  - Server statistics
+### `invite`
+Generates and provides an invite link that allows you to add the bot to other Discord servers.
 
-### invite
-Get an invite link to add this bot to other servers.
+- **Usage:** `!invite`
+- **Permissions:** Bot Owner
 
-- **Usage**: `!invite`
-- **Arguments**: None
-- **Example**: `!invite`
-- **Note**: Only available to the bot owner
+### `host`
+Displays detailed information about the host system where the bot is currently running. This includes operating system details, CPU usage, memory usage, and disk space.
 
-### host
-Display detailed information about the host system.
+- **Usage:** `!host`
+- **Permissions:** Bot Owner
 
-- **Usage**: `!host`
-- **Arguments**: None
-- **Example**: `!host`
-- **Note**: Only available to the bot owner
+### `shutdown`
+Shuts down the bot application completely. This command requires direct ownership of the bot.
 
-### reload_patterns
-Reload pattern configurations from the patterns.json file.
+- **Usage:** `!shutdown`
+- **Permissions:** Bot Owner
 
-- **Usage**: `!reload_patterns`
-- **Arguments**: None
-- **Example**: `!reload_patterns`
-- **Note**: Only available to the bot owner
+### `reload_patterns`
+Reloads the pattern configurations from the `patterns.json` file. This is useful if you have manually edited the patterns file and want the bot to apply the changes without a full restart.
 
-### shutdown
-Shut down the bot completely.
+- **Usage:** `!reload_patterns`
+- **Permissions:** Bot Owner
 
-- **Usage**: `!shutdown`
-- **Arguments**: None
-- **Example**: `!shutdown`
-- **Note**: Only available to the bot owner
+### `about`
+Displays detailed information about the bot, including its version, developer, and a brief description of its purpose.
+
+- **Usage:** `!about`
+- **Alias:** `botinfo`
+- **Permissions:** Everyone

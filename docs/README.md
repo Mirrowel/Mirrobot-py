@@ -13,22 +13,28 @@ If you're new to Mirrobot, start with these guides:
 
 Mirrobot's commands are organized by category. This is a list of documentation pages for each category:
 
-- [System Commands](commands/system.md) - Basic bot control and information commands.
-- [OCR Configuration](commands/ocr_config.md) - Setting up OCR channels and processing options.
-- [Pattern Management](commands/patterns.md) - Creating and managing response patterns.
-- [Permission Management](commands/permissions.md) - Managing command access permissions.
-- [Bot Configuration](commands/bot_config.md) - General bot settings and configuration (like prefixes).
-- [AI Assistant (LLM & Chatbot)](llm_integration.md) - Commands for interacting with the Large Language Model and managing the persistent chatbot feature. **(Updated)**
+- [AI Assistant](commands/ai_assistant.md) - Interact with the LLM and manage the chatbot.
+- [Bot Configuration](commands/bot_config.md) - General bot settings and configuration.
+- [Inline Response](commands/inline_response.md) - Configure inline responses to mentions.
+- [Log Analysis](commands/log_analysis.md) - Analyze game logs for errors.
+- [Maintenance](commands/maintenance.md) - Bot maintenance and restart commands.
+- [Moderation](commands/moderation.md) - Automated thread purging and moderation tools.
+- [OCR Configuration](commands/ocr_config.md) - Set up OCR channels and processing options.
+- [Pattern Management](commands/patterns.md) - Create and manage response patterns.
+- [Permission Management](commands/permissions.md) - Manage command access permissions.
+- [System](commands/system.md) - Basic bot control and information commands.
+- [Testing](commands/testing.md) - Commands for testing bot features.
 
 ## Developer Documentation
 
 If you're interested in contributing to Mirrobot or understanding its internal structure:
 
-- The code is organized into several modules, each with its own responsibility.
-- Core functionality is in the `core` directory (e.g., bot startup, event handlers, main message processing).
-- Configuration management is in the `config` directory (`config_manager.py`, `llm_config_manager.py`).
-- Utility functions are in the `utils` directory (e.g., logging, permissions, embed helpers, chatbot management, resource monitoring).
-- Command implementations are in the `cogs` directory.
+- **`/core/`**: Core functionality (bot startup, event handlers, OCR processing).
+- **`/cogs/`**: Command implementations, organized by category.
+- **`/utils/`**: Helper modules for permissions, logging, embeds, and more.
+- **`/config/`**: Configuration management for the main bot and LLM features.
+- **`/docs/`**: All documentation files.
+- **`/data/`**: Data files for patterns, LLM configurations, and conversation history.
 
 ## Support
 

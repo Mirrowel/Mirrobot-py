@@ -1,58 +1,26 @@
 # Bot Configuration Commands
 
-This document describes the commands available for basic bot configuration in Mirrobot.
+These commands are used to manage server-specific bot settings.
 
-## Command Reference
+### `set_prefix`
+Changes the command prefix for the current server. This allows you to customize how you interact with the bot in your server.
 
-### set_prefix
-Change the command prefix for this server.
+- **Usage:** `!set_prefix <new_prefix>`
+- **Arguments:**
+    - `<new_prefix>` (Required): The new prefix you want to set for bot commands. This can be any string.
+- **Examples:**
+    - `!set_prefix $`: Changes the prefix to `$`, so commands would be `!$help`.
+    - `!set_prefix >`: Changes the prefix to `>`, so commands would be `!>help`.
+- **Permissions:** `has_command_permission`
 
-- **Usage**: `!set_prefix <prefix>`
-- **Arguments**: 
-  - `prefix` (required): The new prefix to use
-- **Examples**: 
-  - `!set_prefix $`
-  - `!set_prefix >`
-- **Notes**: 
-  - After changing the prefix, you'll use the new prefix for all commands
-  - You can always mention the bot as a prefix regardless of the configured prefix
-- **Permissions**: Requires administrator privileges or bot manager status
+### `reset_prefix`
+Resets the command prefix for the current server back to the bot's default prefix, which is typically `!`.
 
-### reset_prefix
-Reset the command prefix for this server to the default (!).
+- **Usage:** `!reset_prefix`
+- **Permissions:** `has_command_permission`
 
-- **Usage**: `!reset_prefix`
-- **Arguments**: None
-- **Example**: `!reset_prefix`
-- **Note**: If you've changed your prefix and forgotten it, you can always use `@Mirrobot reset_prefix`
-- **Permissions**: Requires administrator privileges or bot manager status
+### `server_info`
+Displays a comprehensive overview of all bot configuration settings specific to the current server. This includes the command prefix, OCR channels, permission settings, and other server-level configurations.
 
-### server_info
-Display all bot configuration settings for this server.
-
-- **Usage**: `!server_info`
-- **Arguments**: None
-- **Example**: `!server_info`
-- **Output**: Shows information about:
-  - Current prefix setting
-  - OCR read channels
-  - OCR response channels
-  - OCR fallback channels
-  - Bot manager roles and users
-  - Command permissions
-- **Permissions**: Requires administrator privileges or bot manager status
-
-## Configuration Best Practices
-
-### Prefixes
-
-- **Choose Distinct Prefixes**: Avoid prefixes that might conflict with other bots on your server
-- **Short Prefixes**: Short prefixes (like `!`, `$`, `>`) are easier to type
-- **Consistent Prefixes**: Consider using the same prefix for all bots for consistency
-- **Mention Alternative**: Remember you can always use `@Mirrobot command` regardless of prefix
-
-### Server Configuration
-
-- Review your server configuration periodically using `!server_info`
-- Keep track of which channels are configured for OCR
-- Document any custom settings in a dedicated server channel
+- **Usage:** `!server_info`
+- **Permissions:** `has_command_permission`

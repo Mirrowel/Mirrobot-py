@@ -4,19 +4,21 @@ Mirrobot is an OCR (Optical Character Recognition) bot that scans images for tex
 
 ## ✨ Features
 
-- **Advanced OCR Processing**: Analyzes images posted in designated channels
-- **Parallel Processing**: Configurable multi-worker system for handling OCR tasks simultaneously
-- **Smart Queue Management**: Efficient handling of incoming images with backpressure control
-- **Pattern Recognition**: Identifies common issues from error messages
-- **Automatic Responses**: Provides helpful solutions for recognized problems
-- **Flexible Configuration**: Customize command prefix and permissions
-- **Role-based Permissions**: Grant specific access to commands by role or user
-- **Comprehensive Statistics**: Monitor OCR performance and queue metrics
-- **Resource Monitoring**: Track system resource usage and performance
-- **Thread Management**: Automatically or manually purge inactive threads from any channel type
-- **Environment Variable Support**: Secure configuration through environment variables
-- **LLM Integration**: Connect to a local or Google AI-powered LLM for natural language queries using `!ask` and `!think` commands.
-- **Conversational Chatbot Mode**: Enable persistent, context-aware chat in designated channels with `!chatbot_enable` / `!chatbot_disable`, leveraging automatic message and pinned context indexing.
+Mirrobot offers a comprehensive suite of features designed to enhance Discord server management and provide intelligent assistance:
+
+-   **Advanced OCR Processing**: Automatically scans images for text, supporting multiple languages.
+-   **Intelligent Pattern Recognition**: Identifies common issues and triggers automated responses based on extracted text.
+-   **Flexible Response System**: Configurable responses linked to patterns, with options for custom text and external links.
+-   **Powerful LLM Integration**: Connects to various Large Language Models (LLMs), including local and cloud-based providers, for advanced AI capabilities.
+-   **Context-Aware Chatbot**: Provides a persistent, conversational AI experience in designated channels, maintaining conversation history and user context.
+-   **Inline AI Responses**: Configurable bot responses to mentions, leveraging LLMs for dynamic and context-aware replies.
+-   **Automated Log Analysis**: Scans game log files for known errors and provides instant solutions.
+-   **Comprehensive Thread Management**: Automatically purges inactive threads from forum channels, with options to ignore specific threads or tags.
+-   **Granular Permission System**: Tiered permission control for commands and categories, including role-based access, user-specific permissions, and a global blacklist.
+-   **Customizable Bot Configuration**: Easily set command prefixes, configure OCR channels, and manage other server-specific settings.
+-   **Performance Monitoring & Statistics**: Tracks OCR processing, queue metrics, and system resource usage for optimal performance.
+-   **Robust Error Handling**: Ensures stability with automatic retries, queue backpressure, and detailed error logging.
+-   **Secure Configuration**: Supports environment variables for sensitive data, enhancing security.
 
 ## 🛠️ Installation
 
@@ -144,137 +146,7 @@ Enable Developer Mode in Discord, then:
 
 - `servers`: Per-guild overrides (`enabled`, `preferred_model`, `last_used_model`)
 
-Commands:
-
-| Command          | Description                            | Usage                                  | Permissions     |
-|------------------|----------------------------------------|----------------------------------------|-----------------|
-| **llm_provider**   | Switch LLM provider                     | `!llm_provider <local\|google_ai>`       | Bot Owner       |
-| **llm_set_api_key**| Set Google AI API key                   | `!llm_set_api_key <api_key>`             | Bot Owner       |
-| **llm_status**     | Show provider and model status          | `!llm_status`                            | Manage Messages |
-| **llm_models**     | List available models                   | `!llm_models [filters]`                  | Manage Messages |
-| **llm_select**     | Select model by name or index           | `!llm_select <model_name_or_number>`     | Bot Owner       |
-| **ask**            | Standard LLM query                      | `!ask <question>`                        | Manage Messages |
-| **think**          | LLM query with thinking prompt          | `!think [<true\|false>] <question>`      | Manage Guild    |
-
-#### Chatbot Configuration (`data/chatbot_config.json`)
-
-- `channels`: Per-guild/channel settings (`enabled`, `max_context_messages`, `max_user_context_messages`, `context_window_hours`, `response_delay_seconds`, `max_response_length`, `auto_prune_enabled`, `prune_interval_hours`, `auto_respond_to_mentions`, `auto_respond_to_replies`)
-
-- `global`: Defaults (`max_context_messages`, `max_user_context_messages`, `context_window_hours`, `response_delay_seconds`, `max_response_length`, `auto_prune_enabled`, `prune_interval_hours`, `user_index_cleanup_hours`, `auto_index_on_restart`, `auto_index_on_enable`)
-
-Commands:
-
-| Command                | Description                      | Usage                         | Permissions        |
-|------------------------|----------------------------------|-------------------------------|--------------------|
-| **chatbot_enable**       | Enable chatbot in current channel | `!chatbot_enable`             | Chatbot Enable     |
-| **chatbot_disable**      | Disable chatbot mode              | `!chatbot_disable`            | Chatbot Disable    |
-| **chatbot_status**       | Show config and stats             | `!chatbot_status`             | Chatbot Status     |
-| **chatbot_config**       | View/modify settings              | `!chatbot_config [setting] [value]` | Chatbot Config     |
-| **chatbot_clear_history**| Clear conversation history         | `!chatbot_clear_history`      | Chatbot Clear History |
-
-## 📝 Available Commands
-
-### OCR Configuration Commands
-
-| Command | Description | Usage | Permissions |
-|---------|-------------|-------|------------|
-| **add_ocr_read_channel** | Add a channel where the bot will scan images for OCR processing | `!add_ocr_read_channel #channel [language]` | Admin, Manager |
-| **remove_ocr_read_channel** | Remove a channel from the OCR reading list | `!remove_ocr_read_channel #channel` | Admin, Manager |
-| **set_ocr_language** | Set the OCR language for a channel | `!set_ocr_language #channel language` | Admin, Manager |
-| **add_ocr_response_channel** | Add a channel where the bot will post OCR analysis results | `!add_ocr_response_channel #channel [language]` | Admin, Manager |
-| **remove_ocr_response_channel** | Remove a channel from the OCR response list | `!remove_ocr_response_channel #channel` | Admin, Manager |
-| **add_ocr_response_fallback** | Add a fallback channel for OCR responses | `!add_ocr_response_fallback #channel` | Admin, Manager |
-| **remove_ocr_response_fallback** | Remove a channel from the OCR response fallback list | `!remove_ocr_response_fallback #channel` | Admin, Manager |
-
-### Bot Configuration Commands
-
-| Command | Description | Usage | Permissions |
-|---------|-------------|-------|------------|
-| **set_prefix** | Change the command prefix for this server | `!set_prefix $` | Admin, Manager |
-| **reset_prefix** | Reset the command prefix to default (!) | `!reset_prefix` | Admin, Manager |
-| **server_info** | Display all bot configuration settings for this server | `!server_info` | Admin, Manager |
-
-### Permissions Management Commands
-
-| Command | Description | Usage | Permissions |
-|---------|-------------|-------|------------|
-| **add_command_role** | Give a role or user permission to use a specific command | `!add_command_role <target> <command_name>` | Admin, Manager |
-| **add_bot_manager** | Add a role or user as a bot manager with access to all non-system commands | `!add_bot_manager <target>` | Admin, Manager |
-| **remove_command_role** | Remove a role or user's permission to use a specific command | `!remove_command_role <target> <command_name>` | Admin, Manager |
-| **remove_bot_manager** | Remove a role or user from bot managers | `!remove_bot_manager <target>` | Admin, Manager |
-| **add_category_permission** | Give a role or user permission to use all commands in a category | `!add_category_permission <target> <category>` | Admin, Manager |
-| **remove_category_permission** | Remove a role or user's permission to use all commands in a category | `!remove_category_permission <target> <category>` | Admin, Manager |
-| **list_categories** | List all available command categories | `!list_categories` | Admin, Manager |
-| **add_to_blacklist** | Add a role or user to the blacklist to prevent using any commands | `!add_to_blacklist <target>` | Admin, Manager |
-| **remove_from_blacklist** | Remove a role or user from the blacklist | `!remove_from_blacklist <target>` | Admin, Manager |
-| **list_blacklist** | List all roles and users in the command permission blacklist | `!list_blacklist` | Admin, Manager |
-
-### Pattern Management Commands
-
-The bot can be configured to recognize specific text patterns and respond with appropriate solutions:
-
-| Command | Description | Usage | Permissions |
-|---------|-------------|-------|------------|
-| **list_patterns** | List all configured patterns | `!list_patterns [verbosity]` | Admin, Manager |
-| **add_response** | Add a new response template | `!add_response "solution text" [name] [note]` | Admin, Manager |
-| **remove_response** | Remove an existing response | `!remove_response response_id_or_name` | Admin, Manager |
-| **add_pattern_to_response** | Add a pattern to an existing response | `!add_pattern_to_response response_id_or_name "pattern" [flags] [name] [url]` | Admin, Manager |
-| **remove_pattern_from_response** | Remove a pattern from a response | `!remove_pattern_from_response response_id_or_name pattern_id` | Admin, Manager |
-| **view_response** | View details of a specific response | `!view_response response_id_or_name` | Admin, Manager |
-| **extract_text** | Extract text from an image for testing | `!extract_text [url]` | Admin, Manager |
-
-### System Commands
-
-| Command | Description | Usage | Permissions |
-|---------|-------------|-------|------------|
-| **help** | Show info about the bot and its features | `!help [command]` | Everyone |
-| **helpmenu** | Interactive help menu with categories | `!helpmenu` | Everyone |
-| **ping** | Check the bot's response time | `!ping` | Everyone |
-| **uptime** | Show how long the bot has been running | `!uptime` | Everyone |
-| **status** | Display bot status, queue, and statistics | `!status` | Everyone |
-| **invite** | Get the bot's invite link | `!invite` | Everyone |
-| **host** | Display system information about the host | `!host` | Bot Owner Only |
-| **reload_patterns** | Reload the pattern database | `!reload_patterns` | Bot Owner Only |
-| **shutdown** | Shut down the bot completely | `!shutdown` | Bot Owner Only |
-
-### LLM Integration Commands
-
-| Command | Description | Usage | Permissions |
-|---------|-------------|-------|-------------|
-| **llm_provider** | Switch LLM provider | `!llm_provider <local\|google_ai>` | Bot Owner |
-| **llm_set_api_key** | Set Google AI API key | `!llm_set_api_key <api_key>` | Bot Owner |
-| **llm_status** | Show provider and model status | `!llm_status` | Manage Messages |
-| **llm_models** | List available models | `!llm_models [filters]` | Manage Messages |
-| **llm_select** | Select model by name or index | `!llm_select <model_name_or_number>` | Bot Owner |
-| **ask** | Standard LLM query | `!ask <question>` | Manage Messages |
-| **think** | LLM query with thinking prompt | `!think [<true\|false>] <question>` | Manage Guild |
-
-### Chatbot Commands
-
-| Command | Description | Usage | Permissions |
-|---------|-------------|-------|-------------|
-| **chatbot_enable** | Enable chatbot in current channel | `!chatbot_enable` | Chatbot Enable |
-| **chatbot_disable** | Disable chatbot mode | `!chatbot_disable` | Chatbot Disable |
-| **chatbot_status** | Show config and stats | `!chatbot_status` | Chatbot Status |
-| **chatbot_config** | View/modify settings | `!chatbot_config [setting] [value]` | Chatbot Config |
-| **chatbot_clear_history** | Clear conversation history | `!chatbot_clear_history` | Chatbot Clear History |
-
-### Moderation Commands
-
-Manage channels and threads with automated cleanup:
-
-| Command | Description | Usage | Permissions |
-|---------|-------------|-------|------------|
-| **watch_forum** | Add a channel to the watchlist for automatic thread purging | `!watch_forum <channel> <time_period>` | Admin, Manager |
-| **unwatch_forum** | Remove a channel from the watchlist | `!unwatch_forum <channel>` | Admin, Manager |
-| **purge_threads** | Manually purge inactive threads from a channel | `!purge_threads <channel> <time_period>` | Admin, Manager |
-| **ignore_thread** | Add a thread to the ignore list to prevent it from being purged | `!ignore_thread <thread>` | Admin, Manager |
-| **unignore_thread** | Remove a thread from the ignore list | `!unignore_thread <thread>` | Admin, Manager |
-| **ignore_tag** | Add a thread tag to the ignore list to prevent threads with that tag from being purged | `!ignore_tag <tag_name>` | Admin, Manager |
-| **unignore_tag** | Remove a thread tag from the ignore list | `!unignore_tag <tag_name>` | Admin, Manager |
-| **list_thread_settings** | List thread management settings for this server | `!list_thread_settings [type]` | Admin, Manager |
-
-[View Moderation Command Documentation](docs/commands/moderation.md)
+> For a complete and detailed list of all commands, their usage, arguments, and permissions, please refer to the [Commands Documentation](docs/README.md).
 
 ## Thread Management Features
 

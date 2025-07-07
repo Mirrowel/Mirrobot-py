@@ -10,6 +10,7 @@ import asyncio  # Add this import
 from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from core.pattern_manager import load_patterns
+from utils.discord_utils import reply_or_send
 from utils.embed_helper import create_embed_response
 from core.bot import get_ocr_queue_stats, get_server_prefix
 from utils.constants import (
@@ -67,6 +68,24 @@ def get_emoji(input_text: str, max_emojis: int = 1) -> str:
         "misc": "📌",
         "miscellaneous": "📌",
         "other": "📎",
+        "ai": "🧠",
+        "llm": "🧠",
+        "chatbot": "🧠",
+        "log": "📄",
+        "analysis": "📄",
+        "maintenance": "🛠️",
+        "restart": "🛠️",
+        "test": "🧪",
+        "testing": "🧪",
+        "inline": "↪️",
+        "reply": "↪️",
+        "file": "📁",
+        "process": "📁",
+        "env": "🌍",
+        "environment": "🌍",
+        "constant": "📌",
+        "stat": "📈",
+        "tracker": "📈",
     }
     
     # Find all matching keywords with their positions in the input string
@@ -391,7 +410,7 @@ class SystemCommandsCog(commands.Cog):
         response = "Shutting down."
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.info(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
         await self.bot.close()  # Gracefully close the bot
 
     @commands.command(name='reload_patterns', help='Reload pattern configurations from the patterns.json file.\nNo arguments required.\nExample: !reload_patterns')
@@ -400,9 +419,9 @@ class SystemCommandsCog(commands.Cog):
     async def reload_patterns(self, ctx):
         """Reload patterns from the patterns.json file"""
         if load_patterns():
-            await ctx.reply("Successfully reloaded pattern configurations.")
+            await reply_or_send(ctx, "Successfully reloaded pattern configurations.")
         else:
-            await ctx.reply("Error loading pattern configurations. Check the log for details.")
+            await reply_or_send(ctx, "Error loading pattern configurations. Check the log for details.")
 
     @commands.command(name='help', aliases=['info'], help='Show info about the bot and its features.\nArguments: [command] (optional) - Get detailed help on a specific command\nExample: !help, !info or !help server_info')
     @commands.cooldown(1, 3, commands.BucketType.user)  # Prevent spam

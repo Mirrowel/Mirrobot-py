@@ -7,6 +7,7 @@ import discord
 from utils.chatbot.models import ConversationMessage, ContentPart
 from utils.chatbot.persistence import JsonStorageManager
 from utils.logging_setup import get_logger
+from utils.chatbot.manager import chatbot_manager # Import the global manager
 
 logger = get_logger()
 
@@ -20,6 +21,22 @@ class InlineResponseConfig:
     model_type: str = "ask"
     context_messages: int = 30
     user_context_messages: int = 15
+    # New permission fields
+    role_whitelist: List[int] = None
+    member_whitelist: List[int] = None
+    role_blacklist: List[int] = None
+    member_blacklist: List[int] = None
+
+    def __post_init__(self):
+        # Ensure lists are initialized correctly if they are None
+        if self.role_whitelist is None:
+            self.role_whitelist = []
+        if self.member_whitelist is None:
+            self.member_whitelist = []
+        if self.role_blacklist is None:
+            self.role_blacklist = []
+        if self.member_blacklist is None:
+            self.member_blacklist = []
 
 DEFAULT_CONFIG = asdict(InlineResponseConfig())
 
@@ -55,25 +72,48 @@ class InlineResponseManager:
     def get_channel_config(self, guild_id: int, channel_id: int) -> "InlineResponseConfig":
         """
         Get the effective configuration for a specific channel, applying the hierarchy.
-        Hierarchy: Channel > Server > Default
+        Hierarchy: Channel settings are combined with (union) or override server settings.
+        - For permission lists (whitelists/blacklists), the lists are combined (union).
+        - For other settings, channel-specific values override server-wide values.
         """
         guild_key = str(guild_id)
         channel_key = str(channel_id)
         
         # 1. Start with hardcoded defaults
-        effective_config = DEFAULT_CONFIG.copy()
+        effective_config_dict = DEFAULT_CONFIG.copy()
 
         # 2. Layer server-wide settings on top
-        server_config = self.config_cache.get("servers", {}).get(guild_key, {}).get("server_settings", {})
-        effective_config.update(server_config)
+        server_settings = self.config_cache.get("servers", {}).get(guild_key, {}).get("server_settings", {})
+        effective_config_dict.update(server_settings)
 
-        # 3. Layer channel-specific settings on top
-        channel_config = self.config_cache.get("servers", {}).get(guild_key, {}).get("channels", {}).get(channel_key, {})
-        effective_config.update(channel_config)
+        # 3. Layer channel-specific settings, handling list unions
+        channel_settings = self.config_cache.get("servers", {}).get(guild_key, {}).get("channels", {}).get(channel_key, {})
+        
+        # Combine permission lists
+        server_role_wl = set(server_settings.get('role_whitelist', []))
+        channel_role_wl = set(channel_settings.get('role_whitelist', []))
+        effective_config_dict['role_whitelist'] = list(server_role_wl.union(channel_role_wl))
+
+        server_member_wl = set(server_settings.get('member_whitelist', []))
+        channel_member_wl = set(channel_settings.get('member_whitelist', []))
+        effective_config_dict['member_whitelist'] = list(server_member_wl.union(channel_member_wl))
+
+        server_role_bl = set(server_settings.get('role_blacklist', []))
+        channel_role_bl = set(channel_settings.get('role_blacklist', []))
+        effective_config_dict['role_blacklist'] = list(server_role_bl.union(channel_role_bl))
+
+        server_member_bl = set(server_settings.get('member_blacklist', []))
+        channel_member_bl = set(channel_settings.get('member_blacklist', []))
+        effective_config_dict['member_blacklist'] = list(server_member_bl.union(channel_member_bl))
+
+        # Update other settings with channel-specific overrides
+        for key, value in channel_settings.items():
+            if key not in ['role_whitelist', 'member_whitelist', 'role_blacklist', 'member_blacklist']:
+                effective_config_dict[key] = value
         
         # Filter to only include keys present in the dataclass
         config_keys = {f.name for f in fields(InlineResponseConfig)}
-        filtered_config = {k: v for k, v in effective_config.items() if k in config_keys}
+        filtered_config = {k: v for k, v in effective_config_dict.items() if k in config_keys}
         
         return InlineResponseConfig(**filtered_config)
 
@@ -182,7 +222,8 @@ class InlineResponseManager:
         # 5. Convert to ConversationMessage
         context_messages = []
         for msg in sorted_messages:
-            cleaned_content, image_urls, _ = _process_discord_message_for_context(msg)
+            # Use the centralized function from the chatbot manager's conversation utility
+            cleaned_content, image_urls, _ = chatbot_manager.conversation_manager._process_discord_message_for_context(msg)
             
             multimodal_content = []
             if cleaned_content:
@@ -209,70 +250,16 @@ class InlineResponseManager:
         return context_messages
 
 
-def _is_image_url(url: str) -> bool:
-    """Check if a URL points to an image by checking the path extension."""
-    try:
-        image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
-        parsed_url = urlparse(url)
-        return any(parsed_url.path.lower().endswith(ext) for ext in image_extensions)
-    except Exception:
-        return False
-
-def _process_discord_message_for_context(message: discord.Message) -> Tuple[str, List[str], List[str]]:
-    """
-    Processes a discord.Message to extract content, filter media, and prepare for context.
-    This is a standalone version of the logic from ConversationManager.
-    """
-    content = message.content
-    image_urls = set()
-    other_urls = set()
-
-    # 1. Process Attachments
-    for attachment in message.attachments:
-        if attachment.content_type and attachment.content_type.startswith('image/') and 'gif' not in attachment.content_type:
-            if _is_image_url(attachment.url):
-                image_urls.add(attachment.url)
-        else:
-            other_urls.add(attachment.url)
-
-    # 2. Process Embeds
-    for embed in message.embeds:
-        if embed.url and _is_image_url(embed.url):
-            image_urls.add(embed.url)
-        if embed.thumbnail and embed.thumbnail.url and _is_image_url(embed.thumbnail.url):
-            image_urls.add(embed.thumbnail.url)
-        if embed.image and embed.image.url and _is_image_url(embed.image.url):
-            image_urls.add(embed.image.url)
-        
-        if embed.url and embed.type not in ['image', 'gifv']:
-            other_urls.add(embed.url)
-        if embed.video and embed.video.url:
-            other_urls.add(embed.video.url)
-
-    # 3. Process URLs in the message content
-    url_pattern = re.compile(r'https?://\S+')
-    found_urls = url_pattern.findall(content)
-    for url in found_urls:
-        if _is_image_url(url):
-            image_urls.add(url)
-        other_urls.add(url)
-
-    # 4. Clean the message content by removing all identified URLs
-    all_urls_to_strip = image_urls.union(other_urls)
-    cleaned_content = content
-    for url in all_urls_to_strip:
-        cleaned_content = cleaned_content.replace(url, '')
-
-    # Final cleanup of whitespace
-    cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
-    
-    return cleaned_content, list(image_urls), list(other_urls)
-
 def split_message(text: str, limit: int = 2000) -> List[str]:
     """
     Splits a string of text into a list of smaller strings, each under the
     specified character limit, without breaking words or formatting.
+    Returns an empty list if the input text is empty or just whitespace.
     """
+    if not text or text.isspace():
+        logger.warning("split_message received empty or whitespace-only text. Returning empty list.")
+        return []
+
     if len(text) <= limit:
         return [text]
 
@@ -321,14 +308,29 @@ def split_message(text: str, limit: int = 2000) -> List[str]:
             words = chunk.split(' ')
             new_chunk = ""
             for word in words:
+                # If a single word is over the limit, it must be split forcefully
+                if len(word) > limit:
+                    if new_chunk: # Add whatever was in new_chunk before this monster word
+                        final_chunks.append(new_chunk.strip())
+                    # Split the monster word itself
+                    for i in range(0, len(word), limit):
+                        final_chunks.append(word[i:i+limit])
+                    new_chunk = "" # Reset new_chunk
+                    continue
+
                 if len(new_chunk) + len(word) + 1 > limit:
-                    final_chunks.append(new_chunk)
+                    if new_chunk: # Ensure we don't add empty strings
+                        final_chunks.append(new_chunk.strip())
                     new_chunk = word
                 else:
-                    new_chunk += f" {word}"
-            if new_chunk:
-                final_chunks.append(new_chunk)
+                    if new_chunk:
+                        new_chunk += f" {word}"
+                    else:
+                        new_chunk = word
+            if new_chunk: # Add the last part
+                final_chunks.append(new_chunk.strip())
         else:
             final_chunks.append(chunk)
             
-    return final_chunks
+    # Final filter to remove any empty strings that might have slipped through
+    return [c for c in final_chunks if c and not c.isspace()]

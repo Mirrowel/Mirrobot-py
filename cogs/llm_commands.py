@@ -27,8 +27,8 @@ class LLMCommands(commands.Cog):
         # Global default models
         self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
-        #self.multimodal_models_whitelist = ["gemini", "gemma"]
-        self.multimodal_models_whitelist = ["big", "balls"]
+        self.multimodal_models_whitelist = ["gemini", "gemma"]
+        #self.multimodal_models_whitelist = ["big", "balls"]
 
     async def cog_load(self):
         """Initialize the LLM client and check provider status on cog load."""
@@ -443,15 +443,27 @@ class LLMCommands(commands.Cog):
 
         # 4. Add the current user's prompt
         if prompt:
-            content_parts = [{"type": "text", "text": prompt}]
+            content_parts = []
+            # The 'prompt' can be a string (from /ask) or a list of parts (from the chatbot formatter)
+            if isinstance(prompt, list):
+                content_parts.extend(prompt)
+            elif isinstance(prompt, str):
+                content_parts.append({"type": "text", "text": prompt})
+
+            # Add any extra image_urls that weren't part of the initial prompt object
             if image_urls and is_multimodal:
                 logger.info(f"Adding {len(image_urls)} image URLs to user message for multimodal model")
                 for url in image_urls:
-                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+                    # Prevent adding duplicate images if they were already processed into the prompt
+                    if not any(part.get("type") == "image_url" and part.get("image_url", {}).get("url") == url for part in content_parts):
+                        content_parts.append({"type": "image_url", "image_url": {"url": url}})
             
+            if not content_parts:
+                return messages # Nothing to add
+
             # If there's only one text part, send it as a simple string for compatibility.
             # Otherwise, send the list of parts.
-            final_prompt_content = content_parts[0]['text'] if len(content_parts) == 1 else content_parts
+            final_prompt_content = content_parts[0]['text'] if len(content_parts) == 1 and content_parts[0]['type'] == 'text' else content_parts
             messages.append({"role": "user", "content": final_prompt_content})
             
         return messages
@@ -576,6 +588,40 @@ class LLMCommands(commands.Cog):
         return cleaned_response, combined_thinking
     
 
+    async def _process_multimodal_input(self, message: discord.Message, question: str) -> Tuple[str, List[str]]:
+        """Helper to process attachments and URLs from a message for multimodal input."""
+        image_urls = []
+        extracted_text = []
+
+        # Process attachments
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith('image/'):
+                image_urls.append(attachment.url)
+            else:
+                text = await extract_text_from_attachment(attachment)
+                if text:
+                    extracted_text.append(text)
+
+        # Process URLs in the question string
+        url_pattern = re.compile(r'https?://\S+')
+        found_urls = url_pattern.findall(question)
+        for url in found_urls:
+            # Check if the URL is an image
+            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif']):
+                image_urls.append(url)
+                question = question.replace(url, '').strip()
+            # Check if the URL is a text-based file
+            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
+                text = await extract_text_from_url(url)
+                if text:
+                    extracted_text.append(text)
+                question = question.replace(url, '').strip()
+
+        if extracted_text:
+            question = f"{' '.join(extracted_text)}\n\n{question}"
+        
+        return question, image_urls
+
     @commands.command(name='ask', help='Ask the LLM a question')
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
@@ -587,40 +633,15 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        image_urls = []
-        extracted_text = []
-
-        # Process attachments
-        for attachment in ctx.message.attachments:
-            if attachment.content_type.startswith('image/'):
-                image_urls.append(attachment.url)
-            else:
-                text = await extract_text_from_attachment(attachment)
-                if text:
-                    extracted_text.append(text)
-
-        # Process URLs in the question
-        url_pattern = re.compile(r'https?://\S+')
-        found_urls = url_pattern.findall(question)
-        for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                image_urls.append(url)
-                question = question.replace(url, '').strip()
-            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
-                text = await extract_text_from_url(url)
-                if text:
-                    extracted_text.append(text)
-                question = question.replace(url, '').strip()
-
         async with ctx.typing():
             try:
+                # Use the helper to process multimodal input
+                question, image_urls = await self._process_multimodal_input(ctx.message, question)
+                
                 guild_id = ctx.guild.id if ctx.guild else None
-                channel_context = chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
-                user_context = chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
                 context = f"{channel_context}\n{user_context}"
-
-                if extracted_text:
-                    question = f"{' '.join(extracted_text)}\n\n{question}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
@@ -632,7 +653,7 @@ class LLMCommands(commands.Cog):
                     context=context
                 )
                 cleaned_response, _ = self.strip_thinking_tokens(response)
-                final_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                final_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                     cleaned_response,
                     guild_id,
                     bot_user_id=self.bot.user.id,
@@ -653,40 +674,15 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
             return
 
-        image_urls = []
-        extracted_text = []
-
-        # Process attachments
-        for attachment in ctx.message.attachments:
-            if attachment.content_type.startswith('image/'):
-                image_urls.append(attachment.url)
-            else:
-                text = await extract_text_from_attachment(attachment)
-                if text:
-                    extracted_text.append(text)
-
-        # Process URLs in the question
-        url_pattern = re.compile(r'https?://\S+')
-        found_urls = url_pattern.findall(question)
-        for url in found_urls:
-            if any(url.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
-                image_urls.append(url)
-                question = question.replace(url, '').strip()
-            elif any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
-                text = await extract_text_from_url(url)
-                if text:
-                    extracted_text.append(text)
-                question = question.replace(url, '').strip()
-
         async with ctx.typing():
             try:
-                guild_id = ctx.guild.id if ctx.guild else None
-                channel_context = chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
-                user_context = chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
-                context = f"{channel_context}\n{user_context}"
+                # Use the helper to process multimodal input
+                question, image_urls = await self._process_multimodal_input(ctx.message, question)
 
-                if extracted_text:
-                    question = f"{' '.join(extracted_text)}\n\n{question}"
+                guild_id = ctx.guild.id if ctx.guild else None
+                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                context = f"{channel_context}\n{user_context}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
                 response, performance_metrics = await self.make_llm_request(
@@ -698,7 +694,7 @@ class LLMCommands(commands.Cog):
                     context=context
                 )
                 
-                formatted_response = chatbot_manager.formatter.format_llm_output_for_discord(
+                formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                     response,
                     guild_id,
                     bot_user_id=self.bot.user.id,
@@ -1052,33 +1048,19 @@ class LLMCommands(commands.Cog):
                 )
                 return
             # Get current conversation history count before clearing
-            current_history = chatbot_manager.load_conversation_history(guild_id, channel_id)
+            current_history = await chatbot_manager.load_conversation_history(guild_id, channel_id)
             message_count = len(current_history)
             
             success = chatbot_manager.disable_chatbot(guild_id, channel_id)
             
             if success:
                 # Clear conversation history when disabling chatbot
-                history_cleared = chatbot_manager.save_conversation_history(guild_id, channel_id, [])
-                
-                # Also delete the physical conversation file
-                conversation_file_path = chatbot_manager.get_conversation_file_path(guild_id, channel_id)
-                file_deleted = False
-                try:
-                    if os.path.exists(conversation_file_path):
-                        os.remove(conversation_file_path)
-                        file_deleted = True
-                        logger.debug(f"Deleted conversation file: {conversation_file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete conversation file {conversation_file_path}: {e}")
+                await chatbot_manager.clear_conversation_history(guild_id, channel_id)
+                history_cleared = True  # Assume success if no exception is raised
                 
                 history_msg = ""
                 if history_cleared and message_count > 0:
-                    history_msg = f"\n\n🗑️ Cleared {message_count} messages from conversation history"
-                    if file_deleted:
-                        history_msg += " and deleted conversation file."
-                    else:
-                        history_msg += "."
+                    history_msg = f"\n\n🗑️ Cleared {message_count} messages from conversation history and deleted the conversation file."
                 
                 await create_embed_response(
                     ctx,
@@ -1127,7 +1109,7 @@ class LLMCommands(commands.Cog):
                 return
             
             channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
-            conversation_history = chatbot_manager.load_conversation_history(guild_id, channel_id)
+            conversation_history = await chatbot_manager.load_conversation_history(guild_id, channel_id)
             
             status_emoji = "🟢" if channel_config.enabled else "🔴"
             status_text = "Enabled" if channel_config.enabled else "Disabled"
@@ -1448,7 +1430,7 @@ class LLMCommands(commands.Cog):
                 )
                 return
             
-            chatbot_manager.clear_channel_data(guild_id, channel_id)
+            await chatbot_manager.clear_channel_data(guild_id, channel_id)
             
             await create_embed_response(
                 ctx,
@@ -1659,14 +1641,14 @@ class LLMCommands(commands.Cog):
             target_user_id = user_id if user_id else ctx.author.id
             
             # Get all context components
-            context_messages = chatbot_manager.get_prioritized_context(guild_id, channel_id, target_user_id)
-            conversation_context = chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
+            context_messages = await chatbot_manager.get_prioritized_context(guild_id, channel_id, target_user_id)
+            conversation_context, _ = await chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
             system_prompt = self.load_system_prompt(guild_id)
             server_context_file_content = self.load_context(guild_id) # Renamed to avoid confusion with conversation context
             channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
             
             # NEW: Get pinned messages context
-            pinned_messages_context = chatbot_manager.get_pinned_context_for_llm(guild_id, channel_id)
+            pinned_messages_context = await chatbot_manager.get_pinned_context_for_llm(guild_id, channel_id)
 
             # Build complete context file
             content_lines = []
@@ -1697,12 +1679,12 @@ class LLMCommands(commands.Cog):
             content_lines.append("CONTEXT STATISTICS:")
             content_lines.append("-" * 40)
             content_lines.append(f"Total messages in context: {len(context_messages)}")
-            content_lines.append(f"Messages from target user: {len([msg for msg in context_messages if msg.user_id == target_user_id])}")
-            content_lines.append(f"Messages from other users: {len([msg for msg in context_messages if msg.user_id != target_user_id and not msg.is_bot_response])}")
+            content_lines.append(f"Messages from target user: {len([msg for msg in context_messages if int(msg.user_id) == target_user_id])}")
+            content_lines.append(f"Messages from other users: {len([msg for msg in context_messages if int(msg.user_id) != target_user_id and not msg.is_bot_response])}")
             content_lines.append(f"Bot responses: {len([msg for msg in context_messages if msg.is_bot_response])}")
             
             # Get indexing stats
-            indexing_stats = chatbot_manager.get_indexing_stats(guild_id)
+            indexing_stats = await chatbot_manager.get_indexing_stats(guild_id)
             content_lines.append(f"Total users indexed: {indexing_stats['users_indexed']}")
             content_lines.append(f"Total channels indexed: {indexing_stats['channels_indexed']}")
             content_lines.append(f"Total user messages tracked: {indexing_stats['total_user_messages']}")
@@ -2006,6 +1988,47 @@ class LLMCommands(commands.Cog):
                 embed.add_field(name=f"Model: `{model}`", value="\n".join(budget_lines), inline=False)
 
         await ctx.send(embed=embed)
+
+    @commands.command(name='indexing_stats', help='Show indexing statistics for this server.')
+    @has_command_permission()
+    @command_category("AI Assistant")
+    async def indexing_stats(self, ctx):
+        """Displays statistics about the user and channel indexes for this server."""
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
+            return
+
+        guild_id = ctx.guild.id
+        stats = await chatbot_manager.index_manager.get_indexing_stats(guild_id)
+
+        embed = discord.Embed(title=f"Indexing Statistics for {ctx.guild.name}", color=discord.Color.blue())
+        embed.add_field(name="👥 Users Indexed", value=f"`{stats['users_indexed']}`", inline=True)
+        embed.add_field(name="＃ Channels Indexed", value=f"`{stats['channels_indexed']}`", inline=True)
+        embed.add_field(name="💬 Total User Messages", value=f"`{stats['total_user_messages']}`", inline=True)
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name='cleanup_users', help='Manually clean up stale users from the index.')
+    @has_command_permission()
+    @command_category("AI Assistant")
+    async def cleanup_users(self, ctx, hours: int = 168):
+        """Manually cleans up users who have not been seen in the specified number of hours."""
+        if not ctx.guild:
+            await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
+            return
+
+        if not (24 <= hours <= 8760): # 1 day to 1 year
+            await create_embed_response(ctx, "Please provide a value for `hours` between 24 and 8760.", title="Invalid Input", color=discord.Color.orange())
+            return
+
+        async with ctx.typing():
+            removed_count = await chatbot_manager.index_manager.cleanup_stale_users(ctx.guild.id, hours)
+            await create_embed_response(
+                ctx,
+                f"Removed `{removed_count}` stale users who haven't been seen in the last {hours} hours.",
+                title="User Cleanup Complete",
+                color=discord.Color.green()
+            )
 
 async def setup(bot):
     """Setup function to add the cog to the bot"""

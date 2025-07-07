@@ -1,134 +1,107 @@
 # Permission Management Commands
 
-This module provides commands for managing permissions to use the bot's features. Permissions can be granted to specific roles and users, or managed at the category level.
+These commands are for managing role-based and user-based permissions for bot commands.
 
-## Role and User Permissions
+### `add_command_role`
+Grants a specific role or user permission to use a particular bot command. This allows for granular control over who can access individual commands.
 
-### Add Command Role
+- **Usage:** `!add_command_role <target> <command_name>`
+- **Arguments:**
+    - `<target>` (Required): The role (mention or ID) or user (mention or ID) to grant permission to.
+    - `<command_name>` (Required): The exact name of the command (e.g., `add_ocr_read_channel`, `set_prefix`).
+- **Examples:**
+    - `!add_command_role @Moderators add_ocr_read_channel`: Allows the `@Moderators` role to use the `add_ocr_read_channel` command.
+    - `!add_command_role @SomeUser purge_threads`: Allows `@SomeUser` to use the `purge_threads` command.
+- **Permissions:** `has_command_permission`
 
-Give a role or user permission to use a specific bot command.
+### `remove_command_role`
+Revokes a specific role or user's permission to use a particular bot command.
 
-**Command:** `!add_command_role <target> <command_name>`
+- **Usage:** `!remove_command_role <target> <command_name>`
+- **Arguments:**
+    - `<target>` (Required): The role (mention or ID) or user (mention or ID) to remove permission from.
+    - `<command_name>` (Required): The exact name of the command.
+- **Examples:**
+    - `!remove_command_role @Moderators add_ocr_read_channel`: Revokes the `@Moderators` role's permission to use `add_ocr_read_channel`.
+    - `!remove_command_role @SomeUser purge_threads`: Revokes `@SomeUser`'s permission to use `purge_threads`.
+- **Permissions:** `has_command_permission`
 
-**Examples:**
-- `!add_command_role @Moderators add_ocr_read_channel` - Grant Moderators permission to add OCR channels
-- `!add_command_role @username extract_text` - Grant specific user permission to extract text from images
+### `add_bot_manager`
+Designates a role or user as a "bot manager." Bot managers have access to all bot commands, except for highly restricted system commands (e.g., `restart`). This provides a convenient way to grant broad administrative control over the bot.
 
-**Notes:**
-- Target can be a role mention, role name, user mention, or user ID
-- Command name must be a valid bot command
+- **Usage:** `!add_bot_manager <target>`
+- **Arguments:**
+    - `<target>` (Required): The role (mention or ID) or user (mention or ID) to designate as a bot manager.
+- **Examples:**
+    - `!add_bot_manager @Admins`: Grants all members of the `@Admins` role bot manager privileges.
+    - `!add_bot_manager @SomeUser`: Grants `@SomeUser` bot manager privileges.
+- **Permissions:** `has_command_permission`
 
-### Remove Command Role
+### `remove_bot_manager`
+Removes a role or user from the bot manager list, revoking their broad access to bot commands.
 
-Remove a role or user's permission to use a specific bot command.
+- **Usage:** `!remove_bot_manager <target>`
+- **Arguments:**
+    - `<target>` (Required): The role (mention or ID) or user (mention or ID) to remove from bot manager status.
+- **Examples:**
+    - `!remove_bot_manager @Admins`: Removes the `@Admins` role from bot manager privileges.
+    - `!remove_bot_manager @SomeUser`: Removes `@SomeUser` from bot manager privileges.
+- **Permissions:** `has_command_permission`
 
-**Command:** `!remove_command_role <target> <command_name>`
+### `add_category_permission`
+Grants a specific role or user permission to use all commands within a designated command category. This simplifies permission management for groups of related commands.
 
-**Examples:**
-- `!remove_command_role @Moderators add_ocr_read_channel`
-- `!remove_command_role @username extract_text`
+- **Usage:** `!add_category_permission <target> <category_name>`
+- **Arguments:**
+    - `<target>` (Required): The role (mention or ID) or user (mention or ID) to grant permission to.
+    - `<category_name>` (Required): The exact name of the command category (e.g., `Moderation`, `AI Assistant`). You can list available categories using `!list_categories`.
+- **Examples:**
+    - `!add_category_permission @Moderators Moderation`: Allows the `@Moderators` role to use all commands in the "Moderation" category.
+    - `!add_category_permission @SomeUser "Bot Configuration"`: Allows `@SomeUser` to use all commands in the "Bot Configuration" category.
+- **Permissions:** `has_command_permission`
 
-## Bot Manager Commands
+### `remove_category_permission`
+Revokes a specific role or user's permission to use all commands within a designated command category.
 
-### Add Bot Manager
+- **Usage:** `!remove_category_permission <target> <category_name>`
+- **Arguments:**
+    - `<target>` (Required): The role (mention or ID) or user (mention or ID) to remove permission from.
+    - `<category_name>` (Required): The exact name of the command category.
+- **Examples:**
+    - `!remove_category_permission @Moderators Moderation`: Revokes the `@Moderators` role's permission to use commands in the "Moderation" category.
+    - `!remove_category_permission @SomeUser "Bot Configuration"`: Revokes `@SomeUser`'s permission to use commands in the "Bot Configuration" category.
+- **Permissions:** `has_command_permission`
 
-Add a role or user as a bot manager with access to all non-system commands.
+### `list_categories`
+Lists all available command categories that can be used with permission management commands (e.g., `add_category_permission`).
 
-**Command:** `!add_bot_manager <target>`
+- **Usage:** `!list_categories`
+- **Permissions:** `has_command_permission`
 
-**Examples:**
-- `!add_bot_manager @Admins` - Make the Admins role a bot manager
-- `!add_bot_manager @username` - Make a specific user a bot manager
+### `add_to_blacklist`
+Adds a role or user to the global command permission blacklist. Entities on the blacklist are explicitly denied from using any bot commands, regardless of any other permissions they may have.
 
-**Notes:**
-- Bot managers can use all regular commands without needing specific permissions
-- System commands are still restricted to the bot owner
+- **Usage:** `!add_to_blacklist <target>`
+- **Arguments:**
+    - `<target>` (Required): The role (mention or ID) or user (mention or ID) to add to the blacklist.
+- **Examples:**
+    - `!add_to_blacklist @Troublemaker`: Blacklists `@Troublemaker` from using any bot commands.
+    - `!add_to_blacklist @SpamRole`: Blacklists all members of the `@SpamRole` from using any bot commands.
+- **Permissions:** `has_command_permission`
 
-### Remove Bot Manager
+### `remove_from_blacklist`
+Removes a role or user from the global command permission blacklist, allowing them to use commands again (subject to other permission settings).
 
-Remove a role or user from bot managers, revoking access to all commands.
+- **Usage:** `!remove_from_blacklist <target>`
+- **Arguments:**
+    - `<target>` (Required): The role (mention or ID) or user (mention or ID) to remove from the blacklist.
+- **Examples:**
+    - `!remove_from_blacklist @Troublemaker`: Removes `@Troublemaker` from the blacklist.
+    - `!remove_from_blacklist @SpamRole`: Removes all members of the `@SpamRole` from the blacklist.
+- **Permissions:** `has_command_permission`
 
-**Command:** `!remove_bot_manager <target>`
+### `list_blacklist`
+Lists all roles and users currently in the global command permission blacklist. This provides an overview of which entities are explicitly prevented from using bot commands.
 
-**Examples:**
-- `!remove_bot_manager @Admins`
-- `!remove_bot_manager @username`
-
-## Category Permissions
-
-### Add Category Permission
-
-Give a role or user permission to use all commands in a category.
-
-**Command:** `!add_category_permission <target> <category>`
-
-**Examples:**
-- `!add_category_permission @Moderators Moderation` - Grant all moderation commands to Moderators
-- `!add_category_permission @username OCR Configuration` - Grant all OCR commands to a user
-
-### Remove Category Permission
-
-Remove a role or user's permission to use all commands in a category.
-
-**Command:** `!remove_category_permission <target> <category>`
-
-**Examples:**
-- `!remove_category_permission @Moderators Moderation`
-- `!remove_category_permission @username OCR Configuration`
-
-### List Categories
-
-List all available command categories.
-
-**Command:** `!list_categories`
-
-## Blacklist Management
-
-### Add To Blacklist
-
-Add a role or user to the command permission blacklist to prevent them from using any commands.
-
-**Command:** `!add_to_blacklist <target>`
-
-**Examples:**
-- `!add_to_blacklist @Troublemaker` - Prevent a user from using any commands
-- `!add_to_blacklist @RestrictedRole` - Prevent anyone with a specific role from using commands
-
-**Notes:**
-- Users with Administrator permission cannot be blacklisted
-- Roles with Administrator permission cannot be blacklisted
-- Blacklist overrides all other permission settings (except for administrators)
-- Blacklists are now stored persistently in `data/permission_blacklists.json` and will survive bot restarts and config resets
-
-### Remove From Blacklist
-
-Remove a role or user from the permission blacklist.
-
-**Command:** `!remove_from_blacklist <target>`
-
-**Examples:**
-- `!remove_from_blacklist @Troublemaker`
-- `!remove_from_blacklist @RestrictedRole`
-
-### List Blacklist
-
-List all roles and users in the command permission blacklist.
-
-**Command:** `!list_blacklist`
-
-## Permission System Overview
-
-The permission system uses the following hierarchy (from highest to lowest priority):
-1. **Bot Owner** - Always has access to all commands
-2. **Blacklist** - Prevents command access regardless of other permissions (except administrators)
-3. **Server Administrator** - Has access to all commands in the server
-4. **Bot Manager** - Has access to all non-system commands
-5. **Category Permission** - Has access to all commands in a specific category
-6. **Command Permission** - Has access to a specific command
-7. **Discord Permission** - Has access based on Discord permissions
-
-## Default Permissions
-
-- Server owners/administrators have access to all commands
-- Only the bot owner can use system commands like `shutdown`, `reload_patterns`, etc.
-- Other users need explicit permission grants to use commands
+- **Usage:** `!list_blacklist`
+- **Permissions:** `has_command_permission`

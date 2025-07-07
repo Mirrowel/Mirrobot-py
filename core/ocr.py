@@ -17,6 +17,7 @@ from datetime import datetime
 from utils.logging_setup import get_logger
 from core.pattern_manager import match_patterns
 from utils.stats_tracker import OCRTimingContext, get_ocr_stats
+from utils.discord_utils import reply_or_send
 
 logger = get_logger()
 
@@ -213,7 +214,7 @@ async def respond_to_ocr(bot, message, response):
     
     # Check if we should reply in the same channel
     if guild_id in config['ocr_response_channels'] and message.channel.id in config['ocr_response_channels'][guild_id]:
-        await msg_reply(message, text=response)
+        await reply_or_send(message, content=response)
     else:
         # Initialize response channels if needed
         if guild_id not in config['ocr_response_channels']:
@@ -251,7 +252,7 @@ async def respond_to_ocr(bot, message, response):
             sent_message = await response_channel.send(original_message_link)
             logger.debug(f"Server: {message.guild.name}:{sent_message.guild.id}, Channel: {sent_message.channel.name}:{sent_message.channel.id}," + (f" Parent:{sent_message.channel.parent}" if hasattr(sent_message.channel, 'type') and sent_message.channel.type in ['public_thread', 'private_thread'] else ""))
             logger.debug(f"Response: {sent_message.content}")
-            await msg_reply(sent_message, text=response)
+            await reply_or_send(sent_message, content=response)
         else:
             logger.error('No response channel found. Using fallback channel.')
             fallback_channels = config['ocr_response_fallback'].get(guild_id)
@@ -259,34 +260,21 @@ async def respond_to_ocr(bot, message, response):
                 sent_message = await bot.get_channel(fallback_channels[0]).send(original_message_link)
                 logger.debug(f"Server: {message.guild.name}:{sent_message.guild.id}, Channel: {sent_message.channel.name}:{sent_message.channel.id}," + (f" Parent:{sent_message.channel.parent}" if hasattr(sent_message.channel, 'type') and sent_message.channel.type in ['public_thread', 'private_thread'] else ""))
                 logger.debug(f"Response: {sent_message.content}")
-                await msg_reply(sent_message, text=response)
+                await reply_or_send(sent_message, content=response)
             else:
                 logger.error('No OCR response fallback channel configured for this server.')
                 return
-
-async def msg_reply(message, text):
+ 
+def check_image_dimensions(image_path):
     """
-    Reply directly to a Discord message.
+    Check if an image's dimensions are within acceptable limits.
     
     Args:
-        message (discord.Message): The Discord message to reply to
-        text (str): The text content to send in the reply
+        image_path (str): Path to the image file
         
     Returns:
-        discord.Message: The sent message object
+        bool: True if dimensions are acceptable, False otherwise
     """
-    if len(text) == 0:
-        logger.error('No text found to reply')
-        return
-        
-    # Log the full message once before splitting
-    #logger.debug(f"Server: {message.guild.name}:{message.guild.id}, Channel: {message.channel.name}:{message.channel.id}," + 
-    #            (f" Parent:{message.channel.parent}" if message.channel.type == 'public_thread' or message.channel.type == 'private_thread' else ""))
-    #logger.info(f"Response: {text}")
-
-    if len(text) > 2000:
-        chunks = [text[i:i+2000] for i in range(0, len(text), 2000)]
-        for chunk in chunks:
-            await message.reply(chunk)
-    else:
-        await message.reply(text)
+    with Image.open(image_path) as img:
+        width, height = img.size
+        return width, height

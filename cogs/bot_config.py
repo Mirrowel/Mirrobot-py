@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from utils.logging_setup import get_logger
+from utils.discord_utils import reply_or_send
 from utils.permissions import check_target_permissions, has_command_permission, command_category
 from config.config_manager import save_config
 from utils.embed_helper import create_embed_response
@@ -20,12 +21,12 @@ class BotConfigCog(commands.Cog):
         server_prefixes = config.get('server_prefixes', {})
         
         if not ctx.guild:
-            await ctx.reply("This command can only be used in a server.")
+            await reply_or_send(ctx, "This command can only be used in a server.")
             return
         
         # Limit prefix length to prevent abuse
         if len(prefix) > 5:
-            await ctx.reply("Prefix must be 5 characters or less.")
+            await reply_or_send(ctx, "Prefix must be 5 characters or less.")
             return
         
         guild_id = str(ctx.guild.id)
@@ -40,7 +41,7 @@ class BotConfigCog(commands.Cog):
         response = f"Command prefix for this server has been changed from `{old_prefix}` to `{prefix}`"
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='reset_prefix', help='Reset the command prefix for this server to the default (!).\nNo additional arguments required.\nExample: {prefix}reset_prefix')
     @has_command_permission()
@@ -50,7 +51,7 @@ class BotConfigCog(commands.Cog):
         server_prefixes = config.get('server_prefixes', {})
         
         if not ctx.guild:
-            await ctx.reply("This command can only be used in a server.")
+            await reply_or_send(ctx, "This command can only be used in a server.")
             return
         
         guild_id = str(ctx.guild.id)
@@ -69,7 +70,7 @@ class BotConfigCog(commands.Cog):
         
         logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
         logger.debug(f"Response: {response}")
-        await ctx.reply(response)
+        await reply_or_send(ctx, response)
 
     @commands.command(name='server_info', help='Display all bot configuration settings for this server.\nNo additional arguments required.\nExample: !server_info')
     @has_command_permission()
@@ -87,7 +88,7 @@ class BotConfigCog(commands.Cog):
             return
         
         if not ctx.guild:
-            await ctx.reply("This command can only be used in a server.")
+            await reply_or_send(ctx, "This command can only be used in a server.")
             return
         
         config = self.bot.config

@@ -86,6 +86,25 @@ class ConfigManager:
             logger.error(f"Error setting channel config for {guild_id}/{channel_id}: {e}", exc_info=True)
             return False
 
+    def remove_guild_config(self, guild_id: int):
+        """Remove all configuration for a specific guild."""
+        guild_key = str(guild_id)
+        if "channels" in self.config_cache and guild_key in self.config_cache["channels"]:
+            del self.config_cache["channels"][guild_key]
+            self.save_config()
+            logger.info(f"Removed all channel configurations for guild {guild_id}.")
+
+    def remove_channel_config(self, guild_id: int, channel_id: int):
+        """Remove configuration for a specific channel."""
+        guild_key = str(guild_id)
+        channel_key = str(channel_id)
+        if "channels" in self.config_cache and guild_key in self.config_cache["channels"] and channel_key in self.config_cache["channels"][guild_key]:
+            del self.config_cache["channels"][guild_key][channel_key]
+            if not self.config_cache["channels"][guild_key]: # Remove guild entry if empty
+                del self.config_cache["channels"][guild_key]
+            self.save_config()
+            logger.info(f"Removed configuration for channel {channel_id} in guild {guild_id}.")
+
     def is_chatbot_enabled(self, guild_id: int, channel_id: int) -> bool:
         """Check if chatbot mode is enabled for a specific channel."""
         return self.get_channel_config(guild_id, channel_id).enabled

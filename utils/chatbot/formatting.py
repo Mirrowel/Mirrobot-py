@@ -3,7 +3,7 @@ Formats conversation context for the language model.
 """
 
 import re
-from typing import List
+from typing import List, Union
 
 from utils.chatbot.config import ConfigManager
 from utils.chatbot.conversation import ConversationManager
@@ -21,10 +21,10 @@ class LLMContextFormatter:
         self.conv_manager = conv_manager
         self.index_manager = index_manager
 
-    def get_prioritized_context(self, guild_id: int, channel_id: int, requesting_user_id: int) -> List[ConversationMessage]:
+    async def get_prioritized_context(self, guild_id: int, channel_id: int, requesting_user_id: int) -> List[ConversationMessage]:
         """Get conversation context prioritized for the requesting user"""
         try:
-            all_messages = self.conv_manager.load_conversation_history(guild_id, channel_id)
+            all_messages = await self.conv_manager.load_conversation_history(guild_id, channel_id)
             channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
             
             if not all_messages:
@@ -34,8 +34,8 @@ class LLMContextFormatter:
             
             recent_messages = all_messages[-channel_config.max_context_messages:]
             
-            requesting_user_messages = [msg for msg in recent_messages if msg.user_id == requesting_user_id]
-            other_messages = [msg for msg in recent_messages if msg.user_id != requesting_user_id]
+            requesting_user_messages = [msg for msg in recent_messages if int(msg.user_id) == requesting_user_id]
+            other_messages = [msg for msg in recent_messages if int(msg.user_id) != requesting_user_id]
             
             prioritized_messages = requesting_user_messages[-channel_config.max_user_context_messages:]
             
@@ -50,7 +50,7 @@ class LLMContextFormatter:
             if len(prioritized_messages) > channel_config.max_context_messages:
                 prioritized_messages = prioritized_messages[-channel_config.max_context_messages:]
             
-            user_msg_count = len([msg for msg in prioritized_messages if msg.user_id == requesting_user_id])
+            user_msg_count = len([msg for msg in prioritized_messages if int(msg.user_id) == requesting_user_id])
             other_msg_count = len(prioritized_messages) - user_msg_count
             
             logger.debug(f"Generated prioritized context with {len(prioritized_messages)} messages for user {requesting_user_id} ({user_msg_count} user, {other_msg_count} other)")
@@ -59,51 +59,140 @@ class LLMContextFormatter:
             logger.error(f"Error getting prioritized context: {e}", exc_info=True)
             return []
 
-    def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> str:
-        """Private helper to format the content of a single message."""
-        user_index = self.index_manager.load_user_index(guild_id)
-        role_label = "Mirrobot" if msg.is_self_bot_response else (user_index.get(msg.user_id).username if user_index.get(msg.user_id) else msg.username)
+    async def _format_message_content(self, msg: ConversationMessage, local_id: int, guild_id: int, channel_id: int, message_id_to_local_index: dict) -> Union[str, List[dict]]:
+        """
+        Private helper to format the content of a single message.
+        Returns a list of content parts for multimodal messages, or a single string for text-only.
+        """
+        # --- Assistant Role (Bot's own messages) ---
+        if msg.is_self_bot_response:
+            if not msg.multimodal_content:
+                return msg.content or ""
+            
+            content_parts = []
+            for part in msg.multimodal_content:
+                if part.type == "text" and part.text:
+                    content_parts.append({"type": "text", "text": part.text})
+                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                    content_parts.append({"type": "image_url", "image_url": {"url": part.image_url["url"]}})
+            
+            if not content_parts:
+                return msg.content or ""
+            
+            # If there's only one part, return its text content if it's text, otherwise return the list.
+            if len(content_parts) == 1:
+                if content_parts[0].get("type") == "text":
+                    return content_parts[0].get('text', "")
+                else:
+                    return content_parts # It's a single image, return as a list
+            
+            return content_parts
+
+        # --- User Role (User messages) ---
+        user_index = await self.index_manager.load_user_index(guild_id)
+        role_label = user_index.get(msg.user_id).username if user_index.get(msg.user_id) else msg.username
         
         reply_info = ""
         if msg.referenced_message_id:
             if msg.referenced_message_id in message_id_to_local_index:
                 reply_info = f"[Replying to #{message_id_to_local_index[msg.referenced_message_id]}] "
             else:
-                # This is a performance hit, but necessary for out-of-context replies.
-                # Consider caching full history if this becomes a bottleneck.
-                full_history = self.conv_manager.load_conversation_history(guild_id, channel_id)
+                full_history = await self.index_manager.get_conversation_history(guild_id, channel_id)
                 original_msg = next((m for m in full_history if m.message_id == msg.referenced_message_id), None)
                 if original_msg:
                     original_author = (user_index.get(original_msg.user_id).username if user_index.get(original_msg.user_id) else original_msg.username)
-                    snippet = (original_msg.content or "")[:75] + ("..." if len(original_msg.content or "") > 75 else "")
+                    snippet = self._create_smart_snippet(original_msg.content or "")
                     reply_info = f'[Replying to @{original_author}: "{snippet}"] '
 
-        line_parts = [f"[{local_id}] {role_label}: {reply_info}"]
+        prefix = f"[{local_id}] [id:{msg.user_id}] {role_label}: {reply_info}"
+        
+        # If there's no special multimodal content, format as a simple string.
+        if not msg.multimodal_content or all(p.type == "text" for p in msg.multimodal_content):
+            text_content = msg.content or ""
+            llm_readable_content = await self._convert_discord_format_to_llm_readable(text_content, guild_id)
+            return f"{prefix}{llm_readable_content}".strip()
 
-        # Use a temporary variable for content to handle cases where multimodal_content is empty
-        content_to_process = msg.multimodal_content if msg.multimodal_content else [ConversationMessage(type="text", text=msg.content)]
+        # Handle multimodal content by creating a list of parts.
+        content_parts = []
+        text_segments = [prefix]
+        
+        for part in msg.multimodal_content:
+            if part.type == "text" and part.text:
+                text_segments.append(await self._convert_discord_format_to_llm_readable(part.text, guild_id))
+            elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
+                # Add any pending text as a single part first.
+                if len(text_segments) > 0:
+                    content_parts.append({"type": "text", "text": " ".join(text_segments).strip()})
+                    text_segments = [] # Reset for next text block
+                # Add the image part.
+                content_parts.append({"type": "image_url", "image_url": {"url": part.image_url["url"]}})
+        
+        # Add any remaining text at the end.
+        if len(text_segments) > 0:
+             content_parts.append({"type": "text", "text": " ".join(text_segments).strip()})
 
-        if msg.multimodal_content:
-            text_segments = []
-            for part in msg.multimodal_content:
-                if part.type == "text" and part.text:
-                    text_segments.append(self._convert_discord_format_to_llm_readable(part.text, guild_id))
-                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
-                    if text_segments:
-                        line_parts.append(" ".join(text_segments))
-                        text_segments = []
-                    line_parts.append(f"(Image: {part.image_url['url']})")
-            if text_segments:
-                line_parts.append(" ".join(text_segments))
-        else: # Fallback for older data or non-multimodal messages
-            llm_readable_content = self._convert_discord_format_to_llm_readable(msg.content, guild_id)
-            if msg.attachment_urls:
-                llm_readable_content += f" (Image: {', '.join(msg.attachment_urls)})"
-            line_parts.append(llm_readable_content)
+        return content_parts
 
-        return " ".join(line_parts).strip()
+    def _create_smart_snippet(self, text: str) -> str:
+        """Creates a context-aware, intelligently truncated snippet of a given text."""
+        SNIPPET_TARGET_PERCENTAGE = 0.3
+        SNIPPET_MIN_LENGTH = 30
+        SNIPPET_MAX_LENGTH = 150
+        LONG_MESSAGE_THRESHOLD = 500
 
-    def format_context_for_llm(self, messages: List[ConversationMessage], guild_id: int, channel_id: int) -> tuple[str, List[dict]]:
+        if not text:
+            return ""
+
+        original_length = len(text)
+
+        # If the text is short, return it as is.
+        if original_length <= SNIPPET_MAX_LENGTH:
+            return text
+
+        def intelligent_truncate(content: str, max_len: int) -> str:
+            """Truncates text to a max length, preferring to end on a sentence or phrase boundary."""
+            if len(content) <= max_len:
+                return content
+            
+            truncated = content[:max_len]
+            
+            # Try to find a sentence-ending punctuation mark.
+            sentence_end_pos = -1
+            for p in ['.', '!', '?']:
+                sentence_end_pos = max(sentence_end_pos, truncated.rfind(p))
+            
+            if sentence_end_pos > 0:
+                return truncated[:sentence_end_pos + 1]
+
+            # Fallback to phrase-ending punctuation.
+            phrase_end_pos = -1
+            for p in [',', ';', ':']:
+                phrase_end_pos = max(phrase_end_pos, truncated.rfind(p))
+            
+            if phrase_end_pos > 0:
+                return truncated[:phrase_end_pos + 1]
+
+            # Fallback to the last space to avoid cutting a word.
+            last_space = truncated.rfind(' ')
+            if last_space > 0:
+                return truncated[:last_space] + "..."
+
+            # Absolute fallback: hard truncate.
+            return truncated + "..."
+
+        # For long messages, create a dual-part snippet.
+        if original_length > LONG_MESSAGE_THRESHOLD:
+            start_snippet = intelligent_truncate(text, SNIPPET_MAX_LENGTH // 2)
+            end_snippet = intelligent_truncate(text[-(SNIPPET_MAX_LENGTH // 2):], SNIPPET_MAX_LENGTH // 2)
+            return f"{start_snippet} ... {end_snippet}"
+        
+        # For medium messages, create a single, percentage-based snippet.
+        else:
+            target_length = int(original_length * SNIPPET_TARGET_PERCENTAGE)
+            final_length = max(SNIPPET_MIN_LENGTH, min(target_length, SNIPPET_MAX_LENGTH))
+            return intelligent_truncate(text, final_length)
+
+    async def format_context_for_llm(self, messages: List[ConversationMessage], guild_id: int, channel_id: int) -> tuple[str, List[dict]]:
         """
         Formats all context into a static string and a structured list of message dictionaries.
         Returns a tuple: (static_context_string, history_messages_list).
@@ -112,13 +201,13 @@ class LLMContextFormatter:
             # Part 1: Assemble the static context string
             static_context_parts = []
             if guild_id and channel_id:
-                static_context_parts.append(self.get_channel_context_for_llm(guild_id, channel_id))
+                static_context_parts.append(await self.get_channel_context_for_llm(guild_id, channel_id))
             if guild_id and messages:
                 unique_user_ids = list(set(msg.user_id for msg in messages if not msg.is_bot_response))
                 if unique_user_ids:
-                    static_context_parts.append(self.get_user_context_for_llm(guild_id, unique_user_ids))
+                    static_context_parts.append(await self.get_user_context_for_llm(guild_id, unique_user_ids))
             if guild_id and channel_id:
-                static_context_parts.append(self.get_pinned_context_for_llm(guild_id, channel_id))
+                static_context_parts.append(await self.get_pinned_context_for_llm(guild_id, channel_id))
             
             static_context_string = "\n".join(filter(None, static_context_parts))
 
@@ -131,26 +220,26 @@ class LLMContextFormatter:
 
             for i, msg in enumerate(messages):
                 role = "assistant" if msg.is_self_bot_response else "user"
-                content_string = self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
-                history_messages.append({"role": role, "content": content_string})
+                content_object = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
+                history_messages.append({"role": role, "content": content_object})
 
             return static_context_string, history_messages
         except Exception as e:
             logger.error(f"Error formatting context for LLM: {e}", exc_info=True)
             return "", []
 
-    def format_single_message(self, msg: ConversationMessage, history_messages: List[ConversationMessage], guild_id: int, channel_id: int) -> str:
+    async def format_single_message(self, msg: ConversationMessage, history_messages: List[ConversationMessage], guild_id: int, channel_id: int) -> str:
         """Formats a single message using the same logic as the history formatter."""
         local_id = len(history_messages) + 1
         message_id_to_local_index = {m.message_id: i + 1 for i, m in enumerate(history_messages)}
-        return self._format_message_content(msg, local_id, guild_id, channel_id, message_id_to_local_index)
+        return await self._format_message_content(msg, local_id, guild_id, channel_id, message_id_to_local_index)
 
-    def _convert_discord_format_to_llm_readable(self, content: str, guild_id: int) -> str:
+    async def _convert_discord_format_to_llm_readable(self, content: str, guild_id: int) -> str:
         """
         Converts Discord-specific formats and plain text names into a standardized
         @username format for the LLM context.
         """
-        user_index = self.index_manager.load_user_index(guild_id)
+        user_index = await self.index_manager.load_user_index(guild_id)
         if not user_index:
             return content
 
@@ -201,7 +290,7 @@ class LLMContextFormatter:
         
         return processed_content
 
-    def format_llm_output_for_discord(self, text: str, guild_id: int, bot_user_id: int = 0, bot_names: List[str] = []) -> str:
+    async def format_llm_output_for_discord(self, text: str, guild_id: int, bot_user_id: int = 0, bot_names: List[str] = []) -> str:
         """
         Cleans and formats LLM output for display on Discord.
         Handles:
@@ -233,11 +322,13 @@ class LLMContextFormatter:
             creator_username = "⭐ **Mirrowel**"
 
             # 1. Strip "Username:" prefixes, but only if they are at the very start of the message.
-            username_colon_pattern = r'^(?:[a-zA-Z0-9_ -]+):\s*'
+            # This regex is designed to be specific: it matches up to 60 characters that are not a newline or colon,
+            # preventing it from greedily consuming entire paragraphs that don't contain a colon.
+            username_colon_pattern = r'^\s*[^:\n]{1,60}:\s*'
             processed_text = re.sub(username_colon_pattern, '', processed_text).strip()
 
             # 3. Convert all username mentions to display names
-            user_index = self.index_manager.load_user_index(guild_id)
+            user_index = await self.index_manager.load_user_index(guild_id)
             if user_index:
                 # Create a mapping from various names to user objects
                 name_to_user = {}
@@ -266,11 +357,11 @@ class LLMContextFormatter:
                             return match.group(0)
 
                         # Special case for the creator
-                        if user.user_id == creator_id:
+                        if int(user.user_id) == creator_id:
                             return creator_username
                         
                         # Handle bot self-mentions that might have been missed
-                        if bot_names and user.user_id == bot_user_id:
+                        if bot_names and int(user.user_id) == bot_user_id:
                             return ""
 
                         # Default to display name
@@ -279,18 +370,23 @@ class LLMContextFormatter:
                     processed_text = pattern.sub(replace_func, processed_text)
 
             # 4. Final Cleanup
-            processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+            # Collapse horizontal whitespace, but preserve newlines
+            processed_text = re.sub(r'[ \t]+', ' ', processed_text)
+            # Collapse more than 2 newlines into 2 to preserve paragraphs
+            processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
+            # Remove space before punctuation (this will also join lines if punctuation is on a new line)
             processed_text = re.sub(r'\s+([.,!?:;])', r'\1', processed_text)
+            processed_text = processed_text.strip()
             
             return processed_text
         except Exception as e:
             logger.error(f"Error formatting LLM output for Discord: {e}", exc_info=True)
             return text
 
-    def get_channel_context_for_llm(self, guild_id: int, channel_id: int) -> str:
+    async def get_channel_context_for_llm(self, guild_id: int, channel_id: int) -> str:
         """Get channel context information for LLM"""
         try:
-            channel_index = self.index_manager.load_channel_index(guild_id)
+            channel_index = await self.index_manager.load_channel_index(guild_id)
             if channel_id not in channel_index: return ""
             
             channel = channel_index[channel_id]
@@ -310,9 +406,11 @@ class LLMContextFormatter:
             logger.error(f"Error getting channel context for LLM: {e}", exc_info=True)
             return ""
 
-    def format_channel_context_for_llm_from_object(self, channel_obj) -> str:
+    async def format_channel_context_for_llm_from_object(self, channel_obj) -> str:
         """Get channel context information for LLM from a discord.Channel object"""
         try:
+            # This method doesn't need to be async if index_channel isn't, but we make it async for consistency.
+            # If index_channel becomes async, this will be ready.
             entry = self.index_manager.index_channel(channel_obj)
             lines = ["=== Current Channel Info ==="]
             if entry.guild_name:
@@ -330,10 +428,10 @@ class LLMContextFormatter:
             logger.error(f"Error formatting channel context from object: {e}", exc_info=True)
             return ""
 
-    def get_user_context_for_llm(self, guild_id: int, user_ids: List[int]) -> str:
+    async def get_user_context_for_llm(self, guild_id: int, user_ids: List[int]) -> str:
         """Get user context information for LLM"""
         try:
-            user_index = self.index_manager.load_user_index(guild_id)
+            user_index = await self.index_manager.load_user_index(guild_id)
             if not user_ids: return ""
 
             if self.index_manager.bot_user_id and self.index_manager.bot_user_id not in user_ids:
@@ -343,17 +441,21 @@ class LLMContextFormatter:
             for user_id in user_ids:
                 if user_id in user_index:
                     user = user_index[user_id]
-                    user_info = [f"• User: @{user.username} (ID: {user.user_id})"]
-                    if user.username != user.display_name: user_info.append(f"  Nickname: {user.display_name}")
-                    if user.roles: user_info.append(f"  Roles: {', '.join(user.roles)}")
-                    lines.append("\n".join(user_info))
+                    parts = [
+                        f"ID: {user.user_id}",
+                        f"Handle: @{user.username}",
+                        f"Nickname: {user.display_name}"
+                    ]
+                    if user.roles:
+                        parts.append(f"Roles: {', '.join(user.roles)}")
+                    lines.append(f"• {' | '.join(parts)}")
             lines.append("=== End of Known Users ===\n")
             return "\n".join(lines)
         except Exception as e:
             logger.error(f"Error getting user context for LLM: {e}", exc_info=True)
             return ""
 
-    def get_pinned_context_for_llm(self, guild_id: int, channel_id: int) -> str:
+    async def get_pinned_context_for_llm(self, guild_id: int, channel_id: int) -> str:
         """Formats pinned messages for LLM context."""
         try:
             pins = self.index_manager.load_pinned_messages(guild_id, channel_id)
@@ -361,11 +463,11 @@ class LLMContextFormatter:
 
             lines = ["=== Pinned Messages ===", "Note: These messages are important channel context."]
             pins.sort(key=lambda x: x.timestamp)
-            user_index = self.index_manager.load_user_index(guild_id)
+            user_index = await self.index_manager.load_user_index(guild_id)
 
             for pin in pins:
                 role_label = (user_index.get(pin.user_id).username if user_index.get(pin.user_id) else pin.username)
-                content = self._convert_discord_format_to_llm_readable(pin.content, guild_id)
+                content = await self._convert_discord_format_to_llm_readable(pin.content, guild_id)
                 if pin.attachment_urls:
                     content += f" (Image: {', '.join(pin.attachment_urls)})"
                 lines.append(f"{role_label}: {content.strip()}")
