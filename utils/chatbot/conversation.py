@@ -71,6 +71,12 @@ class ConversationManager:
         Returns a tuple: (success_boolean, list_of_users_to_index).
         """
         try:
+            # --- Pre-emptive Filtering ---
+            # If the message has embeds, filter it out immediately.
+            if message.embeds:
+                logger.debug(f"Message {message.id} filtered out because it contains embeds.")
+                return False, []
+
             if await self.check_duplicate_message(guild_id, channel_id, message.id):
                 return True, []
 
@@ -135,6 +141,11 @@ class ConversationManager:
             for message in new_messages:
                 if message.id in existing_message_ids:
                     continue
+                
+                # If the message has embeds, filter it out immediately.
+                if message.embeds:
+                    logger.debug(f"Bulk message {message.id} filtered out because it contains embeds.")
+                    continue
 
                 cleaned_content, image_urls, embed_urls = self._process_discord_message_for_context(message)
                 if not cleaned_content and not image_urls:
@@ -196,8 +207,10 @@ class ConversationManager:
                 if debug_mode: debug_steps.append("❌ **Filter Result:** Empty message and no attachments - FILTERED")
                 return False, debug_steps
             
+            # This check is now redundant because we filter at the source, but we keep it
+            # as a safeguard for any ConversationMessage objects created manually.
             if msg.embed_urls:
-                if debug_mode: debug_steps.append("❌ **Filter Result:** Message contains embeds - FILTERED")
+                if debug_mode: debug_steps.append("❌ **Filter Result:** Message contains non-image embed URLs - FILTERED")
                 return False, debug_steps
             
             mention_pattern = r'<@!?(\d+)>'
