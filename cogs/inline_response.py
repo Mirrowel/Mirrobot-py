@@ -115,6 +115,59 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         status_embed.add_field(name="Channel Context", value=f"`{config.context_messages}` messages {get_source('context_messages')}", inline=True)
         status_embed.add_field(name="User Context", value=f"`{config.user_context_messages}` messages {get_source('user_context_messages')}", inline=True)
         
+        # Permissions
+        perm_lines = []
+        everyone_role_id = ctx.guild.default_role.id
+        
+        # Check for 'everyone' in the effective whitelist
+        everyone_whitelisted = everyone_role_id in config.role_whitelist
+
+        if everyone_whitelisted:
+            perm_lines.append("• **Access Mode**: ✅ Everyone Allowed (except blacklisted)")
+        else:
+            perm_lines.append("• **Access Mode**: 🔒 Restricted to Whitelist")
+
+        # Role Whitelist (show only if not everyone)
+        if not everyone_whitelisted and config.role_whitelist:
+            role_wl_names = [f"`@{ctx.guild.get_role(r_id).name}`" for r_id in config.role_whitelist if ctx.guild.get_role(r_id)]
+            if role_wl_names:
+                perm_lines.append(f"• **Whitelisted Roles**: {', '.join(role_wl_names)}")
+
+        # Member Whitelist
+        if config.member_whitelist:
+            member_wl_names = []
+            for m_id in config.member_whitelist:
+                try:
+                    member = ctx.guild.get_member(m_id) or await self.bot.fetch_user(m_id)
+                    member_wl_names.append(f"`{member.name}`")
+                except discord.NotFound:
+                    member_wl_names.append(f"`Unknown User ({m_id})`")
+            if member_wl_names:
+                perm_lines.append(f"• **Whitelisted Members**: {', '.join(member_wl_names)}")
+
+        # Role Blacklist
+        if config.role_blacklist:
+            role_bl_names = [f"`@{ctx.guild.get_role(r_id).name}`" for r_id in config.role_blacklist if ctx.guild.get_role(r_id)]
+            if role_bl_names:
+                perm_lines.append(f"• **Blacklisted Roles**: {', '.join(role_bl_names)}")
+
+        # Member Blacklist
+        if config.member_blacklist:
+            member_bl_names = []
+            for m_id in config.member_blacklist:
+                try:
+                    member = ctx.guild.get_member(m_id) or await self.bot.fetch_user(m_id)
+                    member_bl_names.append(f"`{member.name}`")
+                except discord.NotFound:
+                    member_bl_names.append(f"`Unknown User ({m_id})`")
+            if member_bl_names:
+                perm_lines.append(f"• **Blacklisted Members**: {', '.join(member_bl_names)}")
+
+        if not perm_lines and not everyone_whitelisted:
+            perm_lines.append("• No permissions configured. Access is denied by default.")
+
+        status_embed.add_field(name="Permissions", value="\n".join(perm_lines), inline=False)
+        
         await ctx.send(embed=status_embed)
 
     @inline.command(name="toggle", help="""
@@ -228,6 +281,143 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         else:
             await embed_helper.create_embed_response(ctx, title="❌ Error", description="Failed to update settings.", color=discord.Color.red())
 
+    async def _update_permissions(self, ctx: commands.Context, action: Literal['add', 'remove'], list_type: Literal['whitelist', 'blacklist'], entity: Union[discord.Role, discord.Member, str], target_str: str):
+        """Helper function to add/remove entities from permission lists."""
+        resolved_target = await self._resolve_target(ctx, target_str)
+        if resolved_target is None and target_str is not None: return
+
+        target_id = resolved_target.id if isinstance(resolved_target, (discord.TextChannel, discord.Thread)) else None
+        config_to_modify = self.manager.get_specific_config(ctx.guild.id, target_id)
+
+        entity_id = None
+        entity_type = None
+        entity_name = ""
+
+        if isinstance(entity, str) and entity.lower() == 'everyone':
+            if list_type == 'blacklist':
+                await embed_helper.create_embed_response(ctx, title="❌ Error", description="You cannot add `@everyone` to the blacklist.", color=discord.Color.red())
+                return
+            entity_id = ctx.guild.default_role.id
+            entity_type = 'role'
+            entity_name = "@everyone"
+        elif isinstance(entity, discord.Role):
+            if entity.is_default() and list_type == 'blacklist':
+                await embed_helper.create_embed_response(ctx, title="❌ Error", description="You cannot add the `@everyone` role to the blacklist.", color=discord.Color.red())
+                return
+            entity_id = entity.id
+            entity_type = 'role'
+            entity_name = f"@{entity.name}"
+        elif isinstance(entity, discord.Member):
+            entity_id = entity.id
+            entity_type = 'member'
+            entity_name = entity.name
+        
+        if not entity_id:
+            await embed_helper.create_embed_response(ctx, title="❌ Error", description="Invalid entity provided. Must be a role, member, or the string 'everyone'.", color=discord.Color.red())
+            return
+
+        perm_list_name = f"{entity_type}_{list_type}"
+        perm_list = getattr(config_to_modify, perm_list_name)
+
+        if action == 'add':
+            if entity_id not in perm_list:
+                perm_list.append(entity_id)
+                action_text = "added to"
+            else:
+                await embed_helper.create_embed_response(ctx, title="ℹ️ Info", description=f"`{entity_name}` is already in the {list_type}.", color=discord.Color.blue())
+                return
+        else: # remove
+            if entity_id in perm_list:
+                perm_list.remove(entity_id)
+                action_text = "removed from"
+            else:
+                await embed_helper.create_embed_response(ctx, title="ℹ️ Info", description=f"`{entity_name}` is not in the {list_type}.", color=discord.Color.blue())
+                return
+
+        if self.manager.set_config(ctx.guild.id, config_to_modify, target_id):
+            target_name = "the server" if resolved_target == 'server' else resolved_target.mention
+            await embed_helper.create_embed_response(ctx, title="✅ Permissions Updated", description=f"`{entity_name}` has been {action_text} the {list_type} for {target_name}.", color=discord.Color.green())
+        else:
+            await embed_helper.create_embed_response(ctx, title="❌ Error", description="Failed to update permissions.", color=discord.Color.red())
+
+    @inline.group(name="permissions", help="""
+    Manages the permission system for who can trigger an inline response.
+
+    **Permission Logic:**
+    The system uses a default-deny model with whitelists and blacklists. The rules are checked in this order:
+    1.  **Blacklist:** If a user or any of their roles are on the blacklist, they are **always** denied access.
+    2.  **Whitelist:** If not blacklisted, the user must be on the whitelist to get access.
+        - Adding the `@everyone` role to the whitelist grants access to all non-blacklisted users.
+        - Otherwise, the user must be individually whitelisted or have a whitelisted role.
+    3.  **Default:** If a user is not on the blacklist or the whitelist, access is **denied**.
+
+    **Configuration Scope:**
+    Permissions can be set server-wide or for specific channels/threads. Channel settings are **added** to server settings. For example, the effective whitelist for a channel is the combination of the server's whitelist and that channel's specific whitelist.
+    """)
+    @has_command_permission('manage_guild')
+    async def permissions(self, ctx: commands.Context):
+        """Manages inline response permissions."""
+        if ctx.invoked_subcommand is None:
+            await self._send_subcommand_help(ctx)
+
+    @permissions.group(name="whitelist", help="""
+    Manages the whitelist of users and roles allowed to trigger inline responses.
+    If the whitelist is empty (and does not contain @everyone), access is denied by default.
+    """)
+    @has_command_permission('manage_guild')
+    async def permissions_whitelist(self, ctx: commands.Context):
+        """Manage the whitelist."""
+        if ctx.invoked_subcommand is None:
+            await self._send_subcommand_help(ctx)
+
+    @permissions_whitelist.command(name="add", help="""
+    Adds a role, member, or the special 'everyone' designation to the whitelist for a target.
+    - To allow all non-blacklisted users, add the `@everyone` role (or use the string 'everyone').
+    - Usage: `!inline permissions whitelist add <@role|@member|"everyone"> [target]`
+    """)
+    @has_command_permission('manage_guild')
+    @app_commands.describe(entity="The role, member, or the word 'everyone'.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
+    async def permissions_whitelist_add(self, ctx: commands.Context, entity: Union[discord.Role, discord.Member, Literal['everyone']], target: str = None):
+        await self._update_permissions(ctx, 'add', 'whitelist', entity, target)
+
+    @permissions_whitelist.command(name="remove", help="""
+    Removes a role, member, or 'everyone' from the whitelist for a target.
+    - Usage: `!inline permissions whitelist remove <@role|@member|"everyone"> [target]`
+    """)
+    @has_command_permission('manage_guild')
+    @app_commands.describe(entity="The role, member, or the word 'everyone'.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
+    async def permissions_whitelist_remove(self, ctx: commands.Context, entity: Union[discord.Role, discord.Member, Literal['everyone']], target: str = None):
+        await self._update_permissions(ctx, 'remove', 'whitelist', entity, target)
+
+    @permissions.group(name="blacklist", help="""
+    Manages the blacklist of users and roles explicitly denied from triggering inline responses.
+    The blacklist **always** takes priority. A blacklisted user or role can never trigger a response, even if they are on the whitelist.
+    """)
+    @has_command_permission('manage_guild')
+    async def permissions_blacklist(self, ctx: commands.Context):
+        """Manage the blacklist."""
+        if ctx.invoked_subcommand is None:
+            await self._send_subcommand_help(ctx)
+
+    @permissions_blacklist.command(name="add", help="""
+    Adds a role or member to the blacklist for a target.
+    - Note: You cannot add the `@everyone` role to the blacklist.
+    - Usage: `!inline permissions blacklist add <@role|@member> [target]`
+    """)
+    @has_command_permission('manage_guild')
+    @app_commands.describe(entity="The role or member to blacklist.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
+    async def permissions_blacklist_add(self, ctx: commands.Context, entity: Union[discord.Role, discord.Member], target: str = None):
+        await self._update_permissions(ctx, 'add', 'blacklist', entity, target)
+
+    @permissions_blacklist.command(name="remove", help="""
+    Removes a role or member from the blacklist for a target.
+    - Usage: `!inline permissions blacklist remove <@role|@member> [target]`
+    """)
+    @has_command_permission('manage_guild')
+    @app_commands.describe(entity="The role or member to remove from the blacklist.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
+    async def permissions_blacklist_remove(self, ctx: commands.Context, entity: Union[discord.Role, discord.Member], target: str = None):
+        await self._update_permissions(ctx, 'remove', 'blacklist', entity, target)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen for messages to determine if an inline response should be triggered."""
@@ -261,6 +451,43 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         is_mentioned_at_start = message.content.startswith(mention_content) or message.content.startswith(legacy_mention_content)
 
         if config.trigger_on_start_only and not is_mentioned_at_start:
+            return
+
+        # 1g. Check permissions
+        author = message.author
+        # Make sure author is a Member object to get roles
+        if not isinstance(author, discord.Member):
+            try:
+                author = await message.guild.fetch_member(author.id)
+            except discord.NotFound:
+                logger.warning(f"Could not find member {author.id} in guild {message.guild.id} to check permissions.")
+                return
+
+        author_role_ids = {role.id for role in author.roles}
+        
+        # 1. Blacklist check (absolute priority)
+        if author.id in config.member_blacklist:
+            logger.debug(f"User {author.id} is in member blacklist for channel {message.channel.id}. Ignoring trigger.")
+            return
+        if not author_role_ids.isdisjoint(config.role_blacklist):
+            logger.debug(f"User {author.id} has a blacklisted role for channel {message.channel.id}. Ignoring trigger.")
+            return
+
+        # 2. Whitelist check
+        everyone_role_id = message.guild.default_role.id
+        is_everyone_whitelisted = everyone_role_id in config.role_whitelist
+        
+        is_whitelisted = False
+        if is_everyone_whitelisted:
+            is_whitelisted = True
+        elif author.id in config.member_whitelist:
+            is_whitelisted = True
+        elif not author_role_ids.isdisjoint(config.role_whitelist):
+            is_whitelisted = True
+
+        # If not whitelisted, deny access
+        if not is_whitelisted:
+            logger.debug(f"User {author.id} is not whitelisted for inline responses in channel {message.channel.id}. Ignoring trigger.")
             return
         
         # If all conditions are met, build the context and log it.

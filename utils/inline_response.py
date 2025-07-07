@@ -20,6 +20,22 @@ class InlineResponseConfig:
     model_type: str = "ask"
     context_messages: int = 30
     user_context_messages: int = 15
+    # New permission fields
+    role_whitelist: List[int] = None
+    member_whitelist: List[int] = None
+    role_blacklist: List[int] = None
+    member_blacklist: List[int] = None
+
+    def __post_init__(self):
+        # Ensure lists are initialized correctly if they are None
+        if self.role_whitelist is None:
+            self.role_whitelist = []
+        if self.member_whitelist is None:
+            self.member_whitelist = []
+        if self.role_blacklist is None:
+            self.role_blacklist = []
+        if self.member_blacklist is None:
+            self.member_blacklist = []
 
 DEFAULT_CONFIG = asdict(InlineResponseConfig())
 
@@ -55,25 +71,48 @@ class InlineResponseManager:
     def get_channel_config(self, guild_id: int, channel_id: int) -> "InlineResponseConfig":
         """
         Get the effective configuration for a specific channel, applying the hierarchy.
-        Hierarchy: Channel > Server > Default
+        Hierarchy: Channel settings are combined with (union) or override server settings.
+        - For permission lists (whitelists/blacklists), the lists are combined (union).
+        - For other settings, channel-specific values override server-wide values.
         """
         guild_key = str(guild_id)
         channel_key = str(channel_id)
         
         # 1. Start with hardcoded defaults
-        effective_config = DEFAULT_CONFIG.copy()
+        effective_config_dict = DEFAULT_CONFIG.copy()
 
         # 2. Layer server-wide settings on top
-        server_config = self.config_cache.get("servers", {}).get(guild_key, {}).get("server_settings", {})
-        effective_config.update(server_config)
+        server_settings = self.config_cache.get("servers", {}).get(guild_key, {}).get("server_settings", {})
+        effective_config_dict.update(server_settings)
 
-        # 3. Layer channel-specific settings on top
-        channel_config = self.config_cache.get("servers", {}).get(guild_key, {}).get("channels", {}).get(channel_key, {})
-        effective_config.update(channel_config)
+        # 3. Layer channel-specific settings, handling list unions
+        channel_settings = self.config_cache.get("servers", {}).get(guild_key, {}).get("channels", {}).get(channel_key, {})
+        
+        # Combine permission lists
+        server_role_wl = set(server_settings.get('role_whitelist', []))
+        channel_role_wl = set(channel_settings.get('role_whitelist', []))
+        effective_config_dict['role_whitelist'] = list(server_role_wl.union(channel_role_wl))
+
+        server_member_wl = set(server_settings.get('member_whitelist', []))
+        channel_member_wl = set(channel_settings.get('member_whitelist', []))
+        effective_config_dict['member_whitelist'] = list(server_member_wl.union(channel_member_wl))
+
+        server_role_bl = set(server_settings.get('role_blacklist', []))
+        channel_role_bl = set(channel_settings.get('role_blacklist', []))
+        effective_config_dict['role_blacklist'] = list(server_role_bl.union(channel_role_bl))
+
+        server_member_bl = set(server_settings.get('member_blacklist', []))
+        channel_member_bl = set(channel_settings.get('member_blacklist', []))
+        effective_config_dict['member_blacklist'] = list(server_member_bl.union(channel_member_bl))
+
+        # Update other settings with channel-specific overrides
+        for key, value in channel_settings.items():
+            if key not in ['role_whitelist', 'member_whitelist', 'role_blacklist', 'member_blacklist']:
+                effective_config_dict[key] = value
         
         # Filter to only include keys present in the dataclass
         config_keys = {f.name for f in fields(InlineResponseConfig)}
-        filtered_config = {k: v for k, v in effective_config.items() if k in config_keys}
+        filtered_config = {k: v for k, v in effective_config_dict.items() if k in config_keys}
         
         return InlineResponseConfig(**filtered_config)
 
