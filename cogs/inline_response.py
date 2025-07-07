@@ -371,14 +371,14 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
     **Permission Logic:**
     The system uses a default-deny model with whitelists and blacklists. The rules are checked in this order:
-    1.  **Blacklist:** If a user or any of their roles are on the blacklist, they are **always** denied access.
+    1.  **Blacklist:** If a user or any of their roles are on the blacklist, they are **always** denied access. This check is absolute.
     2.  **Whitelist:** If not blacklisted, the user must be on the whitelist to get access.
         - Adding the `@everyone` role to the whitelist grants access to all non-blacklisted users.
         - Otherwise, the user must be individually whitelisted or have a whitelisted role.
     3.  **Default:** If a user is not on the blacklist or the whitelist, access is **denied**.
 
     **Configuration Scope:**
-    Permissions can be set server-wide or for specific channels/threads. Channel settings are **added** to server settings. For example, the effective whitelist for a channel is the combination of the server's whitelist and that channel's specific whitelist.
+    Permissions can be set server-wide or for specific channels/threads. Channel settings **override** server settings. For example, if you set a whitelist for a channel, only that whitelist is checked for that channel; it does not combine with the server's whitelist.
     """)
     @has_command_permission('manage_guild')
     async def permissions(self, ctx: commands.Context):
@@ -388,8 +388,16 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
     @permissions.command(name="whitelist", help="""
     Manages the whitelist of users and roles allowed to trigger inline responses.
-    - To allow all non-blacklisted users, add the `@everyone` role.
-    - Usage: `!inline permissions whitelist <add|remove> <role|member|everyone> [target]`
+
+    **Arguments:**
+    - `action`: `add` or `remove`.
+    - `entity`: The role or member to add/remove. Can be a name, ID, or mention. Use `everyone` for the @everyone role.
+    - `target` (Optional): The scope of the change. Can be `server`, a #channel/thread, or a channel/thread ID. Defaults to the current channel.
+
+    **Usage Examples:**
+    - `!inline permissions whitelist add everyone server` - Allows everyone (not on a blacklist) to use inline responses server-wide.
+    - `!inline permissions whitelist add "Cool People"` - Adds the 'Cool People' role to the whitelist for the current channel.
+    - `!inline permissions whitelist remove @SomeUser #general` - Removes a specific user from the whitelist for the #general channel.
     """)
     @has_command_permission('manage_guild')
     @app_commands.describe(
@@ -405,7 +413,15 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
     @permissions.command(name="blacklist", help="""
     Manages the blacklist of users and roles explicitly denied from triggering inline responses.
     - The blacklist **always** takes priority over the whitelist.
-    - Usage: `!inline permissions blacklist <add|remove> <role|member> [target]`
+
+    **Arguments:**
+    - `action`: `add` or `remove`.
+    - `entity`: The role or member to add/remove. Can be a name, ID, or mention. You cannot blacklist `everyone`.
+    - `target` (Optional): The scope of the change. Can be `server`, a #channel/thread, or a channel/thread ID. Defaults to the current channel.
+
+    **Usage Examples:**
+    - `!inline permissions blacklist add "Known Spammers" server` - Blacklists the 'Known Spammers' role server-wide.
+    - `!inline permissions blacklist remove @AnnoyingUser` - Removes a user from the blacklist in the current channel.
     """)
     @has_command_permission('manage_guild')
     @app_commands.describe(
