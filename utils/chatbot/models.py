@@ -23,6 +23,7 @@ class ConversationMessage:
     content: str
     timestamp: float
     message_id: int
+    author: Optional[Any] = None # discord.User or discord.Member
     is_bot_response: bool = False
     is_self_bot_response: bool = False # NEW: Is this bot's own response
     referenced_message_id: Optional[int] = None
@@ -34,6 +35,11 @@ class ConversationMessage:
         """Ensure multimodal_content is a list of ContentPart objects."""
         if self.multimodal_content and isinstance(self.multimodal_content[0], dict):
             self.multimodal_content = [ContentPart(**part) for part in self.multimodal_content]
+        if self.author and isinstance(self.author, dict):
+            # This is a simple deserialization. For a more robust solution,
+            # you might need a more complex User/Member object reconstruction.
+            from discord import User
+            self.author = User(state=None, data=self.author)
 
 @dataclass
 class PinnedMessage:

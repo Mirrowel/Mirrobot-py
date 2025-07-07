@@ -83,6 +83,7 @@ class ConversationManager:
 
             conv_message = ConversationMessage(
                 user_id=message.author.id, username=message.author.display_name,
+                author=message.author,
                 content=cleaned_content, timestamp=message.created_at.timestamp(),
                 message_id=message.id, is_bot_response=message.author.bot,
                 is_self_bot_response=(message.author.id == self.bot_user_id),
@@ -144,6 +145,7 @@ class ConversationManager:
 
                 conv_message = ConversationMessage(
                     user_id=message.author.id, username=message.author.display_name,
+                    author=message.author,
                     content=cleaned_content, timestamp=message.created_at.timestamp(),
                     message_id=message.id, is_bot_response=message.author.bot,
                     is_self_bot_response=(message.author.id == self.bot_user_id),

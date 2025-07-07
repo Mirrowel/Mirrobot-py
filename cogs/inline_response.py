@@ -553,16 +553,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
             # Bulk index all unique users from the context.
             if context_messages:
-                unique_user_ids = {msg.user_id for msg in context_messages if not msg.is_bot_response}
-                unique_users = []
-                for user_id in unique_user_ids:
-                    try:
-                        user = message.guild.get_member(user_id) or await self.bot.fetch_user(user_id)
-                        if user:
-                            unique_users.append(user)
-                    except discord.NotFound:
-                        logger.warning(f"Could not find user {user_id} for on-the-fly indexing.")
-
+                unique_users = list({msg.author for msg in context_messages if not msg.is_bot_response and msg.author})
                 if unique_users:
                     await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
                     logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
