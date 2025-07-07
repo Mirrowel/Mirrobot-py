@@ -322,7 +322,7 @@ class LLMContextFormatter:
             creator_username = "⭐ **Mirrowel**"
 
             # 1. Strip "Username:" prefixes, but only if they are at the very start of the message.
-            username_colon_pattern = r'^(?:[a-zA-Z0-9_ -]+):\s*'
+            username_colon_pattern = r'^\s*[^:]+:\s*'
             processed_text = re.sub(username_colon_pattern, '', processed_text).strip()
 
             # 3. Convert all username mentions to display names

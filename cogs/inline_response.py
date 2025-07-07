@@ -606,6 +606,8 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                     history=context_history, # Pass the history without the trigger message
                     image_urls=image_urls
                 )
+            
+            logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")
 
             # 5. Process and send the response
             cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
@@ -614,11 +616,16 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                 self.bot.user.id,
                 [self.bot.user.name, self.bot.user.display_name]
             )
+            logger.debug(f"Cleaned LLM response_text for message {message.id}: '{cleaned_response[:500]}...' (truncated)")
 
             response_chunks = split_message(cleaned_response)
+            logger.debug(f"Response chunks length for message {message.id}: {len(response_chunks)}")
+            if response_chunks:
+                logger.debug(f"First response chunk for message {message.id}: '{response_chunks[0][:500]}...' (truncated)")
 
-            if not response_chunks:
-                logger.warning(f"LLM response for message {message.id} was empty after cleaning.")
+
+            if not response_chunks or not response_chunks[0].strip(): # Added check for empty string after stripping whitespace
+                logger.warning(f"LLM response for message {message.id} was empty or whitespace-only after cleaning and splitting. Raw: '{response_text[:100]}', Cleaned: '{cleaned_response[:100]}'")
                 return
  
             # Send the first chunk as a reply
