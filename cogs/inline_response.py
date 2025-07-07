@@ -48,7 +48,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
     @commands.hybrid_group(name="inline", help="""
     Manages the Inline Response feature, which allows the bot to reply to mentions.
-    This command group provides tools to enable/disable the feature, configure its trigger behavior, set the LLM model, and define the context parameters for generating responses.
+    This command group provides tools to enable/disable the feature, configure its trigger behavior, set the LLM model, define context parameters, and manage permissions for who can use the feature.
     You can apply settings server-wide or for specific channels/threads.
     Usage: `!inline <subcommand> [value] [target]`
     Target can be 'server', a #channel, or a thread. If omitted, applies to the current channel.
@@ -172,6 +172,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
     @inline.command(name="toggle", help="""
     Enables or disables the Inline Response feature for a target.
+    Note: This does not affect permissions. Use `!inline permissions` to manage access.
     Usage: `!inline toggle <on|off> [target]`
     Target can be 'server', a #channel/thread, or a channel/thread ID.
     """)
@@ -200,6 +201,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
     @inline.command(name="trigger", help="""
     Configures how the bot detects a mention to trigger a response for a target.
+    Note: This does not affect permissions. Use `!inline permissions` to manage access.
     Usage: `!inline trigger <start|anywhere> [target]`
     Target can be 'server', a #channel/thread, or a channel/thread ID.
     """)
@@ -228,6 +230,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
     @inline.command(name="model", help="""
     Sets the LLM model for inline responses for a target.
+    Note: This does not affect permissions. Use `!inline permissions` to manage access.
     Usage: `!inline model <ask|think|chat> [target]`
     Target can be 'server', a #channel/thread, or a channel/thread ID.
     """)
@@ -255,6 +258,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
     @inline.command(name="context", help="""
     Configures context message counts for a target.
+    Note: This does not affect permissions. Use `!inline permissions` to manage access.
     Usage: `!inline context <channel_msgs> <user_msgs> [target]`
     Target can be 'server', a #channel/thread, or a channel/thread ID.
     """)
@@ -283,25 +287,31 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
     async def _update_permissions(self, ctx: commands.Context, action: Literal['add', 'remove'], list_type: Literal['whitelist', 'blacklist'], entity_str: str, target_str: str):
         """Helper function to add/remove entities from permission lists."""
+        # Step 1: Resolve the target for the permission change (server, channel, or thread).
         resolved_target = await self._resolve_target(ctx, target_str)
         if resolved_target is None and target_str is not None: return
 
+        # Step 2: Get the specific configuration for the target.
+        # If target_id is None, it fetches the server-wide configuration.
         target_id = resolved_target.id if isinstance(resolved_target, (discord.TextChannel, discord.Thread)) else None
         config_to_modify = self.manager.get_specific_config(ctx.guild.id, target_id)
 
+        # Step 3: Identify the entity (role or member) to be added or removed.
         entity_id = None
         entity_type = None
         entity_name = ""
         
-        # Manual conversion from string to entity
+        # The input `entity_str` can be a name, ID, or mention. We try to convert it.
         entity_to_process = None
         if entity_str.lower() == 'everyone':
+            # Special case for the @everyone role.
             if list_type == 'blacklist':
                 await embed_helper.create_embed_response(ctx, title="❌ Error", description="You cannot add `@everyone` to the blacklist.", color=discord.Color.red())
                 return
             entity_to_process = ctx.guild.default_role
             entity_name = "@everyone"
         else:
+            # Try to resolve as a role first, then as a member.
             try:
                 entity_to_process = await commands.RoleConverter().convert(ctx, entity_str)
             except commands.RoleNotFound:
@@ -311,6 +321,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                     await embed_helper.create_embed_response(ctx, title="❌ Error", description=f"Could not find a role or member named `{entity_str}`.", color=discord.Color.red())
                     return
 
+        # Step 4: Extract ID, type, and name from the resolved discord entity.
         if isinstance(entity_to_process, discord.Role):
             if entity_to_process.is_default() and list_type == 'blacklist':
                 await embed_helper.create_embed_response(ctx, title="❌ Error", description="You cannot add the `@everyone` role to the blacklist.", color=discord.Color.red())
@@ -327,9 +338,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             await embed_helper.create_embed_response(ctx, title="❌ Error", description="An unknown error occurred while processing the entity.", color=discord.Color.red())
             return
 
+        # Step 5: Get the correct permission list from the config object.
+        # e.g., 'role_whitelist', 'member_blacklist', etc.
         perm_list_name = f"{entity_type}_{list_type}"
         perm_list = getattr(config_to_modify, perm_list_name)
 
+        # Step 6: Perform the add or remove action.
         if action == 'add':
             if entity_id not in perm_list:
                 perm_list.append(entity_id)
@@ -345,6 +359,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                 await embed_helper.create_embed_response(ctx, title="ℹ️ Info", description=f"`{entity_name}` is not in the {list_type}.", color=discord.Color.blue())
                 return
 
+        # Step 7: Save the updated configuration and notify the user.
         if self.manager.set_config(ctx.guild.id, config_to_modify, target_id):
             target_name = "the server" if resolved_target == 'server' else resolved_target.mention
             await embed_helper.create_embed_response(ctx, title="✅ Permissions Updated", description=f"`{entity_name}` has been {action_text} the {list_type} for {target_name}.", color=discord.Color.green())
@@ -384,6 +399,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
     )
     async def permissions_whitelist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: str, target: str = None):
         """Adds or removes an entity from the whitelist."""
+        # This command delegates the core logic to the _update_permissions helper function.
         await self._update_permissions(ctx, action, 'whitelist', entity, target)
 
     @permissions.command(name="blacklist", help="""
@@ -399,6 +415,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
     )
     async def permissions_blacklist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: str, target: str = None):
         """Adds or removes an entity from the blacklist."""
+        # This command delegates the core logic to the _update_permissions helper function.
         await self._update_permissions(ctx, action, 'blacklist', entity, target)
 
     @commands.Cog.listener()
