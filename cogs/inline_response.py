@@ -281,7 +281,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         else:
             await embed_helper.create_embed_response(ctx, title="❌ Error", description="Failed to update settings.", color=discord.Color.red())
 
-    async def _update_permissions(self, ctx: commands.Context, action: Literal['add', 'remove'], list_type: Literal['whitelist', 'blacklist'], entity: Union[discord.Role, discord.Member, str], target_str: str):
+    async def _update_permissions(self, ctx: commands.Context, action: Literal['add', 'remove'], list_type: Literal['whitelist', 'blacklist'], entity_str: str, target_str: str):
         """Helper function to add/remove entities from permission lists."""
         resolved_target = await self._resolve_target(ctx, target_str)
         if resolved_target is None and target_str is not None: return
@@ -292,28 +292,39 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         entity_id = None
         entity_type = None
         entity_name = ""
-
-        if isinstance(entity, str) and entity.lower() == 'everyone':
+        
+        # Manual conversion from string to entity
+        entity_to_process = None
+        if entity_str.lower() == 'everyone':
             if list_type == 'blacklist':
                 await embed_helper.create_embed_response(ctx, title="❌ Error", description="You cannot add `@everyone` to the blacklist.", color=discord.Color.red())
                 return
-            entity_id = ctx.guild.default_role.id
-            entity_type = 'role'
+            entity_to_process = ctx.guild.default_role
             entity_name = "@everyone"
-        elif isinstance(entity, discord.Role):
-            if entity.is_default() and list_type == 'blacklist':
+        else:
+            try:
+                entity_to_process = await commands.RoleConverter().convert(ctx, entity_str)
+            except commands.RoleNotFound:
+                try:
+                    entity_to_process = await commands.MemberConverter().convert(ctx, entity_str)
+                except commands.MemberNotFound:
+                    await embed_helper.create_embed_response(ctx, title="❌ Error", description=f"Could not find a role or member named `{entity_str}`.", color=discord.Color.red())
+                    return
+
+        if isinstance(entity_to_process, discord.Role):
+            if entity_to_process.is_default() and list_type == 'blacklist':
                 await embed_helper.create_embed_response(ctx, title="❌ Error", description="You cannot add the `@everyone` role to the blacklist.", color=discord.Color.red())
                 return
-            entity_id = entity.id
+            entity_id = entity_to_process.id
             entity_type = 'role'
-            entity_name = f"@{entity.name}"
-        elif isinstance(entity, discord.Member):
-            entity_id = entity.id
+            entity_name = f"@{entity_to_process.name}"
+        elif isinstance(entity_to_process, discord.Member):
+            entity_id = entity_to_process.id
             entity_type = 'member'
-            entity_name = entity.name
-        
+            entity_name = entity_to_process.name
+
         if not entity_id:
-            await embed_helper.create_embed_response(ctx, title="❌ Error", description="Invalid entity provided. Must be a role, member, or the string 'everyone'.", color=discord.Color.red())
+            await embed_helper.create_embed_response(ctx, title="❌ Error", description="An unknown error occurred while processing the entity.", color=discord.Color.red())
             return
 
         perm_list_name = f"{entity_type}_{list_type}"
@@ -363,30 +374,30 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
     @permissions.command(name="whitelist", help="""
     Manages the whitelist of users and roles allowed to trigger inline responses.
     - To allow all non-blacklisted users, add the `@everyone` role.
-    - Usage: `!inline permissions whitelist <add|remove> <@role|@member|"everyone"> [target]`
+    - Usage: `!inline permissions whitelist <add|remove> <role|member|everyone> [target]`
     """)
     @has_command_permission('manage_guild')
     @app_commands.describe(
         action="Choose whether to 'add' or 'remove' from the whitelist.",
-        entity="The role, member, or the word 'everyone'.",
+        entity="The name, ID, or mention of the role/member, or the word 'everyone'.",
         target="Optional: 'server', a #channel/thread, or a channel/thread ID."
     )
-    async def permissions_whitelist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: Union[discord.Role, discord.Member, Literal['everyone']], target: str = None):
+    async def permissions_whitelist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: str, target: str = None):
         """Adds or removes an entity from the whitelist."""
         await self._update_permissions(ctx, action, 'whitelist', entity, target)
 
     @permissions.command(name="blacklist", help="""
     Manages the blacklist of users and roles explicitly denied from triggering inline responses.
     - The blacklist **always** takes priority over the whitelist.
-    - Usage: `!inline permissions blacklist <add|remove> <@role|@member> [target]`
+    - Usage: `!inline permissions blacklist <add|remove> <role|member> [target]`
     """)
     @has_command_permission('manage_guild')
     @app_commands.describe(
         action="Choose whether to 'add' or 'remove' from the blacklist.",
-        entity="The role or member to blacklist. You cannot blacklist @everyone.",
+        entity="The name, ID, or mention of the role/member. You cannot blacklist @everyone.",
         target="Optional: 'server', a #channel/thread, or a channel/thread ID."
     )
-    async def permissions_blacklist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: Union[discord.Role, discord.Member], target: str = None):
+    async def permissions_blacklist(self, ctx: commands.Context, action: Literal['add', 'remove'], entity: str, target: str = None):
         """Adds or removes an entity from the blacklist."""
         await self._update_permissions(ctx, action, 'blacklist', entity, target)
 
