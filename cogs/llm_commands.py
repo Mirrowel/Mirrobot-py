@@ -27,8 +27,8 @@ class LLMCommands(commands.Cog):
         # Global default models
         self.global_models = self.llm_config.get("models", {})
         self.provider_status: Dict[str, bool] = {}
-        #self.multimodal_models_whitelist = ["gemini", "gemma"]
-        self.multimodal_models_whitelist = ["big", "balls"]
+        self.multimodal_models_whitelist = ["gemini", "gemma"]
+        #self.multimodal_models_whitelist = ["big", "balls"]
 
     async def cog_load(self):
         """Initialize the LLM client and check provider status on cog load."""
