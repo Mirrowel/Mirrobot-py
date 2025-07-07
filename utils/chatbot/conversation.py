@@ -254,10 +254,20 @@ class ConversationManager:
             return True, debug_steps
 
     def _is_image_url(self, url: str) -> bool:
-        """Check if a URL points to an image by checking the path extension."""
+        """
+        Check if a URL points to a supported, non-GIF image by checking the
+        path extension and blocking known GIF-hosting domains.
+        """
         try:
-            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
+            # 1. Domain Blacklist for known GIF providers
+            gif_domains = ['tenor.com', 'giphy.com']
             parsed_url = urlparse(url)
+            if any(domain in parsed_url.netloc for domain in gif_domains):
+                logger.debug(f"URL {url} blocked by domain blacklist.")
+                return False
+
+            # 2. Check file extension
+            image_extensions = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
             return any(parsed_url.path.lower().endswith(ext) for ext in image_extensions)
         except Exception:
             return False
