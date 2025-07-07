@@ -322,7 +322,9 @@ class LLMContextFormatter:
             creator_username = "⭐ **Mirrowel**"
 
             # 1. Strip "Username:" prefixes, but only if they are at the very start of the message.
-            username_colon_pattern = r'^\s*[^:]+:\s*'
+            # This regex is designed to be specific: it matches up to 60 characters that are not a newline or colon,
+            # preventing it from greedily consuming entire paragraphs that don't contain a colon.
+            username_colon_pattern = r'^\s*[^:\n]{1,60}:\s*'
             processed_text = re.sub(username_colon_pattern, '', processed_text).strip()
 
             # 3. Convert all username mentions to display names
@@ -368,8 +370,13 @@ class LLMContextFormatter:
                     processed_text = pattern.sub(replace_func, processed_text)
 
             # 4. Final Cleanup
-            processed_text = re.sub(r'\s+', ' ', processed_text).strip()
+            # Collapse horizontal whitespace, but preserve newlines
+            processed_text = re.sub(r'[ \t]+', ' ', processed_text)
+            # Collapse more than 2 newlines into 2 to preserve paragraphs
+            processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
+            # Remove space before punctuation (this will also join lines if punctuation is on a new line)
             processed_text = re.sub(r'\s+([.,!?:;])', r'\1', processed_text)
+            processed_text = processed_text.strip()
             
             return processed_text
         except Exception as e:

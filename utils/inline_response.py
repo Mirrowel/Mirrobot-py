@@ -308,14 +308,29 @@ def split_message(text: str, limit: int = 2000) -> List[str]:
             words = chunk.split(' ')
             new_chunk = ""
             for word in words:
+                # If a single word is over the limit, it must be split forcefully
+                if len(word) > limit:
+                    if new_chunk: # Add whatever was in new_chunk before this monster word
+                        final_chunks.append(new_chunk.strip())
+                    # Split the monster word itself
+                    for i in range(0, len(word), limit):
+                        final_chunks.append(word[i:i+limit])
+                    new_chunk = "" # Reset new_chunk
+                    continue
+
                 if len(new_chunk) + len(word) + 1 > limit:
-                    final_chunks.append(new_chunk)
+                    if new_chunk: # Ensure we don't add empty strings
+                        final_chunks.append(new_chunk.strip())
                     new_chunk = word
                 else:
-                    new_chunk += f" {word}"
-            if new_chunk:
-                final_chunks.append(new_chunk)
+                    if new_chunk:
+                        new_chunk += f" {word}"
+                    else:
+                        new_chunk = word
+            if new_chunk: # Add the last part
+                final_chunks.append(new_chunk.strip())
         else:
             final_chunks.append(chunk)
             
-    return final_chunks
+    # Final filter to remove any empty strings that might have slipped through
+    return [c for c in final_chunks if c and not c.isspace()]
