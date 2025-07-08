@@ -8,6 +8,7 @@ import asyncio
 from utils.log_manager import LogManager
 from cogs import cogs
 import re
+from utils.rag_manager import RAGManager
 # Import chatbot_manager directly here for config access
 from utils.chatbot.manager import chatbot_manager
 from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
@@ -95,6 +96,9 @@ def create_bot(config):
     
     # Store config in the bot for easy access
     bot.config = config
+    from config.llm_config_manager import load_llm_config
+    bot.llm_config = load_llm_config()
+    bot.rag_manager = RAGManager(bot.config, bot.llm_config)
     
     # Create a queue for OCR processing tasks with max size to prevent memory issues
     max_queue_size = config.get('ocr_max_queue_size', 100)
@@ -119,6 +123,9 @@ def create_bot(config):
         # --- Set bot's user ID in chatbot_manager and start it ---
         chatbot_manager.set_bot_user_id(bot.user.id)
         await chatbot_manager.index_manager.start()
+        # Clean up any orphaned RAG collections before initializing clients
+        await bot.rag_manager.cleanup_orphaned_collections()
+        await bot.rag_manager.initialize_clients()
         # --- END NEW ---
 
         # Get worker count from config (default to 2 workers if not specified)
@@ -563,14 +570,32 @@ async def handle_chatbot_response(bot, message):
             try:
                 # Get prioritized context messages. This history does NOT include the current message.
                 context_messages = await chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
-                
+
                 # Format context into static info and structured history
                 static_context, history_messages = await chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
-                
+
                 # Load system prompt (this loads from file and applies thinking mode if configured)
                 system_prompt_for_llm = llm_cog.load_system_prompt(guild_id, prompt_type="chat")
+
+                # --- Start of Ephemeral RAG Logic ---
+                ephemeral_rag_context = ""
+                document_texts = []
+                if message.attachments:
+                    for attachment in message.attachments:
+                        text = await extract_text_from_attachment(attachment)
+                        if text:
+                            document_texts.append(text)
                 
-                # --- Start of Refactored Logic ---
+                if document_texts:
+                    try:
+                        in_memory_index = self.rag_manager.create_in_memory_index(document_texts)
+                        if in_memory_index:
+                            query = message.content
+                            ephemeral_rag_context = self.rag_manager.query_in_memory_index(in_memory_index, query)
+                    except Exception as rag_e:
+                        logger.error(f"Error during in-memory RAG processing: {rag_e}", exc_info=True)
+
+                # --- End of Ephemeral RAG Logic ---
 
                 # 1. Ensure the original message object has a mention for history and prompt consistency
                 bot_mention_pattern = f'<@!?{bot.user.id}>'
@@ -585,39 +610,18 @@ async def handle_chatbot_response(bot, message):
                 # Get the cleaned content from the (now modified) message
                 cleaned_content, image_urls, other_urls = chatbot_manager.conversation_manager._process_discord_message_for_context(message)
 
-                # For the immediate prompt, process non-image files separately
-                extracted_text = []
-                # Check attachments for non-image files that aren't in other_urls
-                for attachment in message.attachments:
-                    if attachment.url in other_urls and not (attachment.content_type and attachment.content_type.startswith('image/')):
-                        text = await extract_text_from_attachment(attachment)
-                        if text:
-                            extracted_text.append(text)
-                
-                # Check other_urls for processable text files
-                for url in other_urls:
-                    if any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
-                        text = await extract_text_from_url(url)
-                        if text:
-                            extracted_text.append(text)
-
-                # Prepend extracted text to the cleaned content for the prompt
-                prompt_text = cleaned_content
-                if extracted_text:
-                    prompt_text = f"{' '.join(extracted_text)}\n\n{prompt_text}"
-
                 # Create a ConversationMessage object for the current prompt to use the formatter
                 prompt_conv_message = ConversationMessage(
                     user_id=message.author.id,
                     username=message.author.display_name,
-                    content=prompt_text, # Use the text with prepended file content
+                    content=cleaned_content,
                     timestamp=message.created_at.timestamp(),
                     message_id=message.id,
                     is_bot_response=False,
                     is_self_bot_response=False,
                     referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
                     attachment_urls=image_urls,
-                    multimodal_content=[ContentPart(type="text", text=prompt_text)] + [ContentPart(type="image_url", image_url={"url": url}) for url in image_urls]
+                    multimodal_content=[ContentPart(type="text", text=cleaned_content)] + [ContentPart(type="image_url", image_url={"url": url}) for url in image_urls]
                 )
 
                 # Format the single prompt message using the same logic as the history
@@ -628,7 +632,15 @@ async def handle_chatbot_response(bot, message):
                     channel_id=channel_id
                 )
 
-                # --- End of Refactored Logic ---
+                # Assemble the final prompt context
+                final_context_parts = []
+                if ephemeral_rag_context:
+                    final_context_parts.append("--- CONTEXT FROM ATTACHED DOCUMENTS ---\n" + ephemeral_rag_context)
+                
+                if static_context:
+                    final_context_parts.append(static_context)
+                
+                unified_context = "\n\n".join(final_context_parts)
 
                 # Debug: Output the prompts to a file for inspection
                 debug_dir = "llm_data/debug_prompts"
@@ -638,7 +650,7 @@ async def handle_chatbot_response(bot, message):
                 try:
                     with open(debug_filename, 'w', encoding='utf-8') as debug_file:
                         debug_file.write((system_prompt_for_llm or "No System Prompt") + "\n\n")
-                        debug_file.write((static_context or "No Static Context") + "\n\n")
+                        debug_file.write((unified_context or "No Unified Context") + "\n\n")
                         # Dump the history messages
                         for msg in history_messages:
                             debug_file.write(f"Role: {msg['role']}\nContent: {msg['content']}\n\n")
@@ -651,7 +663,7 @@ async def handle_chatbot_response(bot, message):
                 response_text, performance_metrics = await llm_cog.make_llm_request(
                     prompt=user_prompt_content,
                     system_prompt=system_prompt_for_llm,
-                    context=static_context,
+                    context=unified_context,
                     history=history_messages,
                     model_type="chat",
                     guild_id=guild_id,

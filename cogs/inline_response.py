@@ -608,7 +608,8 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                     channel_id=message.channel.id,
                     context=static_context,
                     history=context_history, # Pass the history without the trigger message
-                    image_urls=image_urls
+                    image_urls=image_urls,
+                    message=message
                 )
             
             logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")

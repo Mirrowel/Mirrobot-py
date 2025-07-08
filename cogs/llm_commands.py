@@ -1,10 +1,12 @@
 import re
+import uuid
 import discord
 from discord.ext import commands
 import asyncio
 import json
 import time
 import os
+import hashlib
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple, List, Union
 from utils.logging_setup import get_logger
@@ -14,6 +16,7 @@ from lib.rotator_library import RotatingClient
 from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env, get_safety_settings, save_server_safety_settings, get_reasoning_budget, save_reasoning_budget, get_all_reasoning_budgets
 from utils.chatbot.manager import chatbot_manager
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
+from utils.constants import PKB_COLLECTION_NAME
 
 logger = get_logger()
 
@@ -214,7 +217,7 @@ class LLMCommands(commands.Cog):
         await asyncio.gather(*status_checks)
     
     async def make_llm_request(
-        self, 
+        self,
         prompt: Optional[str] = None,
         model_type: str = "default",
         max_tokens: Optional[int] = None,
@@ -223,103 +226,203 @@ class LLMCommands(commands.Cog):
         channel_id: Optional[int] = None,
         system_prompt: Optional[str] = None,
         context: Optional[str] = None,
-        history: Optional[List[Dict[str, any]]] = None, # New history parameter
+        history: Optional[List[Dict[str, any]]] = None,
         model: Optional[str] = None,
-        image_urls: Optional[List[str]] = None
+        image_urls: Optional[List[str]] = None,
+        message: Optional[discord.Message] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Make a request to the LLM API using the RotatingClient and return the response
-        with performance metrics.
+        Make a request to the LLM API, handling RAG pipelines internally.
         """
         start_time = time.time()
-        
-        # Determine the model to use
+        temp_collection_name = None
+        final_prompt = prompt
         target_model = model or self.get_model_for_guild(guild_id, model_type)
-        if not target_model:
-            raise ValueError("No model specified and no default model configured.")
-
-        # Prepare prompts
-        system_prompt, context = self._prepare_prompts(system_prompt, context, model_type, guild_id)
-        
-        is_multimodal = any(keyword in target_model for keyword in self.multimodal_models_whitelist)
-        
-        # Build the messages list using the new structured history
-        messages = self._build_messages_list(
-            system_prompt=system_prompt,
-            static_context=context,
-            history=history,
-            prompt=prompt,
-            image_urls=image_urls,
-            is_multimodal=is_multimodal
-        )
-        
-        # Prepare kwargs for the rotating client
-        request_kwargs = {
-            "model": target_model,
-            "messages": messages,
-            "temperature": temperature,
-            "timeout": self.llm_config.get("timeout", 120),
-            "safety_settings": get_safety_settings(guild_id, channel_id)
-        }
-
-        if max_tokens is not None:
-            request_kwargs["max_tokens"] = max_tokens
-
-        # Apply reasoning budget
-        reasoning_budget_level = get_reasoning_budget(target_model, model_type, guild_id)
-        if reasoning_budget_level is not None:
-            #logger.info(f"Applying reasoning budget for model '{target_model}' in mode '{model_type}' with level '{reasoning_budget_level}'.")
-            if reasoning_budget_level == -1 or reasoning_budget_level == "auto":
-                request_kwargs["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": -1
-                }
-            else:
-                reasoning_map = {0: "disable", 1: "low", 2: "medium", 3: "high"}
-                level_str = reasoning_map.get(reasoning_budget_level)
-                if not level_str:
-                    level_map_str = {"none": "disable", "low": "low", "medium": "medium", "high": "high"}
-                    level_str = level_map_str.get(reasoning_budget_level)
-
-                if level_str:
-                    request_kwargs["reasoning_effort"] = level_str
-
-        # Handle local provider by setting api_base
-        if target_model.startswith("local/"):
-            request_kwargs["api_base"] = self.llm_config.get("base_url")
-            # The rotator client expects the format `provider/model_name`, but for local
-            # models litellm might just need the model name itself.
-            # Let's adjust this based on how the rotator/litellm handles it.
-            # For now, we assume litellm needs the full `local/model_name` string.
-
-        self._save_debug_request(request_kwargs, "RotatingClient", target_model.split('/')[0])
 
         try:
+            # --- Request Router ---
+            # Complex Query Pipeline (TKB)
+            if message and (message.attachments or model_type == 'think'):
+                logger.info("Executing Complex Query Pipeline (TKB)")
+                session_id = str(uuid.uuid4())
+                debug_log = self.bot.rag_manager.RAGDebugLog(session_id=session_id)
+
+                # Step 1: Collect all context and create cache key
+                full_context_parts = [prompt]
+                if message.attachments:
+                    for attachment in message.attachments:
+                        try:
+                            # We need the content for the cache key, even if we don't index it yet
+                            content_bytes = await attachment.read()
+                            content_str = content_bytes.decode('utf-8', errors='ignore')
+                            full_context_parts.append(f"\n\n--- Content from {attachment.filename} ---\n{content_str}")
+                        except Exception as e:
+                            logger.error(f"Failed to read attachment {attachment.filename} for cache key generation: {e}")
+                
+                full_context_string = " ".join(full_context_parts)
+                debug_log.full_context = full_context_string
+                cache_key = hashlib.sha256(full_context_string.encode()).hexdigest()
+
+                # Step 2: Check Cache
+                cached_context = self.bot.rag_manager.get_cached_response(cache_key)
+                
+                if cached_context:
+                    logger.info(f"Cache HIT for key: {cache_key[:10]}...")
+                    retrieved_context = cached_context
+                    debug_log.retrieved_context = retrieved_context
+                    # This is a bit of a hack to avoid re-joining the context later
+                    full_context_for_query = full_context_parts
+                else:
+                    logger.info(f"Cache MISS for key: {cache_key[:10]}...")
+                    # Proceed with the normal pipeline
+                    temp_collection_name = await self.bot.rag_manager.create_temp_collection(session_id)
+
+                    # Index attachments (using the already read content)
+                    full_context_for_query = [prompt] # Re-initialize for this path
+                    if message.attachments:
+                        for attachment in message.attachments:
+                            try:
+                                # This assumes attachments were read successfully above.
+                                # A more robust implementation might re-read or store the content.
+                                content_bytes = await attachment.read()
+                                content_str = content_bytes.decode('utf-8', errors='ignore')
+                                await self.bot.rag_manager.index_document(
+                                    text_content=content_str,
+                                    source_name=attachment.filename,
+                                    collection_name=temp_collection_name
+                                )
+                                full_context_for_query.append(f"\n\n--- Content from {attachment.filename} ---\n{content_str}")
+                                logger.info(f"Successfully indexed attachment: {attachment.filename} into {temp_collection_name}")
+                            except Exception as e:
+                                logger.error(f"Failed to read or index attachment {attachment.filename}: {e}")
+
+                    # Query Formulation (LLM Call #1)
+                    refined_query = await self.bot.rag_manager.generate_search_query(" ".join(full_context_for_query))
+                    debug_log.refined_query = refined_query
+
+                    # Hybrid Retrieval
+                    collection_names = [PKB_COLLECTION_NAME, temp_collection_name]
+                    retrieved_context = await self.bot.rag_manager.query_knowledge_base(
+                        query_text=refined_query,
+                        collection_names=collection_names
+                    )
+                    debug_log.retrieved_context = retrieved_context
+                    
+                    # Store in Cache
+                    if retrieved_context:
+                        self.bot.rag_manager.set_cached_response(cache_key, retrieved_context)
+
+                # Answer Synthesis (LLM Call #2)
+                final_prompt = (
+                    "You are a helpful AI assistant. Based on the user's question, the provided logs/files, "
+                    "and the retrieved documents from the knowledge base, formulate a comprehensive answer. "
+                    'When you use information from a document, cite the source name (e.g., "According to installation_guide.md...").\n\n'
+                    "---\n"
+                    "USER QUESTION AND PROVIDED FILES:\n"
+                    f"{' '.join(full_context_for_query)}\n"
+                    "---\n"
+                    "RETRIEVED KNOWLEDGE BASE DOCUMENTS:\n"
+                    f"{retrieved_context}\n"
+                    "---\n\n"
+                    "Final Answer:"
+                )
+                debug_log.final_prompt = final_prompt
+
+            # Simple Query Pipeline (PKB)
+            elif model_type == 'ask':
+                logger.info("Executing Simple Query Pipeline (PKB)")
+                retrieved_context = await self.bot.rag_manager.query_knowledge_base(
+                    query_text=prompt,
+                    collection_names=[PKB_COLLECTION_NAME]
+                )
+                if retrieved_context:
+                    final_prompt = (
+                        f"Here is some context from my knowledge base:\n"
+                        f"---\n"
+                        f"{retrieved_context}\n"
+                        f"---\n"
+                        f"Based on the above context, please answer the following question: {prompt}"
+                    )
+            
+            # --- End Request Router ---
+
+            # Determine the model to use
+            if not target_model:
+                raise ValueError("No model specified and no default model configured.")
+
+            # Prepare prompts
+            system_prompt, context = self._prepare_prompts(system_prompt, context, model_type, guild_id)
+            
+            is_multimodal = any(keyword in target_model for keyword in self.multimodal_models_whitelist)
+            
+            # Build the messages list
+            messages = self._build_messages_list(
+                system_prompt=system_prompt,
+                static_context=context,
+                history=history,
+                prompt=final_prompt, # Use the potentially modified prompt
+                image_urls=image_urls,
+                is_multimodal=is_multimodal
+            )
+            
+            # Prepare kwargs for the rotating client
+            request_kwargs = {
+                "model": target_model,
+                "messages": messages,
+                "temperature": temperature,
+                "timeout": self.llm_config.get("timeout", 120),
+                "safety_settings": get_safety_settings(guild_id, channel_id)
+            }
+
+            if max_tokens is not None:
+                request_kwargs["max_tokens"] = max_tokens
+
+            # Apply reasoning budget
+            reasoning_budget_level = get_reasoning_budget(target_model, model_type, guild_id)
+            if reasoning_budget_level is not None:
+                if reasoning_budget_level == -1 or reasoning_budget_level == "auto":
+                    request_kwargs["thinking"] = {"type": "enabled", "budget_tokens": -1}
+                else:
+                    reasoning_map = {0: "disable", 1: "low", 2: "medium", 3: "high"}
+                    level_str = reasoning_map.get(reasoning_budget_level)
+                    if not level_str:
+                        level_map_str = {"none": "disable", "low": "low", "medium": "medium", "high": "high"}
+                        level_str = level_map_str.get(reasoning_budget_level)
+                    if level_str:
+                        request_kwargs["reasoning_effort"] = level_str
+
+            # Handle local provider
+            if target_model.startswith("local/"):
+                request_kwargs["api_base"] = self.llm_config.get("base_url")
+
+            self._save_debug_request(request_kwargs, "RotatingClient", target_model.split('/')[0])
+
             async with RotatingClient(api_keys=self.api_keys, max_retries=self.llm_config.get("max_retries", 2)) as client:
                 response = await client.acompletion(**request_kwargs)
             
-            # Save the raw response for debugging
             self._save_debug_response(response, target_model.split('/')[0])
             
-            # The rotator client returns the litellm response object directly for non-streaming
             content = response.choices[0].message.content
             usage = response.usage
             
             performance_metrics = self._calculate_performance_metrics(start_time, content, usage)
             
-            if performance_metrics.get('has_token_data', False):
-                logger.debug(f"LLM request to '{target_model}' completed in {performance_metrics['elapsed_time']:.2f}s, "
-                           f"{performance_metrics['tokens_per_sec']:.1f} tokens/s "
-                           f"({performance_metrics['completion_tokens']} tokens)")
-            else:
-                logger.debug(f"LLM request to '{target_model}' completed in {performance_metrics['elapsed_time']:.2f}s, "
-                           f"{performance_metrics['chars_per_sec']:.1f} chars/s")
+            logger.debug(f"LLM request to '{target_model}' completed in {performance_metrics['elapsed_time']:.2f}s")
+
+            if 'debug_log' in locals():
+                debug_log.final_answer = content
+                self.bot.rag_manager.debug_logs.append(debug_log)
+                logger.info(f"Appended RAG debug log for session: {debug_log.session_id}")
 
             return content, performance_metrics
 
         except Exception as e:
             logger.error(f"Error making LLM request via RotatingClient to model {target_model}: {e}", exc_info=True)
-            raise  # Re-raise the exception to be handled by the command
+            raise
+        finally:
+            if temp_collection_name:
+                logger.info(f"Destroying temporary collection: {temp_collection_name}")
+                await self.bot.rag_manager.destroy_temp_collection(temp_collection_name)
 
     def _prepare_prompts(self, system_prompt: Optional[str], context: Optional[str],
                         model_type: str, guild_id: Optional[int]) -> Tuple[str, Optional[str]]:
@@ -626,7 +729,7 @@ class LLMCommands(commands.Cog):
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
     async def ask_llm(self, ctx, *, question: str):
-        """Ask the LLM a question without showing thinking process."""
+        """Ask the LLM a question, using the standard RAG pipeline."""
         logger.info(f"User {ctx.author} asking LLM: {question[:100]}")
 
         if not self.api_keys and not self.llm_config.get("base_url"):
@@ -635,7 +738,6 @@ class LLMCommands(commands.Cog):
 
         async with ctx.typing():
             try:
-                # Use the helper to process multimodal input
                 question, image_urls = await self._process_multimodal_input(ctx.message, question)
                 
                 guild_id = ctx.guild.id if ctx.guild else None
@@ -644,14 +746,17 @@ class LLMCommands(commands.Cog):
                 context = f"{channel_context}\n{user_context}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
+
                 response, performance_metrics = await self.make_llm_request(
                     prompt=formatted_prompt,
                     model_type="ask",
                     guild_id=guild_id,
                     channel_id=ctx.channel.id,
                     image_urls=image_urls,
-                    context=context
+                    context=context,
+                    message=ctx.message # Pass the message object
                 )
+                
                 cleaned_response, _ = self.strip_thinking_tokens(response)
                 final_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                     cleaned_response,
@@ -666,9 +771,11 @@ class LLMCommands(commands.Cog):
     @commands.command(name='think', help='Ask the LLM a question and show its thinking process.')
     @has_command_permission('manage_guild')
     @command_category("AI Assistant")
-    async def think_llm(self, ctx, display_thinking: Optional[bool] = False, *, question: str):
-        """Ask the LLM a question and show the thinking process."""
-        logger.info(f"User {ctx.author} using think command: {question[:100]}")
+    async def think_llm(self, ctx, *, question: str):
+        """
+        Entry point for the Complex Query pipeline. Handles file attachments by creating a Temporary Knowledge Base (TKB).
+        """
+        logger.info(f"User {ctx.author} initiated think command with question: {question[:100]}")
 
         if not self.api_keys and not self.llm_config.get("base_url"):
             await create_embed_response(ctx, "No API keys or local server configured.", title="LLM Not Configured", color=discord.Color.red())
@@ -676,38 +783,21 @@ class LLMCommands(commands.Cog):
 
         async with ctx.typing():
             try:
-                # Use the helper to process multimodal input
-                question, image_urls = await self._process_multimodal_input(ctx.message, question)
-
-                guild_id = ctx.guild.id if ctx.guild else None
-                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
-                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
-                context = f"{channel_context}\n{user_context}"
-
-                formatted_prompt = f"{ctx.author.display_name}: {question}"
-                response, performance_metrics = await self.make_llm_request(
-                    prompt=formatted_prompt,
-                    model_type="think",
-                    guild_id=guild_id,
-                    channel_id=ctx.channel.id,
-                    image_urls=image_urls,
-                    context=context
-                )
+                await ctx.send("✅ Got it. Analyzing your request...")
                 
-                formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                    response,
-                    guild_id,
-                    bot_user_id=self.bot.user.id,
-                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                response, performance_metrics = await self.make_llm_request(
+                    prompt=question,
+                    model_type="think",
+                    guild_id=ctx.guild.id,
+                    channel_id=ctx.channel.id,
+                    message=ctx.message # Pass the message object
                 )
 
-                if not display_thinking:
-                    cleaned_response, _ = self.strip_thinking_tokens(formatted_response)
-                    await self.send_llm_response(ctx, cleaned_response, question, model_type="think", performance_metrics=performance_metrics)
-                else:
-                    await self.send_llm_response(ctx, formatted_response, question, model_type="think", performance_metrics=performance_metrics)
+                await self.send_llm_response(ctx, response, question, model_type="think", performance_metrics=performance_metrics)
+
             except Exception as e:
-                await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
+                logger.error(f"An error occurred during the think command execution: {e}", exc_info=True)
+                await create_embed_response(ctx, f"An unexpected error occurred: {e}", title="Pipeline Error", color=discord.Color.red())
     
     @commands.command(name='llm_status', help='Check the status of all configured LLM providers.')
     @has_command_permission('manage_messages')

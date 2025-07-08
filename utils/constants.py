@@ -21,6 +21,9 @@ AUTHOR_ICON_URL = "https://avatars.githubusercontent.com/u/28632877"
 REPO_URL = "https://github.com/Mirrowel/Mirrobot-py"
 GITHUB_ICON_URL = "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
 
+# PKB information
+PKB_COLLECTION_NAME = "mirrobot_pkb"
+
 # Startup time for uptime calculation
 _startup_time = time.time()
 
