@@ -350,8 +350,8 @@ class LLMContextFormatter:
 
             # 3. Strip "Username:" prefixes, but only if they are at the very start of the message.
             # This regex is designed to be specific: it matches up to 60 characters that are not a newline or colon,
-            # preventing it from greedily consuming entire paragraphs that don't contain a colon.
-            username_colon_pattern = r'^\s*[^:\n]{1,60}:\s*'
+            # and do not contain sentence-ending punctuation, to avoid stripping legitimate sentences.
+            username_colon_pattern = r'^\s*[^:\n.!?]{1,60}:\s*'
             processed_text = re.sub(username_colon_pattern, '', processed_text).strip()
 
             # 4. Convert all username mentions to display names
