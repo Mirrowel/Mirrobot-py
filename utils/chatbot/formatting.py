@@ -243,16 +243,27 @@ class LLMContextFormatter:
         if not user_index:
             return content
 
-        processed_content = content
+        emote_placeholders = {}
+        placeholder_id = 0
+        def store_emote(match):
+            nonlocal placeholder_id
+            emote = match.group(0)
+            placeholder = f"__EMOTE__{placeholder_id}__"
+            emote_placeholders[placeholder] = emote
+            placeholder_id += 1
+            return placeholder
 
-        # 1. Handle standard Discord mentions first (<@12345>)
+        # 1. Protect custom emotes by replacing them with placeholders
+        processed_content = re.sub(r'<a?:\w+:\d+>', store_emote, content)
+
+        # 2. Handle standard Discord mentions first (<@12345>)
         def replace_mention_id(match):
             user_id = int(match.group(1))
             user = user_index.get(user_id)
             return f"@{user.username}" if user else "@Unknown User"
         processed_content = re.sub(r'<@!?(\d+)>', replace_mention_id, processed_content)
 
-        # 2. Handle all other display names and usernames, stripping markdown
+        # 3. Handle all other display names and usernames, stripping markdown
         name_to_username = {}
         for user in user_index.values():
             # Map both display name and username to the canonical @username
@@ -278,7 +289,11 @@ class LLMContextFormatter:
 
             processed_content = pattern.sub(replace_name, processed_content)
 
-        # 4. Final cleanup
+        # 4. Restore emotes before final cleanup
+        for placeholder, emote in emote_placeholders.items():
+            processed_content = processed_content.replace(placeholder, emote)
+
+        # 5. Final cleanup
         processed_content = re.sub(r'(?<=\s):(\d+\.?)\s*$', '', processed_content, flags=re.MULTILINE)
         processed_content = re.sub(r'\s+', ' ', processed_content).strip()
         processed_content = re.sub(r'\s+([.,!?:;])', r'\1', processed_content)
@@ -296,11 +311,24 @@ class LLMContextFormatter:
         - Cleaning up leftover artifacts.
         """
         try:
-            # 0. Failsafe: Strip any context formatting the LLM might have parroted.
+            emote_placeholders = {}
+            placeholder_id = 0
+            def store_emote(match):
+                nonlocal placeholder_id
+                emote = match.group(0)
+                placeholder = f"__EMOTE__{placeholder_id}__"
+                emote_placeholders[placeholder] = emote
+                placeholder_id += 1
+                return placeholder
+
+            # 1. Protect custom emotes by replacing them with placeholders
+            processed_text = re.sub(r'<a?:\w+:\d+>', store_emote, text)
+
+            # 2. Failsafe: Strip any context formatting the LLM might have parroted.
             # This is a multi-pass failsafe to handle different parroting scenarios.
             # First, handle the complex case with a reply block, which may or may not have a username.
             p1 = r'\[\d+\].*?\[Replying to #\d+\]\s*'
-            processed_text = re.sub(p1, '', text.strip())
+            processed_text = re.sub(p1, '', processed_text.strip())
             # Second, handle the simpler case with just a username prefix.
             p2 = r'\[\d+\]\s*.*?:'
             processed_text = re.sub(p2, '', processed_text.strip())
@@ -320,13 +348,13 @@ class LLMContextFormatter:
             creator_id = 214161976534892545
             creator_username = "⭐ **Mirrowel**"
 
-            # 1. Strip "Username:" prefixes, but only if they are at the very start of the message.
+            # 3. Strip "Username:" prefixes, but only if they are at the very start of the message.
             # This regex is designed to be specific: it matches up to 60 characters that are not a newline or colon,
             # preventing it from greedily consuming entire paragraphs that don't contain a colon.
             username_colon_pattern = r'^\s*[^:\n]{1,60}:\s*'
             processed_text = re.sub(username_colon_pattern, '', processed_text).strip()
 
-            # 3. Convert all username mentions to display names
+            # 4. Convert all username mentions to display names
             user_index = await self.index_manager.load_user_index(guild_id)
             if user_index:
                 # Create a mapping from various names to user objects
@@ -344,7 +372,10 @@ class LLMContextFormatter:
                     # This includes plain text names and @mentions, and strips surrounding markdown/junk
                     escaped_names = [re.escape(name) for name in sorted_names if len(name) >= 3]
                     if not escaped_names:
-                        return processed_text # No names to process
+                        # Still need to restore emotes even if no names are processed
+                        for placeholder, emote in emote_placeholders.items():
+                            processed_text = processed_text.replace(placeholder, emote)
+                        return processed_text
 
                     pattern = re.compile(r'(?<!\w)@?(?:[\s\*\_~`⭐]*)(' + '|'.join(escaped_names) + r')(?:[\s\*\_~`⭐]*)(?!\w)', re.IGNORECASE)
 
@@ -368,7 +399,11 @@ class LLMContextFormatter:
 
                     processed_text = pattern.sub(replace_func, processed_text)
 
-            # 4. Final Cleanup
+            # 5. Restore emotes before final cleanup
+            for placeholder, emote in emote_placeholders.items():
+                processed_text = processed_text.replace(placeholder, emote)
+
+            # 6. Final Cleanup
             # Collapse horizontal whitespace, but preserve newlines
             processed_text = re.sub(r'[ \t]+', ' ', processed_text)
             # Collapse more than 2 newlines into 2 to preserve paragraphs
