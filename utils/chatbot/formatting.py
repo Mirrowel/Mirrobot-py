@@ -252,12 +252,7 @@ class LLMContextFormatter:
             return f"@{user.username}" if user else "@Unknown User"
         processed_content = re.sub(r'<@!?(\d+)>', replace_mention_id, processed_content)
 
-        # 2. Handle the specially formatted creator name
-        # This specifically looks for the formatted name and converts it back.
-        creator_username_formatted = "⭐ \\*\\*Mirrowel\\*\\*"
-        processed_content = re.sub(creator_username_formatted, "@Mirrowel", processed_content)
-
-        # 3. Handle all other display names and usernames, stripping markdown
+        # 2. Handle all other display names and usernames, stripping markdown
         name_to_username = {}
         for user in user_index.values():
             # Map both display name and username to the canonical @username
@@ -268,11 +263,11 @@ class LLMContextFormatter:
         sorted_names = sorted(name_to_username.keys(), key=len, reverse=True)
         
         # Create a regex that finds names, optionally surrounded by markdown
-        # This looks for markdown characters like *, _, ~, `, etc.
+        # This looks for markdown characters like *, _, ~, `, ⭐ etc.
         escaped_names = [re.escape(name) for name in sorted_names if len(name) >= 3]
         if escaped_names:
             pattern = re.compile(
-                r'(?<![@\w])(?:[\*\_~`]*|⭐\s\*\*?)(' + '|'.join(escaped_names) + r')(?:[\*\_~`]*|\*\*?)(?!\w)',
+                r'(?<![@\w])(?:[\s\*\_~`⭐]*)(' + '|'.join(escaped_names) + r')(?:[\s\*\_~`⭐]*)(?!\w)',
                 re.IGNORECASE
             )
 
@@ -313,6 +308,10 @@ class LLMContextFormatter:
             p3 = r'^\s*\[Replying to #\d+\]\s*'
             processed_text = re.sub(p3, '', processed_text, flags=re.MULTILINE).strip()
 
+            # Handle "Replying to" with parentheses, a common parrot
+            p_reply_paren = r'\s*\(Replying to #\d+\)\s*'
+            processed_text = re.sub(p_reply_paren, ' ', processed_text).strip()
+
             # Fourth, filter out stray numerical tags like [372] that the LLM sometimes outputs.
             p4 = r'\s*\[\d{1,3}\]\s*'
             processed_text = re.sub(p4, ' ', processed_text).strip()
@@ -342,12 +341,12 @@ class LLMContextFormatter:
                     sorted_names = sorted(name_to_user.keys(), key=len, reverse=True)
                     
                     # Build a regex to find all possible names, with or without @
-                    # This includes plain text names and @mentions
+                    # This includes plain text names and @mentions, and strips surrounding markdown/junk
                     escaped_names = [re.escape(name) for name in sorted_names if len(name) >= 3]
                     if not escaped_names:
                         return processed_text # No names to process
 
-                    pattern = re.compile(r'(?<!\w)@?(' + '|'.join(escaped_names) + r')(?!\w)', re.IGNORECASE)
+                    pattern = re.compile(r'(?<!\w)@?(?:[\s\*\_~`⭐]*)(' + '|'.join(escaped_names) + r')(?:[\s\*\_~`⭐]*)(?!\w)', re.IGNORECASE)
 
                     def replace_func(match):
                         matched_name = match.group(1).lower()
