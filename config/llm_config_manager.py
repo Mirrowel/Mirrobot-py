@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from utils.logging_setup import get_logger
 from utils.chatbot.manager import chatbot_manager
 
@@ -161,22 +161,35 @@ def save_server_safety_settings(guild_id: int, settings: Dict[str, str]) -> bool
     config.setdefault("servers", {}).setdefault(str(guild_id), {})["safety_settings"] = settings
     return save_llm_config(config)
 
-def get_reasoning_budget(model_name: str, mode: str, guild_id: int) -> Optional[int]:
-    """Get reasoning budget level with hierarchical fallback."""
+def get_reasoning_budget(model_name: str, mode: str, guild_id: int) -> Tuple[Optional[int], bool]:
+    """Get reasoning budget level and custom flag with hierarchical fallback."""
     llm_config = load_llm_config()
     server_budgets = llm_config.get("servers", {}).get(str(guild_id), {}).get("reasoning_budgets", {})
     
     model_budgets = server_budgets.get(model_name, {})
-    # Fallback from specific mode to default, then return None if neither is found
-    return model_budgets.get(mode, model_budgets.get("default"))
+    
+    # Get budget for the specific mode, or fallback to default
+    budget_setting = model_budgets.get(mode, model_budgets.get("default"))
+    
+    if isinstance(budget_setting, dict):
+        # New format: {'level': level, 'custom_reasoning_budget': custom_flag}
+        return budget_setting.get("level"), budget_setting.get("custom_reasoning_budget", budget_setting.get("custom", False)) # Added backward compatibility
+    elif isinstance(budget_setting, int):
+        # Old format: just the level
+        return budget_setting, False
+    
+    return None, False
 
-def save_reasoning_budget(model: str, mode: str, level: int, guild_id: int) -> bool:
+def save_reasoning_budget(model: str, mode: str, level: int, guild_id: int, custom_reasoning_budget: bool = False) -> bool:
     """Save a reasoning budget for a model and mode."""
     config = load_llm_config()
     budgets = config.setdefault("servers", {}).setdefault(str(guild_id), {}).setdefault("reasoning_budgets", {})
     
     model_budgets = budgets.setdefault(model, {})
-    model_budgets[mode] = level
+    model_budgets[mode] = {
+        "level": level,
+        "custom_reasoning_budget": custom_reasoning_budget
+    }
     
     return save_llm_config(config)
 

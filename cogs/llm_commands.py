@@ -266,7 +266,7 @@ class LLMCommands(commands.Cog):
             request_kwargs["max_tokens"] = max_tokens
 
         # Apply reasoning budget
-        reasoning_budget_level = get_reasoning_budget(target_model, model_type, guild_id)
+        reasoning_budget_level, custom_reasoning_budget = get_reasoning_budget(target_model, model_type, guild_id)
         if reasoning_budget_level is not None:
             #logger.info(f"Applying reasoning budget for model '{target_model}' in mode '{model_type}' with level '{reasoning_budget_level}'.")
             if reasoning_budget_level == -1 or reasoning_budget_level == "auto":
@@ -283,6 +283,9 @@ class LLMCommands(commands.Cog):
 
                 if level_str:
                     request_kwargs["reasoning_effort"] = level_str
+        
+        if custom_reasoning_budget:
+            request_kwargs["custom_reasoning_budget"] = True
 
         # Handle local provider by setting api_base
         if target_model.startswith("local/"):
@@ -1929,7 +1932,7 @@ class LLMCommands(commands.Cog):
     @commands.command(name='set_reasoning_budget', help='Set the reasoning budget for a model.')
     @has_command_permission('manage_guild')
     @command_category("AI Assistant")
-    async def set_reasoning_budget(self, ctx, model: str, level: str, mode: Optional[str] = None):
+    async def set_reasoning_budget(self, ctx, model: str, level: str, mode: Optional[str] = None, custom_reasoning_budget: bool = False):
         """Sets the reasoning budget for a specific model and mode."""
         if not ctx.guild:
             await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
@@ -1946,16 +1949,16 @@ class LLMCommands(commands.Cog):
         if mode and mode.lower() == 'all':
             modes_to_set = ["default", "chat", "ask", "think"]
             for target_mode in modes_to_set:
-                save_reasoning_budget(model, target_mode, level_val, guild_id)
-            await create_embed_response(ctx, f"Reasoning budget for model `{model}` for all modes set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+                save_reasoning_budget(model, target_mode, level_val, guild_id, custom_reasoning_budget=custom_reasoning_budget)
+            await create_embed_response(ctx, f"Reasoning budget for model `{model}` for all modes set to `{level}` (Custom Reasoning Budget: {custom_reasoning_budget}).", title="Reasoning Budget Set", color=discord.Color.green())
         else:
             target_mode = mode if mode else "default"
-            save_reasoning_budget(model, target_mode, level_val, guild_id)
+            save_reasoning_budget(model, target_mode, level_val, guild_id, custom_reasoning_budget=custom_reasoning_budget)
             
             if mode:
-                await create_embed_response(ctx, f"Reasoning budget for model `{model}` in mode `{mode}` set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+                await create_embed_response(ctx, f"Reasoning budget for model `{model}` in mode `{mode}` set to `{level}` (Custom Reasoning Budget: {custom_reasoning_budget}).", title="Reasoning Budget Set", color=discord.Color.green())
             else:
-                await create_embed_response(ctx, f"Default reasoning budget for model `{model}` set to `{level}`.", title="Reasoning Budget Set", color=discord.Color.green())
+                await create_embed_response(ctx, f"Default reasoning budget for model `{model}` set to `{level}` (Custom Reasoning Budget: {custom_reasoning_budget}).", title="Reasoning Budget Set", color=discord.Color.green())
 
     @commands.command(name='view_reasoning_budget', help='View the reasoning budget for all models.')
     @has_command_permission('manage_guild')
@@ -1980,10 +1983,16 @@ class LLMCommands(commands.Cog):
 
         for model, budgets in all_budgets.items():
             budget_lines = []
-            for mode, level in budgets.items():
-                level_str = level_map_inv.get(level, str(level))
-                budget_lines.append(f"**{mode.title()}:** `{level_str}`")
-            
+            for mode, setting in budgets.items():
+                if isinstance(setting, dict):
+                    level = setting.get('level')
+                    custom = setting.get('custom_reasoning_budget', setting.get('custom', False)) # Added backward compatibility
+                    level_str = level_map_inv.get(level, str(level))
+                    budget_lines.append(f"**{mode.title()}:** `{level_str}` (Custom Reasoning Budget: {'Yes' if custom else 'No'})")
+                else: # Fallback for old format
+                    level_str = level_map_inv.get(setting, str(setting))
+                    budget_lines.append(f"**{mode.title()}:** `{level_str}` (Custom Reasoning Budget: No)")
+
             if budget_lines:
                 embed.add_field(name=f"Model: `{model}`", value="\n".join(budget_lines), inline=False)
 
