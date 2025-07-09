@@ -47,12 +47,20 @@ class LLMCommands(commands.Cog):
     def get_model_for_guild(self, guild_id: Optional[int], model_type: str) -> str:
         """Get the configured model for a specific type, falling back to globals."""
         if guild_id:
-            server_config = self.llm_config.get("servers", {}).get(str(guild_id))
-            if server_config and model_type in server_config.get("models", {}):
+            server_config = self.llm_config.get("servers", {}).get(str(guild_id), {})
+            # Check if a specific model for the type exists in the server config
+            if server_config.get("models", {}).get(model_type):
                 return server_config["models"][model_type]
+            # Check for a server-level default model
+            if server_config.get("models", {}).get("default"):
+                return server_config["models"]["default"]
+
+        # Fallback to global model for the specific type
+        if self.global_models.get(model_type):
+            return self.global_models[model_type]
         
-        # Fallback to global model
-        return self.global_models.get(model_type, self.global_models.get("default"))
+        # Final fallback to the global default model
+        return self.global_models.get("default")
 
     async def save_model_to_config(self, guild_id: int, model_name: str, model_type: str = "default"):
         """Save the selected model for a specific type to the server's config."""
