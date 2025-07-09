@@ -9,26 +9,42 @@ import logging
 import sys
 import colorlog
 from datetime import datetime
-from logging.handlers import TimedRotatingFileHandler
 import os
 
-class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
+class DailyRotatingFileHandler(logging.FileHandler):
     """
-    Custom TimedRotatingFileHandler to use a custom file naming scheme.
+    A handler for logging to a file that rotates daily, with filenames based on the date.
     """
-    def __init__(self, filename, when='h', interval=1, backupCount=0, encoding=None, delay=False, utc=False, atTime=None):
-        super().__init__(filename, when, interval, backupCount, encoding, delay, utc, atTime)
-        self.namer = self._namer
+    def __init__(self, log_dir, encoding=None, delay=False):
+        """
+        Initialize the handler.
+        """
+        self.log_dir = log_dir
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.current_date = datetime.now().date()
+        filename = self._get_filename()
+        super().__init__(filename, 'a', encoding, delay)
 
-    def _namer(self, name):
+    def _get_filename(self):
         """
-        Custom namer for log files.
+        Returns the filename for the current date's log file.
         """
-        base_filename, ext = os.path.splitext(name)
-        # The default name is base_filename + ext + '.' + time_str
-        # We want to change it to base_filename + '_' + time_str + ext
-        time_str = base_filename.split('.')[-1]
-        return f"logs/bot_{time_str}.log"
+        return os.path.join(self.log_dir, f"bot_{self.current_date.strftime('%Y-%m-%d')}.log")
+
+    def emit(self, record):
+        """
+        Emit a record.
+
+        If the date has changed, close the current file and open a new one.
+        """
+        today = datetime.now().date()
+        if today != self.current_date:
+            self.stream.close()
+            self.current_date = today
+            self.baseFilename = self._get_filename()
+            self.stream = self._open()
+        
+        super().emit(record)
 
 class LiteLLMFilter(logging.Filter):
     """
@@ -176,15 +192,8 @@ def setup_logging():
     logger.setLevel(logging.DEBUG)  # Set the logging level
     
     # Create handlers for both file and console
-    log_filename = "logs/bot.log"
-    file_handler = CustomTimedRotatingFileHandler(
-        log_filename,
-        when='midnight',
-        interval=1,
-        backupCount=30,
-        encoding='utf-8',
-        utc=True
-    )
+    log_dir = "logs"
+    file_handler = DailyRotatingFileHandler(log_dir, encoding='utf-8')
     file_handler.setLevel(logging.DEBUG) 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO) 
