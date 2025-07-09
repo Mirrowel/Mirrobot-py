@@ -79,29 +79,39 @@ def has_command_permission(*required_permissions):
         command_permissions = config.get('command_permissions', {})
         guild_id = str(ctx.guild.id) if ctx.guild else None # Handle DMs
 
-        # Bot owner always has permission, especially for system commands
+        # --- Start Enhanced Debug Logging ---
+        logger.debug(f"--- Running permission check for '{ctx.command.name}' by '{ctx.author}' ({ctx.author.id}) in '{ctx.guild.name}' ---")
+
+        # 1. Bot owner check
         try:
             app_info = await ctx.bot.application_info()
             if ctx.author.id == app_info.owner.id:
+                logger.debug(f"Permission GRANTED for '{ctx.command.name}': User is the bot owner.")
                 return True
+            logger.debug("Permission check: User is not the bot owner.")
         except Exception as e:
-            logger.error(f"Error checking owner: {e}")
-            # If owner check fails, assume not owner for safety
+            logger.error(f"Permission check FAILED: Could not verify bot owner. Error: {e}", exc_info=True)
+            # Continue to other checks, but this is a significant failure.
             pass
-            
+
         # System commands can *only* be used by the bot owner (already checked above)
         if command_name in SYSTEM_COMMANDS:
-             logger.debug(f"Command '{command_name}' is a system command, denied for non-owner {ctx.author}.")
-             return False # Owner check already passed if they are the owner
+             logger.warning(f"Permission DENIED for '{ctx.command.name}': System command, but owner check failed or user is not owner.")
+             return False
 
         # Check if we're in a guild for non-system commands
         if not ctx.guild:
-            logger.debug(f"Command '{command_name}' denied in DM for {ctx.author}")
+            logger.warning(f"Permission DENIED for '{ctx.command.name}': Command cannot be used in DMs.")
             return False
-        
-        # Always allow administrators and people with manage_guild permission
-        if ctx.author.guild_permissions.administrator or ctx.author.guild_permissions.manage_guild:
+
+        # 2. Administrator / Manage Guild check
+        author_perms = ctx.author.guild_permissions
+        logger.debug(f"Checking admin/manage_guild for '{ctx.author}'. Admin: {author_perms.administrator}, Manage Guild: {author_perms.manage_guild}")
+        if author_perms.administrator or author_perms.manage_guild:
+            logger.debug(f"Permission GRANTED for '{ctx.command.name}': User has Administrator or Manage Guild permission.")
             return True
+        logger.debug("Permission check: User does not have Administrator or Manage Guild permission.")
+        # --- End Enhanced Debug Logging ---
                     
         # Check if user is blacklisted
         if guild_id in _permission_blacklists["users"]:
@@ -166,10 +176,7 @@ def has_command_permission(*required_permissions):
             return True
         
         # If we got here, the user doesn't have permission
-        if ctx.guild:
-            logger.debug(f"Permission denied: {ctx.author} tried to use {command_name}, Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
-        else:
-            logger.debug(f"Permission denied: {ctx.author} tried to use {command_name} in DMs")
+        logger.warning(f"Permission DENIED for '{ctx.command.name}': User '{ctx.author}' failed all permission checks.")
         return False
     
     return commands.check(predicate)

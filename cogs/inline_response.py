@@ -73,12 +73,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             await ctx.send(embed=help_embed)
 
     @inline.command(name="status", help="""
-    Displays the configuration for the Inline Response feature.
-    Shows the effective settings for the specified target, indicating whether they are inherited from the server or set directly.
-    Usage: `!inline status [target]`
-    Target can be 'server', a #channel/thread, or a channel/thread ID. If omitted, shows status for the current channel.
-    """)
-    @commands.has_permissions(manage_guild=True)
+     Displays the configuration for the Inline Response feature.
+     Shows the effective settings for the specified target, indicating whether they are inherited from the server or set directly.
+     Usage: `!inline status [target]`
+     Target can be 'server', a #channel/thread, or a channel/thread ID. If omitted, shows status for the current channel.
+     """)
+    @has_command_permission('manage_guild')
     @app_commands.describe(target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
     async def status(self, ctx: commands.Context, target: str = None):
         """Display the current inline response settings for a target."""
@@ -191,12 +191,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         await ctx.send(embed=status_embed)
 
     @inline.command(name="toggle", help="""
-    Enables or disables the Inline Response feature for a target.
-    Note: This does not affect permissions. Use `!inline permissions` to manage access.
-    Usage: `!inline toggle <on|off> [target]`
-    Target can be 'server', a #channel/thread, or a channel/thread ID.
-    """)
-    @commands.has_permissions(manage_guild=True)
+     Enables or disables the Inline Response feature for a target.
+     Note: This does not affect permissions. Use `!inline permissions` to manage access.
+     Usage: `!inline toggle <on|off> [target]`
+     Target can be 'server', a #channel/thread, or a channel/thread ID.
+     """)
+    @has_command_permission('manage_guild')
     @app_commands.describe(enabled="Set to 'on' or 'off'", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
     async def toggle(self, ctx: commands.Context, enabled: Literal['on', 'off'] = None, target: str = None):
         """Enable or disable the inline response feature for a target."""
@@ -217,12 +217,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             await embed_helper.create_embed_response(ctx, title="❌ Error", description="Failed to update settings.", color=discord.Color.red())
 
     @inline.command(name="trigger", help="""
-    Configures how the bot detects a mention to trigger a response for a target.
-    Note: This does not affect permissions. Use `!inline permissions` to manage access.
-    Usage: `!inline trigger <start|anywhere> [target]`
-    Target can be 'server', a #channel/thread, or a channel/thread ID.
-    """)
-    @commands.has_permissions(manage_guild=True)
+     Configures how the bot detects a mention to trigger a response for a target.
+     Note: This does not affect permissions. Use `!inline permissions` to manage access.
+     Usage: `!inline trigger <start|anywhere> [target]`
+     Target can be 'server', a #channel/thread, or a channel/thread ID.
+     """)
+    @has_command_permission('manage_guild')
     @app_commands.describe(behavior="Set to 'start' or 'anywhere'", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
     async def trigger(self, ctx: commands.Context, behavior: Literal['start', 'anywhere'] = None, target: str = None):
         """Configure the mention trigger behavior for a target."""
@@ -243,12 +243,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             await embed_helper.create_embed_response(ctx, title="❌ Error", description="Failed to update settings.", color=discord.Color.red())
 
     @inline.command(name="model", help="""
-    Sets the LLM model for inline responses for a target.
-    Note: This does not affect permissions. Use `!inline permissions` to manage access.
-    Usage: `!inline model <ask|think|chat> [target]`
-    Target can be 'server', a #channel/thread, or a channel/thread ID.
-    """)
-    @commands.has_permissions(manage_guild=True)
+     Sets the LLM model for inline responses for a target.
+     Note: This does not affect permissions. Use `!inline permissions` to manage access.
+     Usage: `!inline model <ask|think|chat> [target]`
+     Target can be 'server', a #channel/thread, or a channel/thread ID.
+     """)
+    @has_command_permission('manage_guild')
     @app_commands.describe(model_type="Choose 'ask', 'think', or 'chat'", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
     async def model(self, ctx: commands.Context, model_type: Literal['ask', 'think', 'chat'] = None, target: str = None):
         """Set the LLM model type for a target."""
@@ -268,12 +268,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             await embed_helper.create_embed_response(ctx, title="❌ Error", description="Failed to update settings.", color=discord.Color.red())
 
     @inline.command(name="context", help="""
-    Configures context message counts for a target.
-    Note: This does not affect permissions. Use `!inline permissions` to manage access.
-    Usage: `!inline context <channel_msgs> <user_msgs> [target]`
-    Target can be 'server', a #channel/thread, or a channel/thread ID.
-    """)
-    @commands.has_permissions(manage_guild=True)
+     Configures context message counts for a target.
+     Note: This does not affect permissions. Use `!inline permissions` to manage access.
+     Usage: `!inline context <channel_msgs> <user_msgs> [target]`
+     Target can be 'server', a #channel/thread, or a channel/thread ID.
+     """)
+    @has_command_permission('manage_guild')
     @app_commands.describe(channel_messages="Number of recent channel messages.", user_messages="Number of recent user messages.", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
     async def context(self, ctx: commands.Context, channel_messages: int = None, user_messages: int = None, target: str = None):
         """Configure context-building parameters for a target."""

@@ -362,8 +362,8 @@ def create_bot(config):
             pass  # Ignore unknown commands
         elif isinstance(error, commands.CheckFailure):
             # This handles cases where a permission check fails.
-            # The permission system itself should handle sending a user-friendly error message,
-            # so we just pass here to avoid duplicate or generic error messages.
+            # We are logging it here because some checks might fail silently.
+            logger.warning(f"Command check failed for user {ctx.author} ({ctx.author.id}) using command '{ctx.command.name}' in channel #{ctx.channel.name} ({ctx.channel.id}) on server {ctx.guild.name} ({ctx.guild.id}). Error: {error}")
             pass
         else:
             # Handle other types of errors
