@@ -117,24 +117,24 @@ class InlineResponseManager:
         
         return InlineResponseConfig(**filtered_config)
 
-    def get_specific_config(self, guild_id: int, channel_id: int = None) -> "InlineResponseConfig":
+    def get_specific_config(self, guild_id: int, channel_id: int = None) -> Dict[str, Any]:
         """
-        Gets the configuration for a specific level (server or channel) without the hierarchy.
+        Gets the raw configuration dictionary for a specific level (server or channel) without the hierarchy.
         This is used when editing a config, to ensure we're not modifying a merged config.
+        Returns a copy of the raw config dict.
         """
         guild_key = str(guild_id)
         
         if channel_id:
             channel_key = str(channel_id)
-            channel_data = self.config_cache.get("servers", {}).get(guild_key, {}).get("channels", {}).get(channel_key, {})
-            return InlineResponseConfig(**channel_data)
+            return self.config_cache.get("servers", {}).get(guild_key, {}).get("channels", {}).get(channel_key, {}).copy()
         else:
-            server_data = self.config_cache.get("servers", {}).get(guild_key, {}).get("server_settings", {})
-            return InlineResponseConfig(**server_data)
+            return self.config_cache.get("servers", {}).get(guild_key, {}).get("server_settings", {}).copy()
 
-    def set_config(self, guild_id: int, config: InlineResponseConfig, channel_id: int = None):
+    def set_config(self, guild_id: int, new_settings: Dict[str, Any], channel_id: int = None):
         """
-        Set configuration for a server or a specific channel.
+        Set or update configuration for a server or a specific channel.
+        It merges the new settings with the existing ones.
         If channel_id is None, sets the server-wide configuration.
         Otherwise, sets the configuration for the specified channel.
         """
@@ -151,10 +151,16 @@ class InlineResponseManager:
             channel_key = str(channel_id)
             if "channels" not in self.config_cache["servers"][guild_key]:
                 self.config_cache["servers"][guild_key]["channels"] = {}
-            self.config_cache["servers"][guild_key]["channels"][channel_key] = asdict(config)
+            
+            # Get current settings and update them
+            current_settings = self.config_cache["servers"][guild_key]["channels"].get(channel_key, {})
+            current_settings.update(new_settings)
+            self.config_cache["servers"][guild_key]["channels"][channel_key] = current_settings
         else:
             # Setting for the whole server
-            self.config_cache["servers"][guild_key]["server_settings"] = asdict(config)
+            current_settings = self.config_cache["servers"][guild_key].get("server_settings", {})
+            current_settings.update(new_settings)
+            self.config_cache["servers"][guild_key]["server_settings"] = current_settings
             
         return self.save_config()
             

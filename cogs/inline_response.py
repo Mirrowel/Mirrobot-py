@@ -208,12 +208,9 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if resolved_target is None and target is not None: return
 
         target_id = resolved_target.id if isinstance(resolved_target, (discord.TextChannel, discord.Thread)) else None
-        config_to_modify = self.manager.get_specific_config(ctx.guild.id, target_id)
-        
         new_status = enabled.lower() == 'on'
-        config_to_modify.enabled = new_status
         
-        if self.manager.set_config(ctx.guild.id, config_to_modify, target_id):
+        if self.manager.set_config(ctx.guild.id, {'enabled': new_status}, target_id):
             target_name = "the server" if resolved_target == 'server' else resolved_target.mention
             await embed_helper.create_embed_response(ctx, title="✅ Settings Updated", description=f"Inline responses have been **{'enabled' if new_status else 'disabled'}** for {target_name}.", color=discord.Color.green())
         else:
@@ -237,12 +234,9 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if resolved_target is None and target is not None: return
 
         target_id = resolved_target.id if isinstance(resolved_target, (discord.TextChannel, discord.Thread)) else None
-        config_to_modify = self.manager.get_specific_config(ctx.guild.id, target_id)
-        
         new_behavior = behavior.lower() == 'start'
-        config_to_modify.trigger_on_start_only = new_behavior
-        
-        if self.manager.set_config(ctx.guild.id, config_to_modify, target_id):
+
+        if self.manager.set_config(ctx.guild.id, {'trigger_on_start_only': new_behavior}, target_id):
             target_name = "the server" if resolved_target == 'server' else resolved_target.mention
             await embed_helper.create_embed_response(ctx, title="✅ Settings Updated", description=f"Mention trigger for {target_name} set to **{behavior}**.", color=discord.Color.green())
         else:
@@ -266,11 +260,8 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if resolved_target is None and target is not None: return
 
         target_id = resolved_target.id if isinstance(resolved_target, (discord.TextChannel, discord.Thread)) else None
-        config_to_modify = self.manager.get_specific_config(ctx.guild.id, target_id)
         
-        config_to_modify.model_type = model_type.lower()
-        
-        if self.manager.set_config(ctx.guild.id, config_to_modify, target_id):
+        if self.manager.set_config(ctx.guild.id, {'model_type': model_type.lower()}, target_id):
             target_name = "the server" if resolved_target == 'server' else resolved_target.mention
             await embed_helper.create_embed_response(ctx, title="✅ Settings Updated", description=f"LLM model for {target_name} set to `{model_type}`.", color=discord.Color.green())
         else:
@@ -294,12 +285,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if resolved_target is None and target is not None: return
 
         target_id = resolved_target.id if isinstance(resolved_target, (discord.TextChannel, discord.Thread)) else None
-        config_to_modify = self.manager.get_specific_config(ctx.guild.id, target_id)
+        new_settings = {
+            'context_messages': channel_messages,
+            'user_context_messages': user_messages
+        }
         
-        config_to_modify.context_messages = channel_messages
-        config_to_modify.user_context_messages = user_messages
-        
-        if self.manager.set_config(ctx.guild.id, config_to_modify, target_id):
+        if self.manager.set_config(ctx.guild.id, new_settings, target_id):
             target_name = "the server" if resolved_target == 'server' else resolved_target.mention
             await embed_helper.create_embed_response(ctx, title="✅ Settings Updated", description=f"Context for {target_name} updated:\n• Channel Messages: `{channel_messages}`\n• User Messages: `{user_messages}`", color=discord.Color.green())
         else:
@@ -314,7 +305,10 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         # Step 2: Get the specific configuration for the target.
         # If target_id is None, it fetches the server-wide configuration.
         target_id = resolved_target.id if isinstance(resolved_target, (discord.TextChannel, discord.Thread)) else None
+        # Get a mutable copy of the specific raw config dict
         config_to_modify = self.manager.get_specific_config(ctx.guild.id, target_id)
+        # We need to wrap it in the dataclass to ensure lists are present
+        config_obj = InlineResponseConfig(**config_to_modify)
 
         # Step 3: Identify the entity (role or member) to be added or removed.
         entity_id = None
@@ -361,7 +355,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         # Step 5: Get the correct permission list from the config object.
         # e.g., 'role_whitelist', 'member_blacklist', etc.
         perm_list_name = f"{entity_type}_{list_type}"
-        perm_list = getattr(config_to_modify, perm_list_name)
+        perm_list = getattr(config_obj, perm_list_name)
 
         # Step 6: Perform the add or remove action.
         if action == 'add':
@@ -380,7 +374,14 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                 return
 
         # Step 7: Save the updated configuration and notify the user.
-        if self.manager.set_config(ctx.guild.id, config_to_modify, target_id):
+        # We only want to save the permission lists, not the entire object
+        updated_perms = {
+            "role_whitelist": config_obj.role_whitelist,
+            "member_whitelist": config_obj.member_whitelist,
+            "role_blacklist": config_obj.role_blacklist,
+            "member_blacklist": config_obj.member_blacklist,
+        }
+        if self.manager.set_config(ctx.guild.id, updated_perms, target_id):
             target_name = "the server" if resolved_target == 'server' else resolved_target.mention
             await embed_helper.create_embed_response(ctx, title="✅ Permissions Updated", description=f"`{entity_name}` has been {action_text} the {list_type} for {target_name}.", color=discord.Color.green())
         else:
