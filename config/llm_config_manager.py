@@ -85,16 +85,15 @@ def validate_llm_config(config):
                 errors.append(f"LLM server config for {server_id} should be a dictionary")
                 continue
             
-            if "models" not in server_config:
-                errors.append(f"Missing 'models' object in server config for {server_id}")
-            elif not isinstance(server_config["models"], dict):
-                errors.append(f"'models' in server config for {server_id} should be a dictionary")
-            else:
-                for model_type in ["default", "chat", "ask", "think"]:
-                    if model_type not in server_config["models"]:
-                        errors.append(f"Missing required model type in 'models' for server {server_id}: {model_type}")
-                    elif not isinstance(server_config["models"][model_type], str):
-                        errors.append(f"Model for '{model_type}' in server {server_id} should be a string.")
+            # If a 'models' object exists for the server, validate it. It's optional.
+            if "models" in server_config:
+                if not isinstance(server_config["models"], dict):
+                    errors.append(f"'models' in server config for {server_id} should be a dictionary")
+                else:
+                    # Check that any defined model is a string. It's okay to not have all types defined.
+                    for model_type, model_name in server_config["models"].items():
+                        if not isinstance(model_name, str):
+                            errors.append(f"Model for '{model_type}' in server {server_id} should be a string.")
 
     if errors:
         for error in errors:
