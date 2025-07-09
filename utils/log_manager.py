@@ -9,6 +9,7 @@ import os
 import glob
 import tarfile
 import zstandard as zstd
+import io
 from collections import defaultdict
 from datetime import datetime, timedelta
 from utils.logging_setup import get_logger
@@ -41,6 +42,7 @@ class LogManager:
         - Logs from the current month are kept as is.
         - Logs from the previous month are individually compressed.
         - Logs older than the previous month are bundled into monthly tar.zst archives.
+        - Individually archived logs are re-archived into monthly archives when they become old enough.
         """
         if not self.archive_logs or not os.path.exists(self.log_dir):
             return (0, 0)
@@ -50,12 +52,20 @@ class LogManager:
         start_of_previous_month = (start_of_current_month - timedelta(days=1)).replace(day=1)
 
         logs_by_month = defaultdict(list)
+        
+        # Include both .log and .zst files in the scan
         log_files = glob.glob(os.path.join(self.log_dir, 'bot_*.log'))
+        archived_logs = glob.glob(os.path.join(self.archive_dir, 'bot_*.log.zst'))
+        all_files = log_files + archived_logs
 
-        for log_file in log_files:
+        for log_file in all_files:
             try:
                 filename = os.path.basename(log_file)
-                date_str = filename[4:-4]
+                if filename.endswith('.zst'):
+                    date_str = filename[4:-8] # For 'bot_YYYY-MM-DD.log.zst'
+                else:
+                    date_str = filename[4:-4] # For 'bot_YYYY-MM-DD.log'
+                
                 file_date = datetime.strptime(date_str, '%Y-%m-%d')
                 
                 if file_date >= start_of_current_month:
@@ -74,8 +84,10 @@ class LogManager:
             month_date = datetime.strptime(month_str, '%Y-%m')
             
             if month_date >= start_of_previous_month:
-                # Individually archive previous month's logs
+                # Individually archive previous month's logs if they are not already archived
                 for log_file in files:
+                    if log_file.endswith('.zst'):
+                        continue
                     try:
                         self._archive_individual_log(log_file)
                         os.remove(log_file)
@@ -84,14 +96,14 @@ class LogManager:
                         logger.error(f"Error archiving individual log {log_file}: {e}")
                         error_count += 1
             else:
-                # Create monthly archive for older logs
+                # Create or update monthly archive for older logs
                 try:
                     self._create_monthly_archive(month_str, files)
                     for log_file in files:
                         os.remove(log_file)
                     cleaned_count += len(files)
                 except Exception as e:
-                    logger.error(f"Error creating monthly archive for {month_str}: {e}")
+                    logger.error(f"Error creating/updating monthly archive for {month_str}: {e}")
                     error_count += 1
         
         logger.info(f"Log cleanup complete: {cleaned_count} files processed, {error_count} errors")
@@ -107,15 +119,32 @@ class LogManager:
         logger.debug(f"Archived individual log: {log_file} -> {archive_path}")
 
     def _create_monthly_archive(self, month_str, files):
-        """Creates a .tar.zst archive for a given month's log files."""
+        """Creates or updates a .tar.zst archive for a given month's log files."""
         archive_path = os.path.join(self.archive_dir, f"archive_{month_str}.tar.zst")
+        
+        # Decompress individual .zst files in memory
+        dctx = zstd.ZstdDecompressor()
+        
         cctx = zstd.ZstdCompressor(level=15, threads=-1)
         with open(archive_path, 'wb') as f_out:
             with cctx.stream_writer(f_out) as compressor:
                 with tarfile.open(fileobj=compressor, mode='w:') as tar:
                     for log_file in files:
-                        tar.add(log_file, arcname=os.path.basename(log_file))
-        logger.info(f"Created monthly archive for {month_str}: {archive_path}")
+                        arcname = os.path.basename(log_file)
+                        if log_file.endswith('.zst'):
+                            # Decompress and add to tar
+                            arcname = arcname[:-4] # Remove .zst extension
+                            with open(log_file, 'rb') as f_in:
+                                with dctx.stream_reader(f_in) as reader:
+                                    log_content = reader.read()
+                                    tarinfo = tarfile.TarInfo(name=arcname)
+                                    tarinfo.size = len(log_content)
+                                    tar.addfile(tarinfo, fileobj=io.BytesIO(log_content))
+                        else:
+                            # Add .log file directly
+                            tar.add(log_file, arcname=arcname)
+                            
+        logger.info(f"Created/Updated monthly archive for {month_str}: {archive_path}")
         
     def get_log_stats(self):
         """
