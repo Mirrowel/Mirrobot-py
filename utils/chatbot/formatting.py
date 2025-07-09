@@ -390,10 +390,6 @@ class LLMContextFormatter:
                         if int(user.user_id) == creator_id:
                             return creator_username
                         
-                        # Handle bot self-mentions that might have been missed
-                        if bot_names and int(user.user_id) == bot_user_id:
-                            return ""
-
                         # Default to display name
                         return user.display_name or user.username
 
