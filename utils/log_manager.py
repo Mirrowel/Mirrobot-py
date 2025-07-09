@@ -7,122 +7,115 @@ archiving, and cleanup of old log files.
 
 import os
 import glob
-import gzip
-import time
-import shutil
+import tarfile
+import zstandard as zstd
+from collections import defaultdict
 from datetime import datetime, timedelta
 from utils.logging_setup import get_logger
 
 logger = get_logger()
 
 class LogManager:
-    def __init__(self, log_dir=None, max_log_age_days=30, archive_logs=True):
+    def __init__(self, log_dir=None, archive_logs=True):
         """
         Initialize the log manager.
         
         Args:
             log_dir (str, optional): Directory containing log files. If None, uses 'logs' in project root.
-            max_log_age_days (int): Maximum age of log files in days before cleanup.
-            archive_logs (bool): Whether to archive old logs before removal.
+            archive_logs (bool): Whether to archive old logs.
         """
         if log_dir is None:
-            # Default to 'logs' directory in project root
             self.log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
         else:
             self.log_dir = log_dir
             
-        self.max_log_age_days = max_log_age_days
         self.archive_logs = archive_logs
         
-        # Create archive directory if it doesn't exist
         if self.archive_logs:
             self.archive_dir = os.path.join(self.log_dir, 'archive')
             os.makedirs(self.archive_dir, exist_ok=True)
-    
+
     def cleanup_old_logs(self):
         """
-        Clean up log files older than max_log_age_days.
-        
-        Returns:
-            tuple: (cleaned_count, error_count)
+        Clean up and archive old log files based on a tiered monthly strategy.
+        - Logs from the current month are kept as is.
+        - Logs from the previous month are individually compressed.
+        - Logs older than the previous month are bundled into monthly tar.zst archives.
         """
-        if not os.path.exists(self.log_dir):
-            logger.warning(f"Log directory does not exist: {self.log_dir}")
+        if not self.archive_logs or not os.path.exists(self.log_dir):
             return (0, 0)
-            
-        cutoff_date = datetime.now() - timedelta(days=self.max_log_age_days)
-        cleaned_count = 0
-        error_count = 0
-        
-        # Find all log files in the log directory
+
+        today = datetime.now()
+        start_of_current_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start_of_previous_month = (start_of_current_month - timedelta(days=1)).replace(day=1)
+
+        logs_by_month = defaultdict(list)
         log_files = glob.glob(os.path.join(self.log_dir, 'bot_*.log'))
-        
+
         for log_file in log_files:
             try:
-                # Extract the date from the log filename (assumes format like bot_YYYY-MM-DD.log)
                 filename = os.path.basename(log_file)
-                if not self._is_old_log(log_file, cutoff_date):
-                    continue
-                    
-                # Archive the log file if configured
-                if self.archive_logs:
-                    self._archive_log(log_file)
-                
-                # Delete the original log file
-                os.remove(log_file)
-                cleaned_count += 1
-                
-            except Exception as e:
-                logger.error(f"Error cleaning up log file {log_file}: {e}")
-                error_count += 1
-                
-        logger.info(f"Log cleanup complete: {cleaned_count} files cleaned, {error_count} errors")
-        return (cleaned_count, error_count)
-    
-    def _is_old_log(self, log_file, cutoff_date):
-        """
-        Check if a log file is older than the cutoff date.
-        
-        Args:
-            log_file (str): Path to log file
-            cutoff_date (datetime): Cutoff date for old logs
-            
-        Returns:
-            bool: True if the log file is older than the cutoff date
-        """
-        try:
-            # First try to extract date from filename (format: bot_YYYY-MM-DD.log)
-            filename = os.path.basename(log_file)
-            if filename.startswith('bot_') and filename.endswith('.log'):
-                date_str = filename[4:-4] # Extract YYYY-MM-DD
+                date_str = filename[4:-4]
                 file_date = datetime.strptime(date_str, '%Y-%m-%d')
-                return file_date < cutoff_date
+                
+                if file_date >= start_of_current_month:
+                    continue # Skip current month's logs
+                
+                logs_by_month[file_date.strftime('%Y-%m')].append(log_file)
+
+            except ValueError:
+                logger.warning(f"Could not parse date from log file: {log_file}")
+                continue
+        
+        cleaned_count = 0
+        error_count = 0
+
+        for month_str, files in logs_by_month.items():
+            month_date = datetime.strptime(month_str, '%Y-%m')
             
-            # Fall back to file modification time
-            mod_time = os.path.getmtime(log_file)
-            mod_date = datetime.fromtimestamp(mod_time)
-            return mod_date < cutoff_date
-        except:
-            # If we can't parse the date, use file modification time
-            mod_time = os.path.getmtime(log_file)
-            mod_date = datetime.fromtimestamp(mod_time)
-            return mod_date < cutoff_date
-    
-    def _archive_log(self, log_file):
-        """
-        Archive a log file by compressing it and moving to archive directory.
+            if month_date >= start_of_previous_month:
+                # Individually archive previous month's logs
+                for log_file in files:
+                    try:
+                        self._archive_individual_log(log_file)
+                        os.remove(log_file)
+                        cleaned_count += 1
+                    except Exception as e:
+                        logger.error(f"Error archiving individual log {log_file}: {e}")
+                        error_count += 1
+            else:
+                # Create monthly archive for older logs
+                try:
+                    self._create_monthly_archive(month_str, files)
+                    for log_file in files:
+                        os.remove(log_file)
+                    cleaned_count += len(files)
+                except Exception as e:
+                    logger.error(f"Error creating monthly archive for {month_str}: {e}")
+                    error_count += 1
         
-        Args:
-            log_file (str): Path to log file to archive
-        """
-        archive_path = os.path.join(self.archive_dir, f"{os.path.basename(log_file)}.gz")
-        
-        # Compress the log file
-        with open(log_file, 'rb') as f_in:
-            with gzip.open(archive_path, 'wb') as f_out:
-                shutil.copyfileobj(f_in, f_out)
-        
-        logger.debug(f"Archived log file: {log_file} -> {archive_path}")
+        logger.info(f"Log cleanup complete: {cleaned_count} files processed, {error_count} errors")
+        return (cleaned_count, error_count)
+
+    def _archive_individual_log(self, log_file):
+        """Compresses a single log file using zstandard."""
+        archive_path = os.path.join(self.archive_dir, f"{os.path.basename(log_file)}.zst")
+        cctx = zstd.ZstdCompressor(level=9)
+        with open(log_file, 'rb') as f_in, open(archive_path, 'wb') as f_out:
+            with cctx.stream_writer(f_out) as compressor:
+                compressor.write(f_in.read())
+        logger.debug(f"Archived individual log: {log_file} -> {archive_path}")
+
+    def _create_monthly_archive(self, month_str, files):
+        """Creates a .tar.zst archive for a given month's log files."""
+        archive_path = os.path.join(self.archive_dir, f"archive_{month_str}.tar.zst")
+        cctx = zstd.ZstdCompressor(level=15, threads=-1)
+        with open(archive_path, 'wb') as f_out:
+            with cctx.stream_writer(f_out) as compressor:
+                with tarfile.open(fileobj=compressor, mode='w:') as tar:
+                    for log_file in files:
+                        tar.add(log_file, arcname=os.path.basename(log_file))
+        logger.info(f"Created monthly archive for {month_str}: {archive_path}")
         
     def get_log_stats(self):
         """
@@ -134,9 +127,12 @@ class LogManager:
         if not os.path.exists(self.log_dir):
             return {"error": "Log directory does not exist"}
             
-        log_files = glob.glob(os.path.join(self.log_dir, '*.log'))
-        archive_files = glob.glob(os.path.join(self.archive_dir, '*.gz')) if self.archive_logs else []
-        
+        log_files = glob.glob(os.path.join(self.log_dir, 'bot_*.log'))
+        archive_files = []
+        if self.archive_logs:
+            archive_files.extend(glob.glob(os.path.join(self.archive_dir, '*.zst')))
+            archive_files.extend(glob.glob(os.path.join(self.archive_dir, '*.tar.zst')))
+
         total_size_logs = sum(os.path.getsize(f) for f in log_files)
         total_size_archives = sum(os.path.getsize(f) for f in archive_files)
         
