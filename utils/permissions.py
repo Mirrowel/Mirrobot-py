@@ -176,7 +176,7 @@ def has_command_permission(*required_permissions):
             return True
         
         # If we got here, the user doesn't have permission
-        logger.warning(f"Permission DENIED for '{ctx.command.name}': User '{ctx.author}' failed all permission checks.")
+        logger.info(f"Permission DENIED for '{ctx.command.name}': User '{ctx.author}' failed all permission checks.")
         return False
     
     return commands.check(predicate)
