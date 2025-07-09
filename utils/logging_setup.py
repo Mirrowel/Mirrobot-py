@@ -9,6 +9,26 @@ import logging
 import sys
 import colorlog
 from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
+import os
+
+class CustomTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """
+    Custom TimedRotatingFileHandler to use a custom file naming scheme.
+    """
+    def __init__(self, filename, when='h', interval=1, backupCount=0, encoding=None, delay=False, utc=False, atTime=None):
+        super().__init__(filename, when, interval, backupCount, encoding, delay, utc, atTime)
+        self.namer = self._namer
+
+    def _namer(self, name):
+        """
+        Custom namer for log files.
+        """
+        base_filename, ext = os.path.splitext(name)
+        # The default name is base_filename + ext + '.' + time_str
+        # We want to change it to base_filename + '_' + time_str + ext
+        time_str = base_filename.split('.')[-1]
+        return f"logs/bot_{time_str}.log"
 
 class LiteLLMFilter(logging.Filter):
     """
@@ -156,8 +176,15 @@ def setup_logging():
     logger.setLevel(logging.DEBUG)  # Set the logging level
     
     # Create handlers for both file and console
-    log_filename = f"logs/{datetime.now().strftime('bot_%Y-%m-%d.log')}"
-    file_handler = logging.FileHandler(log_filename, encoding='utf-8')
+    log_filename = "logs/bot.log"
+    file_handler = CustomTimedRotatingFileHandler(
+        log_filename,
+        when='midnight',
+        interval=1,
+        backupCount=30,
+        encoding='utf-8',
+        utc=True
+    )
     file_handler.setLevel(logging.DEBUG) 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO) 

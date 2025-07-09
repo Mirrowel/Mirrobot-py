@@ -55,7 +55,7 @@ class LogManager:
         error_count = 0
         
         # Find all log files in the log directory
-        log_files = glob.glob(os.path.join(self.log_dir, '*.log'))
+        log_files = glob.glob(os.path.join(self.log_dir, 'bot_*.log'))
         
         for log_file in log_files:
             try:
@@ -93,8 +93,8 @@ class LogManager:
         try:
             # First try to extract date from filename (format: bot_YYYY-MM-DD.log)
             filename = os.path.basename(log_file)
-            if filename.startswith('bot_') and len(filename) >= 14:
-                date_str = filename[4:14]  # Extract YYYY-MM-DD
+            if filename.startswith('bot_') and filename.endswith('.log'):
+                date_str = filename[4:-4] # Extract YYYY-MM-DD
                 file_date = datetime.strptime(date_str, '%Y-%m-%d')
                 return file_date < cutoff_date
             
