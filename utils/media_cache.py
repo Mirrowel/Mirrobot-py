@@ -93,14 +93,21 @@ class MediaCacheManager:
             if cached_entry:
                 expiry = cached_entry.get('expiry_timestamp')
                 if not expiry or expiry > time.time():
-                    logger.info(f"Found valid cached URL for {url} (hash: {file_hash})")
+                    logger.debug(f"Found valid cached URL for {url} (hash: {file_hash})")
                     return cached_entry['url']
                 else:
-                    logger.info(f"Cached URL for {url} has expired. Re-uploading.")
+                    logger.debug(f"Cached URL for {url} has expired. Re-uploading.")
             
-            is_avatar = "discordapp.com/avatars/" in url
+            permanent_patterns = [
+                "discordapp.com/avatars/",
+                "discordapp.com/icons/",
+                "discordapp.com/banners/",
+                "discordapp.com/splashes/",
+                "discordapp.com/emojis/"
+            ]
+            is_permanent = any(pattern in url for pattern in permanent_patterns)
             
-            if is_avatar and 'pixeldrain' in self.services:
+            if is_permanent and 'pixeldrain' in self.services:
                 services_to_try = ['pixeldrain'] + [s for s in self.services if s != 'pixeldrain']
             else:
                 services_to_try = random.sample(self.services, len(self.services))
@@ -121,7 +128,7 @@ class MediaCacheManager:
                         continue
 
                     if new_url:
-                        logger.info(f"Successfully cached {url} to {service}: {new_url}")
+                        logger.debug(f"Successfully cached {url} to {service}: {new_url}")
                         self.cache[file_hash] = {
                             "url": new_url,
                             "expiry_timestamp": expiry_timestamp

@@ -160,6 +160,34 @@ When chatbot mode is enabled in a channel, the bot actively manages the conversa
     * `max_user_context_messages`: A preference to prioritize including this many recent messages specifically from the user who triggered the response. The system attempts to include the most recent `max_user_context_messages` from the requesting user, then fills the remaining slots up to `max_context_messages` with other recent messages, while maintaining overall chronological order.
 * **Pruning:** Conversation history files can grow large. Automatic pruning (`auto_prune_enabled`, `prune_interval_hours`) periodically trims the stored history based on the same time and message limits used for context retrieval. Manual clearing is also possible via `!chatbot_clear_history`.
 
+### Media Caching and Link Permanence
+
+To ensure the LLM has reliable, long-term access to image context, Mirrobot implements an automatic media caching system. Discord's own CDN links for attachments and embeds expire after a period, which would render them useless in older conversation history.
+
+*   **Problem:** Expired Discord media URLs in the conversation history can lead to errors when the LLM tries to access them, breaking the context.
+*   **Solution:** The bot automatically detects Discord media URLs in messages, downloads the content, and re-uploads it to a configured third-party hosting service to generate a permanent link. The original Discord URL is then replaced with this new, permanent one in the conversation history.
+
+#### Supported Services and Prioritization
+
+The media caching feature is configured in `config.json` and supports multiple services.
+
+*   **Services:** By default, the bot can use `Catbox` and `Pixeldrain`.
+*   **Prioritization for Permanent Assets:** To ensure the longevity of important server and user assets, the bot prioritizes uploading certain types of images to `Pixeldrain` (if available and configured), which offers permanent storage. This includes:
+    *   User Avatars (`cdn.discordapp.com/avatars/`)
+    *   Server Icons (`cdn.discordapp.com/icons/`)
+    *   Server Banners (`cdn.discordapp.com/banners/`)
+    *   Server Splashes (`cdn.discordapp.com/splashes/`)
+    *   Custom Emojis (`cdn.discordapp.com/emojis/`)
+*   **Standard Attachments:** For regular image attachments, a service is chosen randomly from the enabled list to distribute the load.
+
+#### Cache Mechanism
+
+To avoid redundant uploads and save bandwidth, the bot maintains a local cache file: `data/media_cache.json`.
+
+*   Before uploading, the bot calculates a hash of the image content.
+*   It checks the cache to see if a permanent link for that hash already exists.
+*   If a cached link is found and is not expired (some services may have temporary links), it's used immediately. Otherwise, the media is uploaded, and the new link is added to the cache.
+
 ### User and Channel Indexing
 
 To provide the LLM with awareness about the Discord environment, the bot maintains simple indexes.

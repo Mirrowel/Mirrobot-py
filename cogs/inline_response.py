@@ -545,7 +545,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         try:
             # Step 2a: Build the context. This is critical for a quality response.
             context_messages = await self.manager.build_context(message)
-            logger.info(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
+            logger.debug(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
         except Exception as e:
             logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
             await reply_or_send(message, "Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
