@@ -235,7 +235,45 @@ class InlineResponseManager:
                     except (discord.NotFound, discord.HTTPException) as e:
                         logger.warning(f"Could not fetch replied-to message {msg.reference.message_id} from context: {e}")
 
-        # 6. Sort chronologically and convert to ConversationMessage
+        # 6. For bot messages, try to gather the full response
+        messages_to_check_for_full_response = list(gathered_messages.values())
+        for msg in messages_to_check_for_full_response:
+            if msg.author.bot:
+                # Search forwards
+                after_msg = msg
+                while True:
+                    try:
+                        # Fetch the message immediately after the current one
+                        next_msg = await msg.channel.history(limit=1, after=after_msg).next()
+                        if next_msg.id in gathered_messages:
+                            break # Already have this message, stop searching
+                        # Check if it's a continuation of the bot's response
+                        if next_msg.author.id == msg.author.id and (next_msg.created_at - after_msg.created_at).total_seconds() < 2:
+                            gathered_messages[next_msg.id] = next_msg
+                            after_msg = next_msg
+                        else:
+                            break # Not a continuation
+                    except (StopAsyncIteration, discord.NotFound, discord.HTTPException):
+                        break # No more messages or error fetching
+
+                # Search backwards
+                before_msg = msg
+                while True:
+                    try:
+                        # Fetch the message immediately before the current one
+                        prev_msg = await msg.channel.history(limit=1, before=before_msg).next()
+                        if prev_msg.id in gathered_messages:
+                            break # Already have this message, stop searching
+                        # Check if it's a continuation of the bot's response
+                        if prev_msg.author.id == msg.author.id and (before_msg.created_at - prev_msg.created_at).total_seconds() < 2:
+                            gathered_messages[prev_msg.id] = prev_msg
+                            before_msg = prev_msg
+                        else:
+                            break # Not a continuation
+                    except (StopAsyncIteration, discord.NotFound, discord.HTTPException):
+                        break # No more messages or error fetching
+
+        # 7. Sort chronologically and convert to ConversationMessage
         sorted_messages = sorted(gathered_messages.values(), key=lambda m: m.created_at)
         
         context_messages = []
