@@ -5,6 +5,7 @@ from core.ocr import respond_to_ocr
 from utils.logging_setup import get_logger
 import sys
 import asyncio
+from collections import defaultdict
 from utils.log_manager import LogManager
 from cogs import cogs
 import re
@@ -112,6 +113,10 @@ def create_bot(config):
     # Set up resource monitoring
     bot.log_manager = LogManager()
     bot.media_cache_manager = MediaCacheManager(config, bot)
+
+    # Chatbot message queue
+    bot.chatbot_message_queues = defaultdict(asyncio.Queue)
+    bot.chatbot_worker_tasks = {}
     
     # Set up event handlers
     @bot.event
@@ -516,232 +521,189 @@ async def process_message(bot, message, config):
     except Exception as e:
         logger.error(f"Error processing message for OCR: {e}")
 
-async def process_chatbot_message(bot, message):
-    """Process a message for chatbot mode if enabled"""
+def _chatbot_worker_done_callback(bot, task: asyncio.Task):
+    """Callback to clean up worker task references for the chatbot."""
     try:
-        # Skip bot messages
-        if message.author.bot:
-            return
-        
-        # Only process guild messages
-        if not message.guild:
-            return
-
-        # from utils.chatbot.manager import chatbot_manager # Already imported above
-
-        guild_id = message.guild.id
-        channel_id = message.channel.id
-        
-        # Check if chatbot mode is enabled for this channel
-        if not chatbot_manager.is_chatbot_enabled(guild_id, channel_id):
-            return
-        
-        # Check if we should respond to this message
-        if chatbot_manager.should_respond_to_message(guild_id, channel_id, message, bot.user.id):
-            logger.debug(f"Processing chatbot response for message {message.id} in channel {channel_id}")
-            
-            # Create a task to handle the response asynchronously
-            # Pass the message to the handler, which will be responsible for adding it to history
-            asyncio.create_task(handle_chatbot_response(bot, message))
-        else:
-            # If not responding, just add the message to the history for context
-            await chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
-        
+        task.result()
+    except asyncio.CancelledError:
+        logger.info(f"Chatbot worker task {task.get_name()} was cancelled.")
     except Exception as e:
-        logger.error(f"Error processing chatbot message: {e}")
+        logger.error(f"Chatbot worker task {task.get_name()} failed: {e}", exc_info=True)
+    
+    for channel_id, worker_task in list(bot.chatbot_worker_tasks.items()):
+        if worker_task == task:
+            logger.info(f"Cleaning up finished chatbot worker for channel {channel_id}.")
+            del bot.chatbot_worker_tasks[channel_id]
+            break
+
+async def _chatbot_queue_worker(bot, channel_id: int):
+    """Worker that processes messages for the chatbot feature in a single channel."""
+    logger.info(f"Starting chatbot worker for channel {channel_id}")
+    q = bot.chatbot_message_queues[channel_id]
+    
+    while True:
+        try:
+            message = await asyncio.wait_for(q.get(), timeout=60.0)
+        except asyncio.TimeoutError:
+            logger.info(f"Chatbot worker for channel {channel_id} timing out due to inactivity.")
+            break
+
+        try:
+            # Determine if we should respond or just log the message
+            should_respond = chatbot_manager.should_respond_to_message(
+                message.guild.id, channel_id, message, bot.user.id
+            )
+
+            if should_respond:
+                logger.debug(f"Worker for {channel_id} processing response for message {message.id}")
+                await handle_chatbot_response(bot, message)
+            else:
+                # If not responding, just add the message to history for context.
+                await chatbot_manager.add_message_to_conversation(message.guild.id, channel_id, message)
+                logger.debug(f"Worker for {channel_id} logged message {message.id} to history.")
+
+        except Exception as e:
+            logger.error(f"Error in chatbot worker for channel {channel_id} processing message {message.id}: {e}", exc_info=True)
+        finally:
+            q.task_done()
+            
+    logger.info(f"Stopping chatbot worker for channel {channel_id} as queue is empty.")
+
+async def process_chatbot_message(bot, message):
+    """Enqueue a message for chatbot processing if the feature is enabled."""
+    try:
+        if message.author.bot or not message.guild:
+            return
+
+        if chatbot_manager.is_chatbot_enabled(message.guild.id, message.channel.id):
+            channel_id = message.channel.id
+            logger.debug(f"Enqueuing chatbot message {message.id} for channel {channel_id}")
+            await bot.chatbot_message_queues[channel_id].put(message)
+
+            if channel_id not in bot.chatbot_worker_tasks or bot.chatbot_worker_tasks[channel_id].done():
+                logger.info(f"Creating new chatbot worker for channel {channel_id}.")
+                task = asyncio.create_task(_chatbot_queue_worker(bot, channel_id), name=f"chatbot-worker-{channel_id}")
+                task.add_done_callback(lambda t: _chatbot_worker_done_callback(bot, t))
+                bot.chatbot_worker_tasks[channel_id] = task
+                
+    except Exception as e:
+        logger.error(f"Error enqueuing chatbot message: {e}", exc_info=True)
 
 async def handle_chatbot_response(bot, message):
-    """Handle generating and sending a chatbot response"""
+    """
+    Handles the logic for generating and sending a chatbot response.
+    This function is now called by the queue worker.
+    """
     try:
-        from cogs.llm_commands import LLMCommands # Import LLMCommands here to use its methods
-
-        # from utils.chatbot.manager import chatbot_manager # Already imported above
-
+        from cogs.llm_commands import LLMCommands
         guild_id = message.guild.id
         channel_id = message.channel.id
-        
-        # Get channel configuration
         channel_config = chatbot_manager.get_channel_config(guild_id, channel_id)
-        
-        # Get LLM cog to use existing LLM functionality
-        llm_cog: LLMCommands = bot.get_cog('LLMCommands') # Type hint for better IDE support
-        if not llm_cog:
-            logger.error("LLMCommands cog not found for chatbot response")
+        llm_cog: LLMCommands = bot.get_cog('LLMCommands')
+
+        if not llm_cog or not llm_cog.provider_status or not any(llm_cog.provider_status.values()):
+            logger.warning(f"No LLM providers online for chatbot response in channel {channel_id}. Skipping.")
             return
 
-        # Check if any provider is online
-        if not llm_cog.provider_status or not any(llm_cog.provider_status.values()):
-             logger.warning(f"No LLM providers online for chatbot response in channel {channel_id}. Skipping.")
-             return
-
-        # Apply response delay
         if channel_config.response_delay_seconds > 0:
             await asyncio.sleep(channel_config.response_delay_seconds)
         
-        # Show typing indicator
         async with message.channel.typing():
-            try:
-                # Get prioritized context messages. This history does NOT include the current message.
-                context_messages = await chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
-                
-                # Format context into static info and structured history
-                static_context, history_messages = await chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
-                
-                # Load system prompt (this loads from file and applies thinking mode if configured)
-                system_prompt_for_llm = llm_cog.load_system_prompt(guild_id, prompt_type="chat")
-                
-                # --- Start of Refactored Logic ---
+            # The rest of the response generation logic remains largely the same.
+            # The key change is that this entire block is now executed sequentially by the worker.
+            context_messages = await chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
+            static_context, history_messages = await chatbot_manager.format_context_for_llm(context_messages, guild_id, channel_id)
+            system_prompt_for_llm = llm_cog.load_system_prompt(guild_id, prompt_type="chat")
 
-                # 1. Ensure the original message object has a mention for history and prompt consistency
-                bot_mention_pattern = f'<@!?{bot.user.id}>'
-                if not re.search(bot_mention_pattern, message.content):
-                    message.content = f'<@{bot.user.id}> {message.content}'
-                    logger.debug(f"Prepended bot mention to message {message.id} for history and prompt.")
+            bot_mention_pattern = f'<@!?{bot.user.id}>'
+            if not re.search(bot_mention_pattern, message.content):
+                message.content = f'<@{bot.user.id}> {message.content}'
 
-                # 2. Save the (now modified) message to history
-                await chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
+            await chatbot_manager.add_message_to_conversation(guild_id, channel_id, message)
 
-                # 3. Prepare the prompt for the LLM
-                # Get the cleaned content from the (now modified) message
-                cleaned_content, image_urls, other_urls = await chatbot_manager.conversation_manager._process_discord_message_for_context(message)
+            cleaned_content, image_urls, other_urls = await chatbot_manager.conversation_manager._process_discord_message_for_context(message)
+            
+            extracted_text = []
+            for attachment in message.attachments:
+                if attachment.url in other_urls and not (attachment.content_type and attachment.content_type.startswith('image/')):
+                    text = await extract_text_from_attachment(attachment)
+                    if text: extracted_text.append(text)
+            
+            for url in other_urls:
+                if any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
+                    text = await extract_text_from_url(url)
+                    if text: extracted_text.append(text)
 
-                # For the immediate prompt, process non-image files separately
-                extracted_text = []
-                # Check attachments for non-image files that aren't in other_urls
-                for attachment in message.attachments:
-                    if attachment.url in other_urls and not (attachment.content_type and attachment.content_type.startswith('image/')):
-                        text = await extract_text_from_attachment(attachment)
-                        if text:
-                            extracted_text.append(text)
-                
-                # Check other_urls for processable text files
-                for url in other_urls:
-                    if any(url.lower().endswith(ext) for ext in ['.pdf', '.txt', '.log', '.ini']):
-                        text = await extract_text_from_url(url)
-                        if text:
-                            extracted_text.append(text)
+            prompt_text = f"{' '.join(extracted_text)}\n\n{cleaned_content}" if extracted_text else cleaned_content
 
-                # Prepend extracted text to the cleaned content for the prompt
-                prompt_text = cleaned_content
-                if extracted_text:
-                    prompt_text = f"{' '.join(extracted_text)}\n\n{prompt_text}"
+            prompt_conv_message = ConversationMessage(
+                user_id=message.author.id, username=message.author.display_name,
+                content=prompt_text, timestamp=message.created_at.timestamp(), message_id=message.id,
+                is_bot_response=False, is_self_bot_response=False,
+                referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
+                attachment_urls=image_urls,
+                multimodal_content=[ContentPart(type="text", text=prompt_text)] + [ContentPart(type="image_url", image_url={"url": url}) for url in image_urls]
+            )
 
-                # Create a ConversationMessage object for the current prompt to use the formatter
-                prompt_conv_message = ConversationMessage(
-                    user_id=message.author.id,
-                    username=message.author.display_name,
-                    content=prompt_text, # Use the text with prepended file content
-                    timestamp=message.created_at.timestamp(),
-                    message_id=message.id,
-                    is_bot_response=False,
-                    is_self_bot_response=False,
-                    referenced_message_id=getattr(message.reference, 'message_id', None) if message.reference else None,
-                    attachment_urls=image_urls,
-                    multimodal_content=[ContentPart(type="text", text=prompt_text)] + [ContentPart(type="image_url", image_url={"url": url}) for url in image_urls]
+            user_prompt_content = await chatbot_manager.formatter.format_single_message(
+                msg=prompt_conv_message, history_messages=context_messages,
+                guild_id=guild_id, channel_id=channel_id
+            )
+
+            response_text, _ = await llm_cog.make_llm_request(
+                prompt=user_prompt_content, system_prompt=system_prompt_for_llm,
+                context=static_context, history=history_messages, model_type="chat",
+                guild_id=guild_id, channel_id=channel_id, image_urls=image_urls
+            )
+
+            if response_text:
+                formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
+                    text=response_text, guild_id=message.guild.id, bot_user_id=bot.user.id,
+                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
                 )
+                final_response, _ = llm_cog.strip_thinking_tokens(formatted_response)
 
-                # Format the single prompt message using the same logic as the history
-                user_prompt_content = await chatbot_manager.formatter.format_single_message(
-                    msg=prompt_conv_message,
-                    history_messages=context_messages, # Pass historical messages for reply context
-                    guild_id=guild_id,
-                    channel_id=channel_id
-                )
-
-                # --- End of Refactored Logic ---
-
-                # Debug: Output the prompts to a file for inspection
-                debug_dir = "llm_data/debug_prompts"
-                os.makedirs(debug_dir, exist_ok=True)
-                
-                debug_filename = f"{debug_dir}/chatbot_prompt.txt"
-                try:
-                    with open(debug_filename, 'w', encoding='utf-8') as debug_file:
-                        debug_file.write((system_prompt_for_llm or "No System Prompt") + "\n\n")
-                        debug_file.write((static_context or "No Static Context") + "\n\n")
-                        # Dump the history messages
-                        for msg in history_messages:
-                            debug_file.write(f"Role: {msg['role']}\nContent: {msg['content']}\n\n")
-                        debug_file.write(f"Current User Prompt: {user_prompt_content}\n")
-
-                    logger.debug(f"Debug chatbot prompts written to: {debug_filename}")
-                except Exception as debug_e:
-                    logger.warning(f"Failed to write debug prompts to file: {debug_e}")
-
-                response_text, performance_metrics = await llm_cog.make_llm_request(
-                    prompt=user_prompt_content,
-                    system_prompt=system_prompt_for_llm,
-                    context=static_context,
-                    history=history_messages,
-                    model_type="chat",
-                    guild_id=guild_id,
-                    channel_id=channel_id,
-                    image_urls=image_urls
-                )
-
-                if response_text:
-                    # First, format the raw response to strip any parroted context and handle names.
-                    formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                        text=response_text,
-                        guild_id=message.guild.id,
-                        bot_user_id=bot.user.id,
-                        bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
-                    )
-
-                    # Then, strip any thinking tokens from the formatted response.
-                    final_response, thinking_content = llm_cog.strip_thinking_tokens(formatted_response)
-
-                    def truncate_to_last_sentence(text: str, max_length: int) -> str:
-                        """Truncates text to the last full sentence within the max_length."""
-                        if len(text) <= max_length:
-                            return text
-                        
-                        # Truncate to max_length to work with a smaller string
-                        truncated_text = text[:max_length]
-                        
-                        # Find the last sentence-ending punctuation
-                        last_sentence_end = -1
-                        for p in ['.', '!', '?']:
-                            last_sentence_end = max(last_sentence_end, truncated_text.rfind(p))
-                        
-                        # If we found a sentence end, truncate there and add ellipsis
-                        if last_sentence_end != -1:
-                            return truncated_text[:last_sentence_end+1] + "..."
-                        
-                        # Fallback: find the last space to avoid cutting a word
-                        last_space = truncated_text.rfind(' ')
-                        if last_space != -1:
-                            return truncated_text[:last_space] + "..."
-                            
-                        # Final fallback: hard truncate
-                        return text[:max_length-3] + "..."
-
-                    # Ensure response doesn't exceed Discord's character limit (2000)
-                    if len(final_response) > 2000:
-                        logger.warning(f"LLM response ({len(final_response)} chars) exceeds Discord limit (2000). Truncating intelligently.")
-                        final_response = truncate_to_last_sentence(final_response, 2000)
-
-                    # Send the response as a reply
-                    sent_message = await reply_or_send(message, final_response)
- 
-                    # Add the bot's response to conversation history
-                    await chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
+                def truncate_to_last_sentence(text: str, max_length: int) -> str:
+                    """Truncates text to the last full sentence within the max_length."""
+                    if len(text) <= max_length:
+                        return text
                     
-                    logger.info(f"Sent chatbot response to message {message.id} in channel {channel_id}")
-                else:
-                    await reply_or_send(message, "I'm having trouble generating a response right now. Please try again.")
+                    # Truncate to max_length to work with a smaller string
+                    truncated_text = text[:max_length]
                     
-            except Exception as llm_error:
-                logger.error(f"Error generating LLM response for chatbot: {llm_error}")
-                await reply_or_send(message, "I encountered an error while thinking of a response. Please try again.", delete_after=10)
-        
+                    # Find the last sentence-ending punctuation
+                    last_sentence_end = -1
+                    for p in ['.', '!', '?']:
+                        last_sentence_end = max(last_sentence_end, truncated_text.rfind(p))
+                    
+                    # If we found a sentence end, truncate there and add ellipsis
+                    if last_sentence_end != -1:
+                        return truncated_text[:last_sentence_end+1] + "..."
+                    
+                    # Fallback: find the last space to avoid cutting a word
+                    last_space = truncated_text.rfind(' ')
+                    if last_space != -1:
+                        return truncated_text[:last_space] + "..."
+                        
+                    # Final fallback: hard truncate
+                    return text[:max_length-3] + "..."
+
+                if len(final_response) > 2000:
+                    logger.warning(f"LLM response ({len(final_response)} chars) exceeds Discord limit (2000). Truncating intelligently.")
+                    final_response = truncate_to_last_sentence(final_response, 2000)
+
+                sent_message = await reply_or_send(message, final_response)
+                await chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
+                logger.info(f"Sent chatbot response to message {message.id} in channel {channel_id}")
+            else:
+                await reply_or_send(message, "I'm having trouble generating a response right now. Please try again.", delete_after=10)
+
     except Exception as e:
-        logger.error(f"Error handling chatbot response: {e}")
+        logger.error(f"Error in handle_chatbot_response for message {message.id}: {e}", exc_info=True)
         try:
-            # await reply_or_send(message, "I encountered an unexpected error. Please try again.") # Avoid excessive error messages
+            await reply_or_send(message, "I encountered an error while thinking of a response. Please try again.", delete_after=10)
+        except Exception:
             pass
-        except:
-            pass  # Ignore if we can't even send error message
 
 async def ocr_worker(bot, worker_id=1):
     """Worker to process OCR tasks from the queue"""

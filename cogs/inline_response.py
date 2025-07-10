@@ -2,6 +2,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from typing import Literal, Union
+import asyncio
+from collections import defaultdict
 
 from utils.chatbot.persistence import JsonStorageManager
 from utils.inline_response import InlineResponseManager, split_message, InlineResponseConfig
@@ -22,6 +24,8 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         self.bot = bot
         storage_manager = JsonStorageManager()
         self.manager = InlineResponseManager(storage_manager)
+        self.message_queues = defaultdict(asyncio.Queue)
+        self.worker_tasks = {}
 
     async def _resolve_target(self, ctx: commands.Context, target_str: str) -> Union[discord.TextChannel, discord.Thread, str, None]:
         """Resolves a string to a channel, thread, or 'server'."""
@@ -461,191 +465,178 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         # This command delegates the core logic to the _update_permissions helper function.
         await self._update_permissions(ctx, action, 'blacklist', entity, target)
 
+    def _worker_done_callback(self, task: asyncio.Task):
+        """Callback to clean up worker task references."""
+        try:
+            # This will re-raise any exception that occurred in the task
+            task.result()
+        except asyncio.CancelledError:
+            logger.info(f"Worker task {task.get_name()} was cancelled.")
+        except Exception as e:
+            logger.error(f"Worker task {task.get_name()} failed with an exception: {e}", exc_info=True)
+        
+        # Find the channel_id associated with this task and remove it
+        for channel_id, worker_task in list(self.worker_tasks.items()):
+            if worker_task == task:
+                logger.info(f"Cleaning up finished worker for channel {channel_id}.")
+                del self.worker_tasks[channel_id]
+                break
+
+    async def _message_queue_worker(self, channel_id: int):
+        """The worker task that processes messages for a single channel."""
+        logger.info(f"Starting worker for channel {channel_id}")
+        q = self.message_queues[channel_id]
+        
+        while True:
+            try:
+                # Wait for a message to appear in the queue.
+                # If the queue is empty for 60 seconds, the worker will exit.
+                message = await asyncio.wait_for(q.get(), timeout=60.0)
+            except asyncio.TimeoutError:
+                logger.info(f"Worker for channel {channel_id} timing out due to inactivity.")
+                # The queue is empty, so we can break the loop and let the worker finish.
+                break
+
+            # The core processing logic is now here, ensuring one-at-a-time execution.
+            try:
+                config = self.manager.get_channel_config(message.guild.id, message.channel.id)
+                logger.info(f"Worker for {channel_id} processing message {message.id}")
+
+                # 2. Build context and perform on-the-fly indexing
+                context_messages = []
+                try:
+                    context_messages = await self.manager.build_context(message)
+                    logger.debug(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
+                except Exception as e:
+                    logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
+                    await reply_or_send(message, "Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
+                    q.task_done()
+                    continue
+
+                # On-the-fly indexing
+                try:
+                    await chatbot_manager.index_manager.update_channel_index(message.channel)
+                    if context_messages:
+                        unique_users = list({msg.author for msg in context_messages if not msg.is_bot_response and msg.author})
+                        if unique_users:
+                            await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
+                            logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
+                except Exception as e:
+                    logger.warning(f"Non-critical error during on-the-fly indexing for message {message.id}: {e}", exc_info=True)
+
+                # 3. Format the context for the LLM
+                static_context, history = await chatbot_manager.formatter.format_context_for_llm(
+                    messages=context_messages,
+                    guild_id=message.guild.id,
+                    channel_id=message.channel.id
+                )
+
+                # 4. Make the LLM request
+                llm_cog: LLMCommands = self.bot.get_cog("LLMCommands")
+                if not llm_cog:
+                    logger.error("LLMCommands cog not found, cannot make inline response.")
+                    q.task_done()
+                    continue
+
+                if not history:
+                    logger.error(f"History is empty for message {message.id}, cannot generate response.")
+                    q.task_done()
+                    continue
+
+                trigger_message_content = history[-1]['content']
+                context_history = history[:-1]
+                image_urls = [part["image_url"]["url"] for part in trigger_message_content if isinstance(trigger_message_content, list) and part.get("type") == "image_url"]
+
+                async with message.channel.typing():
+                    response_text, _ = await llm_cog.make_llm_request(
+                        prompt=trigger_message_content,
+                        model_type=config.model_type,
+                        guild_id=message.guild.id,
+                        channel_id=message.channel.id,
+                        context=static_context,
+                        history=context_history,
+                        image_urls=image_urls
+                    )
+                
+                logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")
+
+                # 5. Process and send the response
+                cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
+                    response_text,
+                    message.guild.id,
+                    self.bot.user.id,
+                    [self.bot.user.name, self.bot.user.display_name]
+                )
+                
+                response_chunks = split_message(cleaned_response)
+                if not response_chunks or not response_chunks[0].strip():
+                    logger.warning(f"LLM response for message {message.id} was empty. Raw: '{response_text[:100]}'")
+                    q.task_done()
+                    continue
+
+                await reply_or_send(message, response_chunks[0])
+                for chunk in response_chunks[1:]:
+                    await message.channel.send(chunk)
+                
+                logger.info(f"Successfully sent inline response to message {message.id} in {len(response_chunks)} chunks.")
+
+            except Exception as e:
+                logger.error(f"Error during inline LLM request for message {message.id}: {e}", exc_info=True)
+                await reply_or_send(message, "Sorry, I encountered an error while trying to respond.", delete_after=10)
+            finally:
+                # Signal that the message has been processed.
+                q.task_done()
+        
+        logger.info(f"Stopping worker for channel {channel_id} as queue is empty.")
+
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Listen for messages to determine if an inline response should be triggered."""
-        # 1a. Ignore self
-        if message.author == self.bot.user:
+        """Listen for messages, validate them, and enqueue them for processing."""
+        # 1. Perform initial checks to quickly filter out irrelevant messages.
+        if (message.author == self.bot.user or
+            not message.guild or
+            (self.bot.user.mention not in message.content and self.bot.user.mention.replace('<@', '<@!') not in message.content) or
+            chatbot_manager.is_chatbot_enabled(message.guild.id, message.channel.id)):
             return
 
-
-        # 1b. Ignore DMs
-        if not message.guild:
-            return
-
-        # 1c. Check for an explicit mention in the message content.
-        # This is to distinguish from implicit mentions from replies.
-        mention_content = self.bot.user.mention
-        legacy_mention_content = mention_content.replace('<@', '<@!')
-        if mention_content not in message.content and legacy_mention_content not in message.content:
-            return
-
-        # 1d. Check chatbot status (must be disabled)
-        if chatbot_manager.is_chatbot_enabled(message.guild.id, message.channel.id):
-            return
-
-        # 1e. Check inline mode status (must be enabled)
         config = self.manager.get_channel_config(message.guild.id, message.channel.id)
         if not config.enabled:
             return
 
-        # 1f. Check trigger setting
-        mention_content = self.bot.user.mention
-        # For slash commands, the mention is <@USER_ID>, but for messages it's <@!USER_ID>
-        # We check for both to be safe.
-        legacy_mention_content = mention_content.replace('<@', '<@!')
-
-        is_mentioned_at_start = message.content.startswith(mention_content) or message.content.startswith(legacy_mention_content)
-
+        # Check trigger settings
+        is_mentioned_at_start = message.content.startswith(self.bot.user.mention) or message.content.startswith(self.bot.user.mention.replace('<@', '<@!'))
         if config.trigger_on_start_only and not is_mentioned_at_start:
             return
 
-        # 1g. Check permissions
+        # Check permissions
         author = message.author
-        # Make sure author is a Member object to get roles
         if not isinstance(author, discord.Member):
             try:
                 author = await message.guild.fetch_member(author.id)
             except discord.NotFound:
                 logger.warning(f"Could not find member {author.id} in guild {message.guild.id} to check permissions.")
                 return
-
+        
         author_role_ids = {role.id for role in author.roles}
-        
-        # 1. Blacklist check (absolute priority)
-        if author.id in config.member_blacklist:
-            logger.debug(f"User {author.id} is in member blacklist for channel {message.channel.id}. Ignoring trigger.")
-            return
-        if not author_role_ids.isdisjoint(config.role_blacklist):
-            logger.debug(f"User {author.id} has a blacklisted role for channel {message.channel.id}. Ignoring trigger.")
+        if author.id in config.member_blacklist or not author_role_ids.isdisjoint(config.role_blacklist):
             return
 
-        # 2. Whitelist check
-        everyone_role_id = message.guild.default_role.id
-        is_everyone_whitelisted = everyone_role_id in config.role_whitelist
-        
-        is_whitelisted = False
-        if is_everyone_whitelisted:
-            is_whitelisted = True
-        elif author.id in config.member_whitelist:
-            is_whitelisted = True
-        elif not author_role_ids.isdisjoint(config.role_whitelist):
-            is_whitelisted = True
-
-        # If not whitelisted, deny access
-        if not is_whitelisted:
-            logger.debug(f"User {author.id} is not whitelisted for inline responses in channel {message.channel.id}. Ignoring trigger.")
-            return
-        
-        # If all conditions are met, build the context and log it.
-        logger.info(f"Inline response triggered for message {message.id} in channel {message.channel.id}")
-
-        # 2. Build context and perform on-the-fly indexing
-        context_messages = []
-        try:
-            # Step 2a: Build the context. This is critical for a quality response.
-            context_messages = await self.manager.build_context(message)
-            logger.debug(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
-        except Exception as e:
-            logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
-            await reply_or_send(message, "Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
+        is_everyone_whitelisted = message.guild.default_role.id in config.role_whitelist
+        if not (is_everyone_whitelisted or author.id in config.member_whitelist or not author_role_ids.isdisjoint(config.role_whitelist)):
             return
 
-        # Step 2b: Perform non-critical on-the-fly indexing.
-        # A failure here should be logged but not prevent the bot from responding.
-        try:
-            # Index the current channel.
-            await chatbot_manager.index_manager.update_channel_index(message.channel)
+        # 2. If all checks pass, enqueue the message.
+        channel_id = message.channel.id
+        logger.debug(f"Enqueuing message {message.id} for channel {channel_id}")
+        await self.message_queues[channel_id].put(message)
 
-            # Bulk index all unique users from the context.
-            if context_messages:
-                unique_users = list({msg.author for msg in context_messages if not msg.is_bot_response and msg.author})
-                if unique_users:
-                    await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
-                    logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
-        except Exception as e:
-            logger.warning(f"Non-critical error during on-the-fly indexing for message {message.id}: {e}", exc_info=True)
-            # Do not abort; proceed with the response using the built context.
-
-
-        # 3. Format the context for the LLM
-        static_context, history = await chatbot_manager.formatter.format_context_for_llm(
-            messages=context_messages,
-            guild_id=message.guild.id,
-            channel_id=message.channel.id
-        )
-
-        # 4. Make the LLM request
-        llm_cog: LLMCommands = self.bot.get_cog("LLMCommands")
-        if not llm_cog:
-            logger.error("LLMCommands cog not found, cannot make inline response.")
-            return
-
-        # The history from the formatter now includes the trigger message, fully formatted.
-        # We need to separate it to avoid duplication.
-        if not history:
-            logger.error(f"History is empty for message {message.id}, cannot generate response.")
-            return
-
-        # The last message in the history is our trigger message.
-        trigger_message_content = history[-1]['content']
-        
-        # The rest of the history is the actual context.
-        context_history = history[:-1]
-
-        # Extract image URLs from the trigger message content if it's a list of parts
-        image_urls = []
-        if isinstance(trigger_message_content, list):
-            for part in trigger_message_content:
-                if part.get("type") == "image_url":
-                    image_urls.append(part.get("image_url", {}).get("url"))
-
-        try:
-            async with message.channel.typing():
-                response_text, _ = await llm_cog.make_llm_request(
-                    prompt=trigger_message_content, # The fully formatted message is the prompt
-                    model_type=config.model_type,
-                    guild_id=message.guild.id,
-                    channel_id=message.channel.id,
-                    context=static_context,
-                    history=context_history, # Pass the history without the trigger message
-                    image_urls=image_urls
-                )
-            
-            logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")
-
-            # 5. Process and send the response
-            cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                response_text,
-                message.guild.id,
-                self.bot.user.id,
-                [self.bot.user.name, self.bot.user.display_name]
-            )
-            logger.debug(f"Cleaned LLM response_text for message {message.id}: '{cleaned_response[:500]}...' (truncated)")
-
-            response_chunks = split_message(cleaned_response)
-            logger.debug(f"Response chunks length for message {message.id}: {len(response_chunks)}")
-            if response_chunks:
-                logger.debug(f"First response chunk for message {message.id}: '{response_chunks[0][:500]}...' (truncated)")
-
-
-            if not response_chunks or not response_chunks[0].strip(): # Added check for empty string after stripping whitespace
-                logger.warning(f"LLM response for message {message.id} was empty or whitespace-only after cleaning and splitting. Raw: '{response_text[:100]}', Cleaned: '{cleaned_response[:100]}'")
-                return
- 
-            # Send the first chunk as a reply
-            await reply_or_send(message, response_chunks[0])
- 
-            # Send subsequent chunks as regular messages
-            if len(response_chunks) > 1:
-                for chunk in response_chunks[1:]:
-                    await message.channel.send(chunk)
-            
-            logger.info(f"Successfully sent inline response to message {message.id} in {len(response_chunks)} chunks.")
- 
-        except Exception as e:
-            logger.error(f"Error during inline LLM request for message {message.id}: {e}", exc_info=True)
-            await reply_or_send(message, "Sorry, I encountered an error while trying to respond.", delete_after=10)
+        # 3. Ensure a worker is running for this channel.
+        if channel_id not in self.worker_tasks or self.worker_tasks[channel_id].done():
+            logger.info(f"No active worker for channel {channel_id}. Creating a new one.")
+            task = asyncio.create_task(self._message_queue_worker(channel_id), name=f"inline-resp-worker-{channel_id}")
+            task.add_done_callback(self._worker_done_callback)
+            self.worker_tasks[channel_id] = task
 
 
 async def setup(bot: commands.Bot):
