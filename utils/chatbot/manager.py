@@ -40,6 +40,12 @@ class ChatbotManager:
         self.indexing_manager.set_bot_user_id(bot_id)
         logger.debug(f"ChatbotManager bot_user_id set to {bot_id}")
 
+    def set_media_cache_manager(self, media_cache_manager: MediaCacheManager):
+        """Sets the media cache manager for all relevant components."""
+        self.media_cache_manager = media_cache_manager
+        self.conversation_manager.media_cache_manager = media_cache_manager
+        self.formatter.media_cache_manager = media_cache_manager
+
     async def enable_chatbot(self, guild_id: int, channel_id: int, guild=None, channel=None) -> bool:
         """Enable chatbot mode and perform initial indexing."""
         channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
