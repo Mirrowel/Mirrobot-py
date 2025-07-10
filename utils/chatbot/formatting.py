@@ -6,6 +6,8 @@ import re
 import time
 from typing import List, Optional, Union
 
+import discord
+
 from utils.chatbot.config import ConfigManager
 from utils.chatbot.conversation import ConversationManager
 from utils.chatbot.indexing import IndexingManager
