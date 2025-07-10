@@ -12,6 +12,7 @@ from utils.chatbot.formatting import LLMContextFormatter
 from utils.chatbot.indexing import IndexingManager
 from utils.chatbot.persistence import JsonStorageManager
 from utils.logging_setup import get_logger
+from utils.media_cache import MediaCacheManager
 
 logger = get_logger()
 
@@ -25,7 +26,9 @@ class ChatbotManager:
         self.storage_manager = JsonStorageManager()
         self.config_manager = ConfigManager(self.storage_manager)
         self.indexing_manager = IndexingManager(self.storage_manager, self.config_manager, bot_user_id)
-        self.conversation_manager = ConversationManager(self.storage_manager, self.config_manager, self.indexing_manager, bot_user_id)
+        # This will be updated later when the bot is fully initialized
+        self.media_cache_manager = None
+        self.conversation_manager = ConversationManager(self.storage_manager, self.config_manager, self.indexing_manager, self.media_cache_manager, bot_user_id)
         self.formatter = LLMContextFormatter(self.config_manager, self.conversation_manager, self.indexing_manager)
         
         if bot_user_id:
@@ -185,7 +188,7 @@ class ChatbotManager:
         return await self.indexing_manager.index_pinned_messages(
             channel,
             self.conversation_manager._is_valid_context_message,
-            self.conversation_manager._process_discord_message_for_context
+            self.conversation_manager._process_discord_message_for_context,
         )
 
     def get_all_chatbot_enabled_channels(self, guilds) -> list[tuple[int, int]]:

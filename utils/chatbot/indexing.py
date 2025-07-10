@@ -483,7 +483,7 @@ class IndexingManager:
                 if message.author.bot and message.author.id != self.bot_user_id:
                     continue
                 
-                cleaned_content, image_urls, embed_urls = process_message_func(message)
+                cleaned_content, image_urls, embed_urls = await process_message_func(message)
                 
                 from utils.chatbot.models import ConversationMessage
                 temp_conv_message = ConversationMessage(

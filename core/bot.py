@@ -14,6 +14,7 @@ from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 from utils.chatbot.models import ConversationMessage, ContentPart
 from utils.discord_utils import reply_or_send
+from utils.media_cache import MediaCacheManager
 
 logger = get_logger()
 
@@ -110,6 +111,7 @@ def create_bot(config):
     
     # Set up resource monitoring
     bot.log_manager = LogManager()
+    bot.media_cache_manager = MediaCacheManager(config, bot)
     
     # Set up event handlers
     @bot.event
@@ -118,6 +120,7 @@ def create_bot(config):
 
         # --- Set bot's user ID in chatbot_manager and start it ---
         chatbot_manager.set_bot_user_id(bot.user.id)
+        chatbot_manager.conversation_manager.media_cache_manager = bot.media_cache_manager
         await chatbot_manager.index_manager.start()
         # --- END NEW ---
 
@@ -338,6 +341,7 @@ def create_bot(config):
     async def on_close():
         """Handle bot shutdown gracefully."""
         logger.info("Bot is shutting down. Performing cleanup...")
+        await bot.media_cache_manager.close_session()
         await chatbot_manager.index_manager.shutdown()
         logger.info("Cleanup complete.")
 
@@ -583,7 +587,7 @@ async def handle_chatbot_response(bot, message):
 
                 # 3. Prepare the prompt for the LLM
                 # Get the cleaned content from the (now modified) message
-                cleaned_content, image_urls, other_urls = chatbot_manager.conversation_manager._process_discord_message_for_context(message)
+                cleaned_content, image_urls, other_urls = await chatbot_manager.conversation_manager._process_discord_message_for_context(message)
 
                 # For the immediate prompt, process non-image files separately
                 extracted_text = []

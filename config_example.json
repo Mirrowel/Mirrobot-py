@@ -1,22 +1,9 @@
 {
-  // SECURITY: Use environment variable DISCORD_BOT_TOKEN instead of storing token here
   "token": "See environment variable DISCORD_BOT_TOKEN",
-  
-  // Default command prefix for bot commands (e.g., "!" for !help)
   "command_prefix": "!",
-  
-  // Number of parallel OCR workers (1-10, default: 2)
   "ocr_worker_count": 2,
-  
-  // Maximum queued OCR requests (10-1000, default: 100)
   "ocr_max_queue_size": 100,
-  
-  // How often to clean up old thread data (in minutes)
   "thread_purge_interval_minutes": 10,
-  
-  // Channels where the bot scans images for OCR
-  // Format: {"guild_id": [channel_id1, channel_id2]}
-  // Example: {"123456789012345678": [987654321098765432]}
   "ocr_read_channels": {},
   
   // Channels where OCR results are posted
@@ -53,5 +40,11 @@
     
     // Enable/disable automatic restarts
     "auto_restart_enabled": true
+  },
+  "media_caching": {
+    "enabled": true,
+    "services": ["catbox", "pixeldrain"],
+    "upload_timeout_seconds": 30,
+    "pixeldrain_api_key": "YOUR_PIXELDRAIN_API_KEY"
   }
 }

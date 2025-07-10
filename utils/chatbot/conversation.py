@@ -17,6 +17,7 @@ from utils.chatbot.indexing import IndexingManager
 from utils.chatbot.models import ConversationMessage, ContentPart
 from utils.chatbot.persistence import JsonStorageManager
 from utils.logging_setup import get_logger
+from utils.media_cache import MediaCacheManager
 
 logger = get_logger()
 
@@ -25,10 +26,11 @@ CONVERSATION_DATA_DIR = "data/conversations"
 class ConversationManager:
     """Manages the lifecycle of conversation histories."""
 
-    def __init__(self, storage_manager: JsonStorageManager, config_manager: ConfigManager, index_manager: IndexingManager, bot_user_id: int = None):
+    def __init__(self, storage_manager: JsonStorageManager, config_manager: ConfigManager, index_manager: IndexingManager, media_cache_manager: MediaCacheManager, bot_user_id: int = None):
         self.storage_manager = storage_manager
         self.config_manager = config_manager
         self.index_manager = index_manager
+        self.media_cache_manager = media_cache_manager
         self.bot_user_id = bot_user_id
 
     def set_bot_user_id(self, bot_id: int):
@@ -78,7 +80,7 @@ class ConversationManager:
             if await self.check_duplicate_message(guild_id, channel_id, message.id):
                 return True, []
 
-            cleaned_content, image_urls, embed_urls = self._process_discord_message_for_context(message)
+            cleaned_content, image_urls, embed_urls = await self._process_discord_message_for_context(message)
             if not cleaned_content and not image_urls:
                 return False, []
 
@@ -145,7 +147,7 @@ class ConversationManager:
                     logger.debug(f"Bulk message {message.id} filtered out because it contains embeds.")
                     continue
 
-                cleaned_content, image_urls, embed_urls = self._process_discord_message_for_context(message)
+                cleaned_content, image_urls, embed_urls = await self._process_discord_message_for_context(message)
                 if not cleaned_content and not image_urls:
                     continue
 
@@ -272,7 +274,7 @@ class ConversationManager:
         except Exception:
             return False
 
-    def _process_discord_message_for_context(self, message: discord.Message) -> Tuple[str, List[str], List[str]]:
+    async def _process_discord_message_for_context(self, message: discord.Message) -> Tuple[str, List[str], List[str]]:
         """
         Processes a discord.Message to extract content, filter media, and prepare for context.
         This is the standardized function for media extraction.
@@ -289,19 +291,20 @@ class ConversationManager:
             except Exception:
                 return url
 
-        def _add_image_url(url: str):
+        async def _add_image_url(url: str):
             """Adds a URL to the list if it's a valid, non-duplicate image."""
             if not url or not self._is_image_url(url):
                 return
             normalized_url = _normalize_url(url)
             if normalized_url not in seen_normalized_urls:
-                image_urls.append(url)
+                cached_url = await self.media_cache_manager.cache_url(url)
+                image_urls.append(cached_url)
                 seen_normalized_urls.add(normalized_url)
 
         # 1. Process Attachments
         for attachment in message.attachments:
             if attachment.content_type and attachment.content_type.startswith('image/'):
-                _add_image_url(attachment.url)
+                await _add_image_url(attachment.url)
             else:
                 other_urls.add(attachment.url)
 
@@ -309,13 +312,13 @@ class ConversationManager:
         for embed in message.embeds:
             # An embed can represent a direct image link, which we want to capture.
             if embed.url and self._is_image_url(embed.url):
-                _add_image_url(embed.url)
+                await _add_image_url(embed.url)
 
             # It can also have a separate image or thumbnail attached.
             if embed.thumbnail and embed.thumbnail.url:
-                _add_image_url(embed.thumbnail.url)
+                await _add_image_url(embed.thumbnail.url)
             if embed.image and embed.image.url:
-                _add_image_url(embed.image.url)
+                await _add_image_url(embed.image.url)
 
             # If the embed itself is not an image link, treat its URL as something to be stripped.
             if embed.url and not self._is_image_url(embed.url):
@@ -328,7 +331,7 @@ class ConversationManager:
         found_urls = url_pattern.findall(content)
         for url in found_urls:
             # Attempt to add as an image, otherwise it will be stripped.
-            _add_image_url(url)
+            await _add_image_url(url)
             other_urls.add(url)
 
         # 4. Clean the message content by removing all identified URLs

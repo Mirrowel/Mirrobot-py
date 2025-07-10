@@ -1555,7 +1555,7 @@ class LLMCommands(commands.Cog):
                 embeds=[] # For simplicity, assume no embeds direct from user input string
             )
             
-            cleaned_content, image_urls, embed_urls = chatbot_manager._process_discord_message_for_context(dummy_discord_message)
+            cleaned_content, image_urls, embed_urls = await chatbot_manager._process_discord_message_for_context(dummy_discord_message)
             
             # Create the ConversationMessage using the processed content and extracted URLs
             test_conv_msg = ConversationMessage(
