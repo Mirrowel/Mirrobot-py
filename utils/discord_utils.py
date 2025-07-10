@@ -69,15 +69,18 @@ def truncate_to_last_sentence(text: str, max_length: int = 2000) -> str:
     # Final fallback: hard truncate
     return text[:max_length-3] + "..."
 
-async def handle_streaming_text_response(bot, message_to_reply_to: discord.Message, stream_generator: AsyncGenerator, model_name: str, llm_cog, max_messages: int = 1):
+async def handle_streaming_text_response(bot, message_to_reply_to: discord.Message, stream_generator: AsyncGenerator, model_name: str, llm_cog, initial_message: discord.Message = None, max_messages: int = 1):
     """
     Processes a streaming LLM response and updates a series of plain-text Discord messages.
     Handles message splitting for long responses and enforces a message limit.
     """
     # 1. Initial Message
     sent_messages: List[discord.Message] = []
-    initial_message = await reply_or_send(message_to_reply_to, f"Thinking with `{model_name}`...")
-    sent_messages.append(initial_message)
+    if initial_message:
+        sent_messages.append(initial_message)
+    else:
+        initial_message = await reply_or_send(message_to_reply_to, f"Thinking with `{model_name}`...")
+        sent_messages.append(initial_message)
 
     # 2. Stream Processing Loop
     response_buffer = ""

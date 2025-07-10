@@ -245,9 +245,9 @@ class InlineResponseManager:
                 while True:
                     try:
                         # Fetch the message immediately after the current one
-                        next_msg = await msg.channel.history(limit=1, after=after_msg).next()
-                        if next_msg.id in gathered_messages:
-                            break # Already have this message, stop searching
+                        next_msg = await anext(msg.channel.history(limit=1, after=after_msg), None)
+                        if not next_msg or next_msg.id in gathered_messages:
+                            break # Already have this message or no more messages, stop searching
                         # Check if it's a continuation of the bot's response
                         if next_msg.author.id == msg.author.id and (next_msg.created_at - after_msg.created_at).total_seconds() < 2:
                             gathered_messages[next_msg.id] = next_msg
@@ -262,9 +262,9 @@ class InlineResponseManager:
                 while True:
                     try:
                         # Fetch the message immediately before the current one
-                        prev_msg = await msg.channel.history(limit=1, before=before_msg).next()
-                        if prev_msg.id in gathered_messages:
-                            break # Already have this message, stop searching
+                        prev_msg = await anext(msg.channel.history(limit=1, before=before_msg), None)
+                        if not prev_msg or prev_msg.id in gathered_messages:
+                            break # Already have this message or no more messages, stop searching
                         # Check if it's a continuation of the bot's response
                         if prev_msg.author.id == msg.author.id and (before_msg.created_at - prev_msg.created_at).total_seconds() < 2:
                             gathered_messages[prev_msg.id] = prev_msg

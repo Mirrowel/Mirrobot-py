@@ -311,7 +311,7 @@ class LLMCommands(commands.Cog):
         try:
             async with RotatingClient(api_keys=self.api_keys, max_retries=self.llm_config.get("max_retries", 2)) as client:
                 if stream:
-                    response_generator = await client.acompletion(**request_kwargs)
+                    response_generator = client.acompletion(**request_kwargs)
                     return response_generator, target_model
                 
                 response = await client.acompletion(**request_kwargs)

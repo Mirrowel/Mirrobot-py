@@ -608,6 +608,8 @@ async def handle_chatbot_response(bot, message, stream: bool = True):
             await asyncio.sleep(channel_config.response_delay_seconds)
         
         async with message.channel.typing():
+            thinking_message = await reply_or_send(message, "Thinking of a response...")
+
             # The rest of the response generation logic remains largely the same.
             # The key change is that this entire block is now executed sequentially by the worker.
             context_messages = await chatbot_manager.get_prioritized_context(guild_id, channel_id, message.author.id)
@@ -657,7 +659,7 @@ async def handle_chatbot_response(bot, message, stream: bool = True):
             )
 
             if stream:
-                await handle_streaming_text_response(bot, message, response_data, model_name, llm_cog, max_messages=1)
+                await handle_streaming_text_response(bot, message, response_data, model_name, llm_cog, initial_message=thinking_message, max_messages=1)
                 logger.info(f"Sent streaming chatbot response to message {message.id} in channel {channel_id}")
             else:
                 # Non-streaming logic
@@ -674,11 +676,11 @@ async def handle_chatbot_response(bot, message, stream: bool = True):
                         from utils.discord_utils import truncate_to_last_sentence
                         final_response = truncate_to_last_sentence(final_response, 2000)
 
-                    sent_message = await reply_or_send(message, final_response)
-                    await chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
+                    await thinking_message.edit(content=final_response)
+                    await chatbot_manager.add_message_to_conversation(guild_id, channel_id, thinking_message)
                     logger.info(f"Sent chatbot response to message {message.id} in channel {channel_id}")
                 else:
-                    await reply_or_send(message, "I'm having trouble generating a response right now. Please try again.", delete_after=10)
+                    await thinking_message.edit(content="I'm having trouble generating a response right now. Please try again.", delete_after=10)
 
     except Exception as e:
         logger.error(f"Error in handle_chatbot_response for message {message.id}: {e}", exc_info=True)

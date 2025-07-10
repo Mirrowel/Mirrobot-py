@@ -497,20 +497,20 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
             # This will re-raise any exception that occurred in the task
             task.result()
         except asyncio.CancelledError:
-            logger.info(f"Worker task {task.get_name()} was cancelled.")
+            logger.warning(f"Worker task {task.get_name()} was cancelled.")
         except Exception as e:
             logger.error(f"Worker task {task.get_name()} failed with an exception: {e}", exc_info=True)
         
         # Find the channel_id associated with this task and remove it
         for channel_id, worker_task in list(self.worker_tasks.items()):
             if worker_task == task:
-                logger.info(f"Cleaning up finished worker for channel {channel_id}.")
+                logger.debug(f"Cleaning up finished worker for channel {channel_id}.")
                 del self.worker_tasks[channel_id]
                 break
 
     async def _message_queue_worker(self, channel_id: int):
         """The worker task that processes messages for a single channel."""
-        logger.info(f"Starting worker for channel {channel_id}")
+        logger.debug(f"Starting worker for channel {channel_id}")
         q = self.message_queues[channel_id]
         
         while True:
@@ -519,82 +519,85 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                 # If the queue is empty for 60 seconds, the worker will exit.
                 message = await asyncio.wait_for(q.get(), timeout=60.0)
             except asyncio.TimeoutError:
-                logger.info(f"Worker for channel {channel_id} timing out due to inactivity.")
+                logger.debug(f"Worker for channel {channel_id} timing out due to inactivity.")
                 # The queue is empty, so we can break the loop and let the worker finish.
                 break
 
             # The core processing logic is now here, ensuring one-at-a-time execution.
-            try:
-                config = self.manager.get_channel_config(message.guild.id, message.channel.id)
-                logger.info(f"Worker for {channel_id} processing message {message.id}")
-
-                # 2. Build context and perform on-the-fly indexing
-                context_messages = []
+            async with message.channel.typing():
                 try:
-                    context_messages = await self.manager.build_context(message)
-                    logger.debug(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
-                except Exception as e:
-                    logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
-                    await reply_or_send(message, "Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
-                    q.task_done()
-                    continue
+                    config = self.manager.get_channel_config(message.guild.id, message.channel.id)
+                    logger.debug(f"Worker for {channel_id} processing message {message.id}")
 
-                # On-the-fly indexing
-                try:
-                    await chatbot_manager.index_manager.update_channel_index(message.channel)
-                    if context_messages:
-                        unique_users = list({msg.author for msg in context_messages if not msg.is_bot_response and msg.author})
-                        if unique_users:
-                            await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
-                            logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
-                except Exception as e:
-                    logger.warning(f"Non-critical error during on-the-fly indexing for message {message.id}: {e}", exc_info=True)
+                    # Send initial "Thinking..." message
+                    thinking_message = await reply_or_send(message, "Thinking of a response...")
 
-                # 3. Format the context for the LLM
-                static_context, history = await chatbot_manager.formatter.format_context_for_llm(
-                    messages=context_messages,
-                    guild_id=message.guild.id,
-                    channel_id=message.channel.id
-                )
+                    # 2. Build context and perform on-the-fly indexing
+                    context_messages = []
+                    try:
+                        context_messages = await self.manager.build_context(message)
+                        logger.debug(f"Built context with {len(context_messages)} messages for inline response to {message.id}.")
+                    except Exception as e:
+                        logger.error(f"Failed to build context for inline response to message {message.id}. Aborting. Error: {e}", exc_info=True)
+                        await thinking_message.edit(content="Sorry, I had trouble gathering context to respond. Please try again.", delete_after=10)
+                        continue
 
-                # 4. Make the LLM request
-                llm_cog: LLMCommands = self.bot.get_cog("LLMCommands")
-                if not llm_cog:
-                    logger.error("LLMCommands cog not found, cannot make inline response.")
-                    q.task_done()
-                    continue
+                    # On-the-fly indexing
+                    try:
+                        await chatbot_manager.index_manager.update_channel_index(message.channel)
+                        if context_messages:
+                            unique_users = list({msg.author for msg in context_messages if not msg.is_bot_response and msg.author})
+                            if unique_users:
+                                await chatbot_manager.index_manager.update_users_bulk(message.guild.id, unique_users, is_message_author=True)
+                                logger.info(f"On-the-fly indexing complete for channel {message.channel.id} and {len(unique_users)} users.")
+                    except Exception as e:
+                        logger.warning(f"Non-critical error during on-the-fly indexing for message {message.id}: {e}", exc_info=True)
 
-                if not history:
-                    logger.error(f"History is empty for message {message.id}, cannot generate response.")
-                    q.task_done()
-                    continue
-
-                trigger_message_content = history[-1]['content']
-                context_history = history[:-1]
-                image_urls = [part["image_url"]["url"] for part in trigger_message_content if isinstance(trigger_message_content, list) and part.get("type") == "image_url"]
-
-                if config.use_streaming:
-                    stream_generator = await llm_cog.make_llm_request(
-                        prompt=trigger_message_content,
-                        model_type=config.model_type,
+                    # 3. Format the context for the LLM
+                    static_context, history = await chatbot_manager.formatter.format_context_for_llm(
+                        messages=context_messages,
                         guild_id=message.guild.id,
-                        channel_id=message.channel.id,
-                        context=static_context,
-                        history=context_history,
-                        image_urls=image_urls,
-                        stream=True
+                        channel_id=message.channel.id
                     )
-                    await handle_streaming_text_response(
-                        bot=self.bot,
-                        message_to_reply_to=message,
-                        stream_generator=stream_generator,
-                        model_name=config.model_type,
-                        llm_cog=llm_cog,
-                        max_messages=5
-                    )
-                    logger.info(f"Successfully streamed inline response to message {message.id}.")
-                else:
-                    async with message.channel.typing():
+
+                    # 4. Make the LLM request
+                    llm_cog: LLMCommands = self.bot.get_cog("LLMCommands")
+                    if not llm_cog:
+                        logger.error("LLMCommands cog not found, cannot make inline response.")
+                        await thinking_message.edit(content="Sorry, a configuration error prevents me from responding.", delete_after=10)
+                        continue
+
+                    if not history:
+                        logger.error(f"History is empty for message {message.id}, cannot generate response.")
+                        await thinking_message.delete() # No point keeping the "thinking" message
+                        continue
+
+                    trigger_message_content = history[-1]['content']
+                    context_history = history[:-1]
+                    image_urls = [part["image_url"]["url"] for part in trigger_message_content if isinstance(trigger_message_content, list) and part.get("type") == "image_url"]
+
+                    if config.use_streaming:
+                        stream_generator, model_name = await llm_cog.make_llm_request(
+                            prompt=trigger_message_content,
+                            model_type=config.model_type,
+                            guild_id=message.guild.id,
+                            channel_id=message.channel.id,
+                            context=static_context,
+                            history=context_history,
+                            image_urls=image_urls,
+                            stream=True
+                        )
+                        await handle_streaming_text_response(
+                            bot=self.bot,
+                            message_to_reply_to=message,
+                            stream_generator=stream_generator,
+                            model_name=model_name,
+                            llm_cog=llm_cog,
+                            initial_message=thinking_message,
+                            max_messages=5
+                        )
+                        logger.info(f"Successfully streamed inline response to message {message.id}.")
+                    else:
                         response_text, _ = await llm_cog.make_llm_request(
                             prompt=trigger_message_content,
                             model_type=config.model_type,
@@ -604,37 +607,45 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                             history=context_history,
                             image_urls=image_urls
                         )
-                    
-                    logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")
+                        
+                        logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")
 
-                    # 5. Process and send the response
-                    cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                        response_text,
-                        message.guild.id,
-                        self.bot.user.id,
-                        [self.bot.user.name, self.bot.user.display_name]
-                    )
-                    
-                    response_chunks = split_message(cleaned_response)
-                    if not response_chunks or not response_chunks[0].strip():
-                        logger.warning(f"LLM response for message {message.id} was empty. Raw: '{response_text[:100]}'")
-                        q.task_done()
-                        continue
+                        # 5. Process and send the response
+                        cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
+                            response_text,
+                            message.guild.id,
+                            self.bot.user.id,
+                            [self.bot.user.name, self.bot.user.display_name]
+                        )
+                        
+                        response_chunks = split_message(cleaned_response)
+                        if not response_chunks or not response_chunks[0].strip():
+                            logger.warning(f"LLM response for message {message.id} was empty. Raw: '{response_text[:100]}'")
+                            await thinking_message.delete()
+                            continue
 
-                    await reply_or_send(message, response_chunks[0])
-                    for chunk in response_chunks[1:]:
-                        await message.channel.send(chunk)
-                    
-                    logger.info(f"Successfully sent inline response to message {message.id} in {len(response_chunks)} chunks.")
+                        # Edit the initial message and send subsequent chunks
+                        await thinking_message.edit(content=response_chunks[0])
+                        for chunk in response_chunks[1:]:
+                            await message.channel.send(chunk)
+                        
+                        logger.info(f"Successfully sent inline response to message {message.id} in {len(response_chunks)} chunks.")
 
-            except Exception as e:
-                logger.error(f"Error during inline LLM request for message {message.id}: {e}", exc_info=True)
-                await reply_or_send(message, "Sorry, I encountered an error while trying to respond.", delete_after=10)
-            finally:
-                # Signal that the message has been processed.
-                q.task_done()
+                except Exception as e:
+                    logger.error(f"Error during inline LLM request for message {message.id}: {e}", exc_info=True)
+                    # Check if thinking_message exists before trying to edit it
+                    if 'thinking_message' in locals() and thinking_message:
+                        try:
+                            await thinking_message.edit(content="Sorry, I encountered an error while trying to respond.", delete_after=10)
+                        except discord.NotFound:
+                            await reply_or_send(message, "Sorry, I encountered an error while trying to respond.", delete_after=10)
+                    else:
+                        await reply_or_send(message, "Sorry, I encountered an error while trying to respond.", delete_after=10)
+                finally:
+                    # Signal that the message has been processed.
+                    q.task_done()
         
-        logger.info(f"Stopping worker for channel {channel_id} as queue is empty.")
+        logger.debug(f"Stopping worker for channel {channel_id} as queue is empty.")
 
 
     @commands.Cog.listener()
@@ -675,12 +686,12 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
 
         # 2. If all checks pass, enqueue the message.
         channel_id = message.channel.id
-        logger.debug(f"Enqueuing message {message.id} for channel {channel_id}")
+        logger.info(f"Enqueuing inline message {message.id} for channel {channel_id}")
         await self.message_queues[channel_id].put(message)
 
         # 3. Ensure a worker is running for this channel.
         if channel_id not in self.worker_tasks or self.worker_tasks[channel_id].done():
-            logger.info(f"No active worker for channel {channel_id}. Creating a new one.")
+            logger.debug(f"No active worker for channel {channel_id}. Creating a new one.")
             task = asyncio.create_task(self._message_queue_worker(channel_id), name=f"inline-resp-worker-{channel_id}")
             task.add_done_callback(self._worker_done_callback)
             self.worker_tasks[channel_id] = task
