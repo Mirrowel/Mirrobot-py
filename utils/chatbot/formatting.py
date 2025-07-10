@@ -502,6 +502,34 @@ class LLMContextFormatter:
             logger.error(f"Error getting user context for LLM: {e}", exc_info=True)
             return ""
 
+    async def format_user_context_for_llm_from_objects(self, users: List[Union[discord.Member, discord.User]]) -> str:
+        """Get user context information for LLM from a list of live discord.User or discord.Member objects."""
+        try:
+            if not users:
+                return ""
+
+            lines = ["=== Known Users ==="]
+            for user in users:
+                # The guild_id is needed for role extraction if the user object is a discord.User
+                guild_id = user.guild.id if hasattr(user, 'guild') else None
+                user_data = self.index_manager.extract_user_data(user, guild_id=guild_id)
+                
+                parts = [
+                    f"ID: {user_data.get('user_id')}",
+                    f"Handle: @{user_data.get('username')}",
+                    f"Nickname: {user_data.get('display_name')}"
+                ]
+                roles = user_data.get('roles')
+                if roles:
+                    parts.append(f"Roles: {', '.join(roles)}")
+                lines.append(f"• {' | '.join(parts)}")
+                
+            lines.append("=== End of Known Users ===\n")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error formatting user context from objects: {e}", exc_info=True)
+            return ""
+
     async def get_pinned_context_for_llm(self, guild_id: int, channel_id: int) -> str:
         """Formats pinned messages for LLM context."""
         try:

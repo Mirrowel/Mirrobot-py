@@ -335,6 +335,20 @@ def create_bot(config):
         """Handle a channel being deleted."""
         logger.info(f"Channel #{channel.name} ({channel.id}) deleted in guild {channel.guild.name}. Cleaning up associated data.")
         await chatbot_manager.cleanup_channel_data(channel.guild.id, channel.id)
+
+    @bot.event
+    async def on_guild_channel_update(before, after):
+        """Handle a channel being updated (e.g., name, topic)."""
+        if chatbot_manager.config_manager.is_chatbot_enabled(after.guild.id, after.id):
+            logger.info(f"Chatbot-enabled channel #{after.name} was updated. Re-indexing channel info.")
+            await chatbot_manager.indexing_manager.update_channel_index(after)
+
+    @bot.event
+    async def on_guild_channel_pins_update(channel, last_pin):
+        """Handle pinned messages being updated in a channel."""
+        if chatbot_manager.config_manager.is_chatbot_enabled(channel.guild.id, channel.id):
+            logger.info(f"Pins updated in chatbot-enabled channel #{channel.name}. Re-indexing pins.")
+            await chatbot_manager.index_pinned_messages(channel)
     
     # Global error handler
     @bot.event

@@ -7,7 +7,7 @@ The AI Assistant commands allow you to interact with the Large Language Model (L
 These commands control the LLM provider, model selection, and direct interaction with the AI.
 
 ### `ask`
-Sends a question to the Large Language Model (LLM) and provides a direct response. This command is for quick questions and does not show the model's internal thinking process.
+Sends a question to the Large Language Model (LLM) and provides a direct response. This command is for quick questions and does not show the model's internal thinking process. It dynamically fetches live user and channel data to ensure the context is always up-to-date, rather than relying on the potentially stale index.
 
 - **Usage:** `!ask <question>`
 - **Arguments:**
@@ -16,7 +16,7 @@ Sends a question to the Large Language Model (LLM) and provides a direct respons
 - **Permissions:** `manage_messages`
 
 ### `think`
-Sends a question to the LLM and can display the internal "thinking" steps of the model. This is useful for understanding how the model arrives at its conclusions.
+Sends a question to the LLM and can display the internal "thinking" steps of the model. This is useful for understanding how the model arrives at its conclusions. Like the `!ask` command, it dynamically fetches live user and channel data to ensure its context is current.
 
 - **Usage:** `!think [display_thinking] <question>`
 - **Arguments:**

@@ -651,7 +651,14 @@ class LLMCommands(commands.Cog):
                 
                 guild_id = ctx.guild.id if ctx.guild else None
                 channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
-                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+                
+                users_for_context = [ctx.author]
+                if ctx.guild:
+                    bot_member = ctx.guild.get_member(self.bot.user.id)
+                    if bot_member:
+                        users_for_context.append(bot_member)
+                user_context = await chatbot_manager.formatter.format_user_context_for_llm_from_objects(users_for_context)
+                
                 context = f"{channel_context}\n{user_context}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
@@ -692,7 +699,14 @@ class LLMCommands(commands.Cog):
 
                 guild_id = ctx.guild.id if ctx.guild else None
                 channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
-                user_context = await chatbot_manager.formatter.get_user_context_for_llm(guild_id, [ctx.author.id])
+
+                users_for_context = [ctx.author]
+                if ctx.guild:
+                    bot_member = ctx.guild.get_member(self.bot.user.id)
+                    if bot_member:
+                        users_for_context.append(bot_member)
+                user_context = await chatbot_manager.formatter.format_user_context_for_llm_from_objects(users_for_context)
+
                 context = f"{channel_context}\n{user_context}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"

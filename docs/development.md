@@ -17,7 +17,7 @@ The Mirrobot codebase is organized into several key directories:
 
 ### Core Modules
 
-- `core/bot.py` - Bot initialization and event handling
+- `core/bot.py` - Bot initialization and event handling. This file now includes real-time event handlers for `on_guild_channel_update` and `on_guild_channel_pins_update` to ensure the chatbot's context remains fresh.
 - `core/ocr.py` - OCR image processing logic
 - `core/pattern_manager.py` - Pattern matching and management
 
