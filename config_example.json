@@ -5,46 +5,21 @@
   "ocr_max_queue_size": 100,
   "thread_purge_interval_minutes": 10,
   "ocr_read_channels": {},
-  
-  // Channels where OCR results are posted
-  // Format: {"guild_id": [channel_id1, channel_id2]}
   "ocr_response_channels": {},
-  
-  // Backup channels if primary response channels fail
-  // Format: {"guild_id": [channel_id1, channel_id2]}
   "ocr_response_fallback": {},
-  
-  // Custom command prefixes per server
-  // Format: {"guild_id": "custom_prefix"}
-  // Example: {"123456789012345678": "ocr!"}
   "server_prefixes": {},
-  
-  // Role-based command access control
-  // Format: {"guild_id": {"*": ["role_id1"], "command_name": ["role_id2"]}}
-  // "*" applies to all commands, specific command names override for those commands
   "command_permissions": {},
-  
-  // OCR language settings per channel
-  // Format: {"guild_id": {"channel_id": {"lang": "language_code"}}}
-  // Language codes: eng, rus, spa, fra, deu, etc.
-  // Example: {"123456789012345678": {"987654321098765432": {"lang": "eng"}}}
   "ocr_channel_config": {},
-  
-  // Automatic restart and maintenance settings
   "maintenance": {
-    // Auto-restart interval in seconds (default: 86400 = 24 hours)
     "restart_threshold_seconds": 86400,
-    
-    // How often to check restart conditions (in minutes)
     "check_interval_minutes": 15,
-    
-    // Enable/disable automatic restarts
     "auto_restart_enabled": true
   },
   "media_caching": {
     "enabled": true,
-    "services": ["catbox", "pixeldrain"],
+    "services": ["litterbox", "catbox", "pixeldrain"],
     "upload_timeout_seconds": 30,
-    "pixeldrain_api_key": "YOUR_PIXELDRAIN_API_KEY"
+    "pixeldrain_api_key": "YOUR_PIXELDRAIN_API_KEY",
+    "catbox_user_hash": "YOUR_CATBOX_USER_HASH"
   }
 }

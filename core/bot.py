@@ -122,6 +122,7 @@ def create_bot(config):
         chatbot_manager.set_bot_user_id(bot.user.id)
         chatbot_manager.set_media_cache_manager(bot.media_cache_manager)
         await chatbot_manager.index_manager.start()
+        await bot.media_cache_manager.start()
         # --- END NEW ---
 
         # Get worker count from config (default to 2 workers if not specified)
@@ -356,6 +357,7 @@ def create_bot(config):
         """Handle bot shutdown gracefully."""
         logger.info("Bot is shutting down. Performing cleanup...")
         await bot.media_cache_manager.close_session()
+        await bot.media_cache_manager.shutdown()
         await chatbot_manager.index_manager.shutdown()
         logger.info("Cleanup complete.")
 
