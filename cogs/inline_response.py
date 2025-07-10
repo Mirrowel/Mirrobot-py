@@ -12,7 +12,7 @@ from utils.logging_setup import get_logger
 from utils.chatbot.manager import chatbot_manager
 from cogs.llm_commands import LLMCommands
 from utils.permissions import command_category, has_command_permission
-from utils.discord_utils import reply_or_send
+from utils.discord_utils import reply_or_send, handle_streaming_text_response
 
 logger = get_logger()
 
@@ -117,6 +117,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         status_embed.add_field(name="Feature Enabled", value=f"✅ Yes {get_source('enabled')}" if config.enabled else f"❌ No {get_source('enabled')}", inline=False)
         status_embed.add_field(name="Mention Trigger", value=f"{'Message Start' if config.trigger_on_start_only else 'Anywhere in Message'} {get_source('trigger_on_start_only')}", inline=False)
         status_embed.add_field(name="LLM Model", value=f"`{config.model_type}` {get_source('model_type')}", inline=False)
+        status_embed.add_field(name="Streaming Response", value=f"✅ Yes {get_source('use_streaming')}" if config.use_streaming else f"❌ No {get_source('use_streaming')}", inline=False)
         status_embed.add_field(name="Channel Context", value=f"`{config.context_messages}` messages {get_source('context_messages')}", inline=True)
         status_embed.add_field(name="User Context", value=f"`{config.user_context_messages}` messages {get_source('user_context_messages')}", inline=True)
         
@@ -297,6 +298,31 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
         if self.manager.set_config(ctx.guild.id, new_settings, target_id):
             target_name = "the server" if resolved_target == 'server' else resolved_target.mention
             await embed_helper.create_embed_response(ctx, title="✅ Settings Updated", description=f"Context for {target_name} updated:\n• Channel Messages: `{channel_messages}`\n• User Messages: `{user_messages}`", color=discord.Color.green())
+        else:
+            await embed_helper.create_embed_response(ctx, title="❌ Error", description="Failed to update settings.", color=discord.Color.red())
+
+    @inline.command(name="streaming", help="""
+     Enables or disables streaming responses for a target.
+     Usage: `!inline streaming <on|off> [target]`
+     Target can be 'server', a #channel/thread, or a channel/thread ID.
+     """)
+    @has_command_permission('manage_guild')
+    @app_commands.describe(enabled="Set to 'on' or 'off'", target="Optional: 'server', a #channel/thread, or a channel/thread ID.")
+    async def streaming(self, ctx: commands.Context, enabled: Literal['on', 'off'] = None, target: str = None):
+        """Enable or disable streaming responses for a target."""
+        if enabled is None:
+            await self._send_subcommand_help(ctx)
+            return
+            
+        resolved_target = await self._resolve_target(ctx, target)
+        if resolved_target is None and target is not None: return
+
+        target_id = resolved_target.id if isinstance(resolved_target, (discord.TextChannel, discord.Thread)) else None
+        new_status = enabled.lower() == 'on'
+        
+        if self.manager.set_config(ctx.guild.id, {'use_streaming': new_status}, target_id):
+            target_name = "the server" if resolved_target == 'server' else resolved_target.mention
+            await embed_helper.create_embed_response(ctx, title="✅ Settings Updated", description=f"Streaming responses have been **{'enabled' if new_status else 'disabled'}** for {target_name}.", color=discord.Color.green())
         else:
             await embed_helper.create_embed_response(ctx, title="❌ Error", description="Failed to update settings.", color=discord.Color.red())
 
@@ -547,38 +573,59 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                 context_history = history[:-1]
                 image_urls = [part["image_url"]["url"] for part in trigger_message_content if isinstance(trigger_message_content, list) and part.get("type") == "image_url"]
 
-                async with message.channel.typing():
-                    response_text, _ = await llm_cog.make_llm_request(
+                if config.use_streaming:
+                    stream_generator = await llm_cog.make_llm_request(
                         prompt=trigger_message_content,
                         model_type=config.model_type,
                         guild_id=message.guild.id,
                         channel_id=message.channel.id,
                         context=static_context,
                         history=context_history,
-                        image_urls=image_urls
+                        image_urls=image_urls,
+                        stream=True
                     )
-                
-                logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")
+                    await handle_streaming_text_response(
+                        bot=self.bot,
+                        message_to_reply_to=message,
+                        stream_generator=stream_generator,
+                        model_name=config.model_type,
+                        llm_cog=llm_cog,
+                        max_messages=5
+                    )
+                    logger.info(f"Successfully streamed inline response to message {message.id}.")
+                else:
+                    async with message.channel.typing():
+                        response_text, _ = await llm_cog.make_llm_request(
+                            prompt=trigger_message_content,
+                            model_type=config.model_type,
+                            guild_id=message.guild.id,
+                            channel_id=message.channel.id,
+                            context=static_context,
+                            history=context_history,
+                            image_urls=image_urls
+                        )
+                    
+                    logger.debug(f"Raw LLM response_text for message {message.id}: '{response_text[:500]}...' (truncated)")
 
-                # 5. Process and send the response
-                cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                    response_text,
-                    message.guild.id,
-                    self.bot.user.id,
-                    [self.bot.user.name, self.bot.user.display_name]
-                )
-                
-                response_chunks = split_message(cleaned_response)
-                if not response_chunks or not response_chunks[0].strip():
-                    logger.warning(f"LLM response for message {message.id} was empty. Raw: '{response_text[:100]}'")
-                    q.task_done()
-                    continue
+                    # 5. Process and send the response
+                    cleaned_response = await chatbot_manager.formatter.format_llm_output_for_discord(
+                        response_text,
+                        message.guild.id,
+                        self.bot.user.id,
+                        [self.bot.user.name, self.bot.user.display_name]
+                    )
+                    
+                    response_chunks = split_message(cleaned_response)
+                    if not response_chunks or not response_chunks[0].strip():
+                        logger.warning(f"LLM response for message {message.id} was empty. Raw: '{response_text[:100]}'")
+                        q.task_done()
+                        continue
 
-                await reply_or_send(message, response_chunks[0])
-                for chunk in response_chunks[1:]:
-                    await message.channel.send(chunk)
-                
-                logger.info(f"Successfully sent inline response to message {message.id} in {len(response_chunks)} chunks.")
+                    await reply_or_send(message, response_chunks[0])
+                    for chunk in response_chunks[1:]:
+                        await message.channel.send(chunk)
+                    
+                    logger.info(f"Successfully sent inline response to message {message.id} in {len(response_chunks)} chunks.")
 
             except Exception as e:
                 logger.error(f"Error during inline LLM request for message {message.id}: {e}", exc_info=True)

@@ -21,6 +21,7 @@ class InlineResponseConfig:
     model_type: str = "ask"
     context_messages: int = 30
     user_context_messages: int = 15
+    use_streaming: bool = False
     # New permission fields
     role_whitelist: List[int] = None
     member_whitelist: List[int] = None

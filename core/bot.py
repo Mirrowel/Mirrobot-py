@@ -14,7 +14,7 @@ from utils.chatbot.manager import chatbot_manager
 from utils.chatbot.config import DEFAULT_CHATBOT_CONFIG
 from utils.file_processor import extract_text_from_attachment, extract_text_from_url
 from utils.chatbot.models import ConversationMessage, ContentPart
-from utils.discord_utils import reply_or_send
+from utils.discord_utils import reply_or_send, handle_streaming_text_response
 from utils.media_cache import MediaCacheManager
 
 logger = get_logger()
@@ -588,7 +588,7 @@ async def process_chatbot_message(bot, message):
     except Exception as e:
         logger.error(f"Error enqueuing chatbot message: {e}", exc_info=True)
 
-async def handle_chatbot_response(bot, message):
+async def handle_chatbot_response(bot, message, stream: bool = True):
     """
     Handles the logic for generating and sending a chatbot response.
     This function is now called by the queue worker.
@@ -649,53 +649,36 @@ async def handle_chatbot_response(bot, message):
                 guild_id=guild_id, channel_id=channel_id
             )
 
-            response_text, _ = await llm_cog.make_llm_request(
+            response_data, model_name = await llm_cog.make_llm_request(
                 prompt=user_prompt_content, system_prompt=system_prompt_for_llm,
                 context=static_context, history=history_messages, model_type="chat",
-                guild_id=guild_id, channel_id=channel_id, image_urls=image_urls
+                guild_id=guild_id, channel_id=channel_id, image_urls=image_urls,
+                stream=stream
             )
 
-            if response_text:
-                formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                    text=response_text, guild_id=message.guild.id, bot_user_id=bot.user.id,
-                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
-                )
-                final_response, _ = llm_cog.strip_thinking_tokens(formatted_response)
-
-                def truncate_to_last_sentence(text: str, max_length: int) -> str:
-                    """Truncates text to the last full sentence within the max_length."""
-                    if len(text) <= max_length:
-                        return text
-                    
-                    # Truncate to max_length to work with a smaller string
-                    truncated_text = text[:max_length]
-                    
-                    # Find the last sentence-ending punctuation
-                    last_sentence_end = -1
-                    for p in ['.', '!', '?']:
-                        last_sentence_end = max(last_sentence_end, truncated_text.rfind(p))
-                    
-                    # If we found a sentence end, truncate there and add ellipsis
-                    if last_sentence_end != -1:
-                        return truncated_text[:last_sentence_end+1] + "..."
-                    
-                    # Fallback: find the last space to avoid cutting a word
-                    last_space = truncated_text.rfind(' ')
-                    if last_space != -1:
-                        return truncated_text[:last_space] + "..."
-                        
-                    # Final fallback: hard truncate
-                    return text[:max_length-3] + "..."
-
-                if len(final_response) > 2000:
-                    logger.warning(f"LLM response ({len(final_response)} chars) exceeds Discord limit (2000). Truncating intelligently.")
-                    final_response = truncate_to_last_sentence(final_response, 2000)
-
-                sent_message = await reply_or_send(message, final_response)
-                await chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
-                logger.info(f"Sent chatbot response to message {message.id} in channel {channel_id}")
+            if stream:
+                await handle_streaming_text_response(bot, message, response_data, model_name, llm_cog, max_messages=1)
+                logger.info(f"Sent streaming chatbot response to message {message.id} in channel {channel_id}")
             else:
-                await reply_or_send(message, "I'm having trouble generating a response right now. Please try again.", delete_after=10)
+                # Non-streaming logic
+                response_text = response_data
+                if response_text:
+                    formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
+                        text=response_text, guild_id=message.guild.id, bot_user_id=bot.user.id,
+                        bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                    )
+                    final_response, _ = llm_cog.strip_thinking_tokens(formatted_response)
+
+                    if len(final_response) > 2000:
+                        logger.warning(f"LLM response ({len(final_response)} chars) exceeds Discord limit (2000). Truncating intelligently.")
+                        from utils.discord_utils import truncate_to_last_sentence
+                        final_response = truncate_to_last_sentence(final_response, 2000)
+
+                    sent_message = await reply_or_send(message, final_response)
+                    await chatbot_manager.add_message_to_conversation(guild_id, channel_id, sent_message)
+                    logger.info(f"Sent chatbot response to message {message.id} in channel {channel_id}")
+                else:
+                    await reply_or_send(message, "I'm having trouble generating a response right now. Please try again.", delete_after=10)
 
     except Exception as e:
         logger.error(f"Error in handle_chatbot_response for message {message.id}: {e}", exc_info=True)

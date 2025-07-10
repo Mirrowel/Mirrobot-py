@@ -6,10 +6,11 @@ import json
 import time
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any, Tuple, List, Union
+from typing import Optional, Dict, Any, Tuple, List, Union, AsyncGenerator
 from utils.logging_setup import get_logger
 from utils.permissions import has_command_permission, command_category
 from utils.embed_helper import create_embed_response, create_llm_response
+from utils.discord_utils import handle_streaming_text_response
 from lib.rotator_library import RotatingClient
 from config.llm_config_manager import load_llm_config, save_llm_config, load_api_keys_from_env, get_safety_settings, save_server_safety_settings, get_reasoning_budget, save_reasoning_budget, get_all_reasoning_budgets
 from utils.chatbot.manager import chatbot_manager
@@ -222,7 +223,7 @@ class LLMCommands(commands.Cog):
         await asyncio.gather(*status_checks)
     
     async def make_llm_request(
-        self, 
+        self,
         prompt: Optional[str] = None,
         model_type: str = "default",
         max_tokens: Optional[int] = None,
@@ -231,13 +232,14 @@ class LLMCommands(commands.Cog):
         channel_id: Optional[int] = None,
         system_prompt: Optional[str] = None,
         context: Optional[str] = None,
-        history: Optional[List[Dict[str, any]]] = None, # New history parameter
+        history: Optional[List[Dict[str, any]]] = None,  # New history parameter
         model: Optional[str] = None,
-        image_urls: Optional[List[str]] = None
-    ) -> Tuple[str, Dict[str, Any]]:
+        image_urls: Optional[List[str]] = None,
+        stream: bool = False
+    ) -> Union[Tuple[str, Dict[str, Any]], Tuple[AsyncGenerator, str]]:
         """
         Make a request to the LLM API using the RotatingClient and return the response
-        with performance metrics.
+        with performance metrics. If stream is True, returns an AsyncGenerator.
         """
         start_time = time.time()
         
@@ -267,7 +269,8 @@ class LLMCommands(commands.Cog):
             "messages": messages,
             "temperature": temperature,
             "timeout": self.llm_config.get("timeout", 120),
-            "safety_settings": get_safety_settings(guild_id, channel_id)
+            "safety_settings": get_safety_settings(guild_id, channel_id),
+            "stream": stream
         }
 
         if max_tokens is not None:
@@ -307,9 +310,13 @@ class LLMCommands(commands.Cog):
 
         try:
             async with RotatingClient(api_keys=self.api_keys, max_retries=self.llm_config.get("max_retries", 2)) as client:
+                if stream:
+                    response_generator = await client.acompletion(**request_kwargs)
+                    return response_generator, target_model
+                
                 response = await client.acompletion(**request_kwargs)
             
-            # Save the raw response for debugging
+            # This part only runs for non-streaming responses
             self._save_debug_response(response, target_model.split('/')[0])
             
             # The rotator client returns the litellm response object directly for non-streaming
@@ -561,6 +568,127 @@ class LLMCommands(commands.Cog):
                 logger.info(f"LLM Performance: {performance_metrics['elapsed_time']:.2f}s, "
                            f"{performance_metrics['chars_per_sec']:.1f} chars/s, "
                            f"~{performance_metrics['tokens_per_sec']:.1f} tokens/s)")
+
+    async def handle_streaming_embed_response(self, ctx, stream_generator: AsyncGenerator, model_name: str, question: str, is_thinking: bool):
+        """
+        Process a streaming LLM response and update a single Discord embed in real-time.
+        """
+        # 1. Initial Message
+        embed = discord.Embed(
+            description=f"Thinking with `{model_name}`...",
+            color=discord.Color.blue()
+        )
+        message = await ctx.send(embed=embed)
+
+        # 2. Stream Processing Loop
+        response_buffer = ""
+        last_update_time = time.time()
+        
+        try:
+            async for chunk in stream_generator:
+                try:
+                    # Handle different chunk formats (bytes vs. str)
+                    if isinstance(chunk, bytes):
+                        chunk_str = chunk.decode('utf-8')
+                    else:
+                        chunk_str = str(chunk)
+
+                    # Clean potential "data: " prefixes from SSE
+                    if chunk_str.startswith('data: '):
+                        chunk_str = chunk_str[6:]
+                    
+                    if not chunk_str.strip():
+                        continue
+
+                    # Handle stream termination
+                    if chunk_str.strip() == '[DONE]':
+                        break
+                    
+                    data = json.loads(chunk_str)
+
+                    # Handle errors from the proxy
+                    if "error" in data:
+                        error_message = data.get("error", "Unknown error from proxy")
+                        error_embed = discord.Embed(title="LLM Error", description=error_message, color=discord.Color.red())
+                        await message.edit(embed=error_embed)
+                        return
+
+                    # Append delta to buffer
+                    delta = data.get('choices', [{}])[0].get('delta', {}).get('content', '')
+                    if delta:
+                        response_buffer += delta
+
+                except json.JSONDecodeError:
+                    logger.warning(f"Received non-JSON chunk, skipping: {chunk_str[:100]}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing stream chunk: {e}", exc_info=True)
+                    error_embed = discord.Embed(title="Streaming Error", description=f"An unexpected error occurred: {e}", color=discord.Color.red())
+                    await message.edit(embed=error_embed)
+                    return
+
+                # 3. Rate-Limited Updates
+                current_time = time.time()
+                if current_time - last_update_time > 1.5:
+                    cleaned_response, thinking_content = self.strip_thinking_tokens(response_buffer)
+                    
+                    title = "LLM Thinking Response" if is_thinking else "LLM Response"
+                    color = discord.Color.purple() if is_thinking else discord.Color.blue()
+
+                    if is_thinking and thinking_content:
+                        desc = f"**🤖 Model:** `{model_name}`\n\n"
+                        desc += f"||🧠 **Thinking Process:**\n\n{thinking_content}||\n\n"
+                        desc += f"**💡 Answer:**\n{cleaned_response}"
+                    else:
+                        desc = f"**🤖 Model:** `{model_name}`\n\n{cleaned_response}"
+
+                    if len(desc) > 4096:
+                        desc = desc[:4093] + "..."
+
+                    new_embed = discord.Embed(title=title, description=desc, color=color)
+                    new_embed.set_footer(text=f"Question: {question[:100]}{'...' if len(question) > 100 else ''}")
+                    
+                    try:
+                        await message.edit(embed=new_embed)
+                        last_update_time = current_time
+                    except discord.errors.NotFound:
+                        logger.warning("Message to edit was deleted, stopping stream.")
+                        return
+                    except discord.errors.HTTPException as e:
+                        if e.status == 429:
+                            logger.warning("Hit rate limit, slowing down updates.")
+                            last_update_time = current_time + 2
+                        else:
+                            logger.error(f"Failed to edit message: {e}")
+                            return
+
+        finally:
+            # 4. Final Update
+            cleaned_response, thinking_content = self.strip_thinking_tokens(response_buffer)
+            
+            title = "LLM Thinking Response" if is_thinking else "LLM Response"
+            color = discord.Color.purple() if is_thinking else discord.Color.blue()
+
+            if is_thinking and thinking_content:
+                desc = f"**🤖 Model:** `{model_name}`\n\n"
+                desc += f"||🧠 **Thinking Process:**\n\n{thinking_content}||\n\n"
+                desc += f"**💡 Answer:**\n{cleaned_response}"
+            else:
+                desc = f"**🤖 Model:** `{model_name}`\n\n{cleaned_response}"
+
+            if len(desc) > 4096:
+                desc = desc[:4093] + "..."
+
+            final_embed = discord.Embed(title=title, description=desc, color=color)
+            final_embed.set_footer(text=f"Question: {question[:100]}{'...' if len(question) > 100 else ''}")
+            final_embed.set_author(name=f"Response from {model_name}", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+            
+            try:
+                await message.edit(embed=final_embed)
+            except discord.errors.NotFound:
+                logger.warning("Message to edit for final update was deleted.")
+            except Exception as e:
+                logger.error(f"Failed to send final update for streaming response: {e}", exc_info=True)
     
     def strip_thinking_tokens(self, response: str) -> tuple[str, str]:
         """Strip thinking tokens from the response and return both cleaned response and thinking content"""
@@ -636,7 +764,7 @@ class LLMCommands(commands.Cog):
     @commands.command(name='ask', help='Ask the LLM a question')
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
-    async def ask_llm(self, ctx, *, question: str):
+    async def ask_llm(self, ctx, *, question: str, stream: bool = True):
         """Ask the LLM a question without showing thinking process."""
         logger.info(f"User {ctx.author} asking LLM: {question[:100]}")
 
@@ -662,29 +790,43 @@ class LLMCommands(commands.Cog):
                 context = f"{channel_context}\n{user_context}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
-                response, performance_metrics = await self.make_llm_request(
-                    prompt=formatted_prompt,
-                    model_type="ask",
-                    guild_id=guild_id,
-                    channel_id=ctx.channel.id,
-                    image_urls=image_urls,
-                    context=context
-                )
-                cleaned_response, _ = self.strip_thinking_tokens(response)
-                final_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                    cleaned_response,
-                    guild_id,
-                    bot_user_id=self.bot.user.id,
-                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
-                )
-                await self.send_llm_response(ctx, final_response, question, model_type="ask", performance_metrics=performance_metrics)
+
+                if stream:
+                    stream_generator, model_name = await self.make_llm_request(
+                        prompt=formatted_prompt,
+                        model_type="ask",
+                        guild_id=guild_id,
+                        channel_id=ctx.channel.id,
+                        image_urls=image_urls,
+                        context=context,
+                        stream=True
+                    )
+                    await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, is_thinking=False)
+                else:
+                    response, performance_metrics = await self.make_llm_request(
+                        prompt=formatted_prompt,
+                        model_type="ask",
+                        guild_id=guild_id,
+                        channel_id=ctx.channel.id,
+                        image_urls=image_urls,
+                        context=context,
+                        stream=False
+                    )
+                    cleaned_response, _ = self.strip_thinking_tokens(response)
+                    final_response = await chatbot_manager.formatter.format_llm_output_for_discord(
+                        cleaned_response,
+                        guild_id,
+                        bot_user_id=self.bot.user.id,
+                        bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                    )
+                    await self.send_llm_response(ctx, final_response, question, model_type="ask", performance_metrics=performance_metrics)
             except Exception as e:
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
     @commands.command(name='think', help='Ask the LLM a question and show its thinking process.')
     @has_command_permission('manage_guild')
     @command_category("AI Assistant")
-    async def think_llm(self, ctx, display_thinking: Optional[bool] = False, *, question: str):
+    async def think_llm(self, ctx, *, question: str, stream: bool = True):
         """Ask the LLM a question and show the thinking process."""
         logger.info(f"User {ctx.author} using think command: {question[:100]}")
 
@@ -710,26 +852,35 @@ class LLMCommands(commands.Cog):
                 context = f"{channel_context}\n{user_context}"
 
                 formatted_prompt = f"{ctx.author.display_name}: {question}"
-                response, performance_metrics = await self.make_llm_request(
-                    prompt=formatted_prompt,
-                    model_type="think",
-                    guild_id=guild_id,
-                    channel_id=ctx.channel.id,
-                    image_urls=image_urls,
-                    context=context
-                )
-                
-                formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                    response,
-                    guild_id,
-                    bot_user_id=self.bot.user.id,
-                    bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
-                )
 
-                if not display_thinking:
-                    cleaned_response, _ = self.strip_thinking_tokens(formatted_response)
-                    await self.send_llm_response(ctx, cleaned_response, question, model_type="think", performance_metrics=performance_metrics)
+                if stream:
+                    stream_generator, model_name = await self.make_llm_request(
+                        prompt=formatted_prompt,
+                        model_type="think",
+                        guild_id=guild_id,
+                        channel_id=ctx.channel.id,
+                        image_urls=image_urls,
+                        context=context,
+                        stream=True
+                    )
+                    await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, is_thinking=True)
                 else:
+                    response, performance_metrics = await self.make_llm_request(
+                        prompt=formatted_prompt,
+                        model_type="think",
+                        guild_id=guild_id,
+                        channel_id=ctx.channel.id,
+                        image_urls=image_urls,
+                        context=context,
+                        stream=False
+                    )
+                    
+                    formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
+                        response,
+                        guild_id,
+                        bot_user_id=self.bot.user.id,
+                        bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
+                    )
                     await self.send_llm_response(ctx, formatted_response, question, model_type="think", performance_metrics=performance_metrics)
             except Exception as e:
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
@@ -2064,3 +2215,4 @@ class LLMCommands(commands.Cog):
 async def setup(bot):
     """Setup function to add the cog to the bot"""
     await bot.add_cog(LLMCommands(bot))
+
