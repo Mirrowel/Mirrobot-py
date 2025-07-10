@@ -43,6 +43,16 @@ The main configuration file is `config.json`. You can copy `config_example.json`
 - **command_permissions**: Format: `{"guild_id": {"command": ["role_id1"]}}` - Role-based command access
 - **ocr_channel_config**: Format: `{"guild_id": {"channel_id": {"lang": "eng"}}}` - Language per channel
 
+## Media Caching
+
+The bot can be configured to re-upload Discord media attachments to third-party services to prevent links from expiring. This is useful for preserving conversation history that is passed to the LLM.
+
+- **media_caching**:
+  - **enabled**: `true` or `false`. Enables or disables the media caching feature.
+  - **services**: A list of services to use for uploading. Supported services are `"catbox"` and `"pixeldrain"`. The bot will randomly select a service from this list for each upload.
+  - **upload_timeout_seconds**: The timeout in seconds for each upload attempt.
+  - **pixeldrain_api_key**: Your API key for the Pixeldrain service.
+
 ## Environment Variables
 
 **RECOMMENDED APPROACH**: Use environment variables for sensitive data:
