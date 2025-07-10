@@ -541,7 +541,7 @@ class LLMCommands(commands.Cog):
         logger.info(f"Sending LLM response to {ctx.author} in {ctx.guild.name if ctx.guild else 'DM'}")
         
         # Extract thinking content if present
-        cleaned_response, thinking_content = self.strip_thinking_tokens(response)
+        cleaned_response, thinking_content, _ = self.strip_thinking_tokens(response)
         
         # Use the new unified LLM response creator
         await create_llm_response(
@@ -629,9 +629,14 @@ class LLMCommands(commands.Cog):
 
                 # 3. Rate-Limited Updates
                 current_time = time.time()
-                if current_time - last_update_time > 1.5:
-                    cleaned_response, thinking_content = self.strip_thinking_tokens(response_buffer)
+                if current_time - last_update_time > 1:  # Update every second
+                    cleaned_response, thinking_content, is_thinking_only = self.strip_thinking_tokens(response_buffer)
                     
+                    # If we only have thinking content and no final answer yet, wait for more chunks.
+                    if is_thinking_only and is_thinking:
+                        last_update_time = current_time # Reset timer to avoid rapid-fire updates
+                        continue
+
                     title = "LLM Thinking Response" if is_thinking else "LLM Response"
                     color = discord.Color.purple() if is_thinking else discord.Color.blue()
 
@@ -664,7 +669,7 @@ class LLMCommands(commands.Cog):
 
         finally:
             # 4. Final Update
-            cleaned_response, thinking_content = self.strip_thinking_tokens(response_buffer)
+            cleaned_response, thinking_content, _ = self.strip_thinking_tokens(response_buffer)
             
             title = "LLM Thinking Response" if is_thinking else "LLM Response"
             color = discord.Color.purple() if is_thinking else discord.Color.blue()
@@ -690,41 +695,66 @@ class LLMCommands(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to send final update for streaming response: {e}", exc_info=True)
     
-    def strip_thinking_tokens(self, response: str) -> tuple[str, str]:
-        """Strip thinking tokens from the response and return both cleaned response and thinking content"""
-        logger.debug("Stripping thinking tokens from response")
+    def strip_thinking_tokens(self, response: str) -> Tuple[str, str, bool]:
+        """
+        Strip thinking tokens from the response using a state machine to handle unclosed tags.
         
-        # Remove common thinking patterns and extract their content
-        patterns = [
-            (r'<think>(.*?)</think>', 'think'),  # <think></think> tags
-            (r'<thinking>(.*?)</thinking>', 'thinking'),  # <thinking></thinking> tags
-            (r'\[thinking\](.*?)\[/thinking\]', 'thinking'),  # [thinking][/thinking] tags
-            (r'<thought>(.*?)</thought>', 'thought'),  # <thought></thought> tags
-            (r'\*thinking\*(.*?)\*/thinking\*', 'thinking'),  # *thinking*...*thinking* pattern
-        ]
+        Returns:
+            - cleaned_response (str): The response with all thinking blocks removed.
+            - thinking_content (str): The combined content of all thinking blocks.
+            - is_thinking_only (bool): True if the response contains only thinking content (or is empty).
+        """
+        # logger.debug("Stripping thinking tokens from response")
         
-        thinking_content_list = [] # Use a list to collect all thinking parts
-        cleaned_response = response
+        thinking_content_parts = []
+        answer_parts = []
         
-        for pattern, tag_type in patterns:
-            # Find all matches for the current pattern
-            matches = re.findall(pattern, cleaned_response, flags=re.DOTALL | re.IGNORECASE)
-            if matches:
-                logger.debug(f"Found {len(matches)} {tag_type} sections")
-                thinking_content_list.extend([m.strip() for m in matches if m.strip()]) # Add non-empty matches
-                cleaned_response = re.sub(pattern, '', cleaned_response, flags=re.DOTALL | re.IGNORECASE)
+        in_thinking_block = False
+        last_pos = 0
         
-        # Clean up extra whitespace and empty lines left after stripping
-        cleaned_response = re.sub(r'\n\s*\n', '\n\n', cleaned_response)
-        cleaned_response = cleaned_response.strip()
+        # Simplified regex to find any of the opening or closing tags
+        # This allows us to process the string piece by piece
+        tag_regex = re.compile(r'(<(?:/)?(?:think|thinking|thought)>|\[(?:/)?thinking\]|\*thinking\*|\*/thinking\*)', re.IGNORECASE)
         
-        # Combine all thinking content into a single string
-        combined_thinking = '\n\n'.join(thinking_content_list).strip()
+        for match in tag_regex.finditer(response):
+            start, end = match.span()
+            tag = match.group(1).lower()
+            
+            # Add the text between the last tag and this one
+            text_slice = response[last_pos:start]
+            if text_slice:
+                if in_thinking_block:
+                    thinking_content_parts.append(text_slice)
+                else:
+                    answer_parts.append(text_slice)
+            
+            # State transition based on the tag
+            if tag.startswith('</') or tag.startswith('[/') or tag.startswith('*/'):
+                in_thinking_block = False
+            else:
+                in_thinking_block = True
+            
+            last_pos = end
+            
+        # Add any remaining text after the last tag
+        remaining_text = response[last_pos:]
+        if remaining_text:
+            if in_thinking_block:
+                thinking_content_parts.append(remaining_text)
+            else:
+                answer_parts.append(remaining_text)
+
+        cleaned_response = "".join(answer_parts).strip()
+        combined_thinking = "".join(thinking_content_parts).strip()
         
+        # Determine if the response is only thinking content
+        # This is true if there is thinking content but the cleaned response is empty.
+        is_thinking_only = bool(combined_thinking) and not bool(cleaned_response)
+
         if combined_thinking:
-            logger.debug(f"Extracted {len(combined_thinking)} characters of thinking content.")
-        
-        return cleaned_response, combined_thinking
+            logger.debug(f"Extracted {len(combined_thinking)} chars of thinking. Is only thinking: {is_thinking_only}")
+            
+        return cleaned_response, combined_thinking, is_thinking_only
     
 
     async def _process_multimodal_input(self, message: discord.Message, question: str) -> Tuple[str, List[str]]:
@@ -812,7 +842,7 @@ class LLMCommands(commands.Cog):
                         context=context,
                         stream=False
                     )
-                    cleaned_response, _ = self.strip_thinking_tokens(response)
+                    cleaned_response, _, _ = self.strip_thinking_tokens(response)
                     final_response = await chatbot_manager.formatter.format_llm_output_for_discord(
                         cleaned_response,
                         guild_id,

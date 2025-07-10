@@ -126,8 +126,12 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                 
                 # Format and split the content
                 formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(response_buffer, message_to_reply_to.guild.id if message_to_reply_to.guild else None)
-                cleaned_content, _ = llm_cog.strip_thinking_tokens(formatted_content)
+                cleaned_content, _, is_thinking_only = llm_cog.strip_thinking_tokens(formatted_content)
                 
+                # If we only have thinking content and no final answer yet, wait for more chunks.
+                if is_thinking_only:
+                    continue
+
                 if not cleaned_content.strip():
                     continue
 
@@ -176,7 +180,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
         # 4. Final Update
         await asyncio.sleep(1) # Short delay to ensure stream is fully closed
         formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(response_buffer, message_to_reply_to.guild.id if message_to_reply_to.guild else None)
-        cleaned_content, _ = llm_cog.strip_thinking_tokens(formatted_content)
+        cleaned_content, _, _ = llm_cog.strip_thinking_tokens(formatted_content)
         
         if not cleaned_content.strip():
              cleaned_content = "No response generated."

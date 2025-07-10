@@ -669,7 +669,7 @@ async def handle_chatbot_response(bot, message, stream: bool = True):
                         text=response_text, guild_id=message.guild.id, bot_user_id=bot.user.id,
                         bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
                     )
-                    final_response, _ = llm_cog.strip_thinking_tokens(formatted_response)
+                    final_response, _, _ = llm_cog.strip_thinking_tokens(formatted_response)
 
                     if len(final_response) > 2000:
                         logger.warning(f"LLM response ({len(final_response)} chars) exceeds Discord limit (2000). Truncating intelligently.")
