@@ -97,10 +97,16 @@ class MediaCacheManager:
                     return cached_entry['url']
                 else:
                     logger.info(f"Cached URL for {url} has expired. Re-uploading.")
+            
+            is_avatar = "discordapp.com/avatars/" in url
+            
+            if is_avatar and 'pixeldrain' in self.services:
+                services_to_try = ['pixeldrain'] + [s for s in self.services if s != 'pixeldrain']
+            else:
+                services_to_try = random.sample(self.services, len(self.services))
 
-            shuffled_services = random.sample(self.services, len(self.services))
 
-            for service in shuffled_services:
+            for service in services_to_try:
                 try:
                     new_url = None
                     expiry_timestamp = None

@@ -44,7 +44,7 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nBot shutdown by user")
     except Exception as e:
+        # The bot's internal KeyboardInterrupt handler will be respected by discord.py
+        # We only need to catch other fatal exceptions here.
         print(f"Fatal error: {e}")
