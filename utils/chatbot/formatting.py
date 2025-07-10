@@ -3,23 +3,26 @@ Formats conversation context for the language model.
 """
 
 import re
-from typing import List, Union
+import time
+from typing import List, Optional, Union
 
 from utils.chatbot.config import ConfigManager
 from utils.chatbot.conversation import ConversationManager
 from utils.chatbot.indexing import IndexingManager
 from utils.chatbot.models import ConversationMessage
 from utils.logging_setup import get_logger
+from utils.media_cache import MediaCacheManager
 
 logger = get_logger()
 
 class LLMContextFormatter:
     """Formats conversation context for the LLM."""
 
-    def __init__(self, config_manager: ConfigManager, conv_manager: ConversationManager, index_manager: IndexingManager):
+    def __init__(self, config_manager: ConfigManager, conv_manager: ConversationManager, index_manager: IndexingManager, media_cache_manager: MediaCacheManager):
         self.config_manager = config_manager
         self.conv_manager = conv_manager
         self.index_manager = index_manager
+        self.media_cache_manager = media_cache_manager
 
     async def get_prioritized_context(self, guild_id: int, channel_id: int, requesting_user_id: int) -> List[ConversationMessage]:
         """Get conversation context prioritized for the requesting user"""
@@ -221,6 +224,20 @@ class LLMContextFormatter:
             for i, msg in enumerate(messages):
                 role = "assistant" if msg.is_self_bot_response else "user"
                 content_object = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
+                
+                # Validate and update image URLs
+                if isinstance(content_object, list):
+                    validated_parts = []
+                    for part in content_object:
+                        if part.get("type") == "image_url":
+                            validated_url = await self.validate_and_update_url(part["image_url"]["url"], msg, guild_id, channel_id)
+                            if validated_url:
+                                part["image_url"]["url"] = validated_url
+                                validated_parts.append(part)
+                        else:
+                            validated_parts.append(part)
+                    content_object = validated_parts
+                
                 history_messages.append({"role": role, "content": content_object})
 
             return static_context_string, history_messages
@@ -498,8 +515,16 @@ class LLMContextFormatter:
             for pin in pins:
                 role_label = (user_index.get(pin.user_id).username if user_index.get(pin.user_id) else pin.username)
                 content = await self._convert_discord_format_to_llm_readable(pin.content, guild_id)
+                
                 if pin.attachment_urls:
-                    content += f" (Image: {', '.join(pin.attachment_urls)})"
+                    validated_urls = []
+                    for url in pin.attachment_urls:
+                        validated_url = await self.validate_and_update_url(url, pin, guild_id, channel_id)
+                        if validated_url:
+                            validated_urls.append(validated_url)
+                    if validated_urls:
+                        content += f" (Image: {', '.join(validated_urls)})"
+
                 lines.append(f"{role_label}: {content.strip()}")
             
             lines.append("=== End of Pinned Messages ===\n")
@@ -507,3 +532,29 @@ class LLMContextFormatter:
         except Exception as e:
             logger.error(f"Error getting pinned context for LLM: {e}", exc_info=True)
             return ""
+
+    async def validate_and_update_url(self, url: str, message: ConversationMessage, guild_id: int, channel_id: int) -> Optional[str]:
+        """Validates a URL and updates the message if it's an expired cached link."""
+        if "discord" in url:
+            return await self.media_cache_manager.cache_url(url)
+
+        # It's a cached URL, check for expiry
+        url_hash = None
+        for h, entry in self.media_cache_manager.cache.items():
+            if entry['url'] == url:
+                url_hash = h
+                break
+        
+        if url_hash:
+            cached_entry = self.media_cache_manager.cache.get(url_hash)
+            if cached_entry:
+                expiry = cached_entry.get('expiry_timestamp')
+                if expiry and expiry < time.time():
+                    logger.warning(f"Expired cached URL {url} found in message {message.message_id}. Removing.")
+                    message.content += " (Image expired)"
+                    message.attachment_urls.remove(url)
+                    # Update the message in the history
+                    await self.conv_manager.edit_message_in_conversation(guild_id, channel_id, message.message_id, message.content)
+                    return None
+        
+        return url

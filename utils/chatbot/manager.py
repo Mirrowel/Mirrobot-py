@@ -29,7 +29,7 @@ class ChatbotManager:
         # This will be updated later when the bot is fully initialized
         self.media_cache_manager = None
         self.conversation_manager = ConversationManager(self.storage_manager, self.config_manager, self.indexing_manager, self.media_cache_manager, bot_user_id)
-        self.formatter = LLMContextFormatter(self.config_manager, self.conversation_manager, self.indexing_manager)
+        self.formatter = LLMContextFormatter(self.config_manager, self.conversation_manager, self.indexing_manager, self.media_cache_manager)
         
         if bot_user_id:
             self.set_bot_user_id(bot_user_id)
