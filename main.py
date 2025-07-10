@@ -39,11 +39,17 @@ async def main():
         logger.critical("DISCORD_BOT_TOKEN not found in config or environment variables. Bot cannot start.")
         return
 
-    await bot.start(bot_token)
+    try:
+        await bot.start(bot_token)
+    finally:
+        if not bot.is_closed():
+            await bot.close()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot shutdown requested. Exiting.")
     except Exception as e:
         # The bot's internal KeyboardInterrupt handler will be respected by discord.py
         # We only need to catch other fatal exceptions here.

@@ -361,7 +361,6 @@ def create_bot(config):
     async def on_close():
         """Handle bot shutdown gracefully."""
         logger.info("Bot is shutting down. Performing cleanup...")
-        await bot.media_cache_manager.close_session()
         await bot.media_cache_manager.shutdown()
         await chatbot_manager.index_manager.shutdown()
         logger.info("Cleanup complete.")

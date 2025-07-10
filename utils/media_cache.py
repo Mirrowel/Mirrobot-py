@@ -38,7 +38,13 @@ class MediaCacheManager:
             logger.info("MediaCacheManager background save task started.")
 
     async def shutdown(self):
-        """Stops the background task and performs a final save."""
+        """Stops the background task, closes the session, and performs a final save."""
+        # Close the client session first
+        if self.session and not self.session.closed:
+            await self.session.close()
+            logger.info("aiohttp client session closed.")
+
+        # Cancel the background save task
         if self._save_task:
             self._save_task.cancel()
             try:
@@ -46,6 +52,7 @@ class MediaCacheManager:
             except asyncio.CancelledError:
                 logger.info("MediaCacheManager background save task cancelled.")
         
+        # Perform one final save
         logger.info("Performing final save of media cache...")
         await self._save_cache_to_disk()
         logger.info("Final media cache save complete.")
@@ -101,10 +108,6 @@ class MediaCacheManager:
     def _get_clean_url(self, url: str) -> str:
         """Removes query parameters from a URL."""
         return url.split('?')[0]
-
-    async def close_session(self):
-        """Closes the aiohttp session."""
-        await self.session.close()
 
     async def cache_url(self, url: str) -> str:
         """
