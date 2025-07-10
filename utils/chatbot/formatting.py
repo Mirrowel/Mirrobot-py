@@ -570,13 +570,13 @@ class LLMContextFormatter:
 
         # It's a cached URL, check for expiry
         url_hash = None
-        for h, entry in self.media_cache_manager.cache.items():
+        for h, entry in self.media_cache_manager.media_entries.items():
             if entry['url'] == url:
                 url_hash = h
                 break
         
         if url_hash:
-            cached_entry = self.media_cache_manager.cache.get(url_hash)
+            cached_entry = self.media_cache_manager.media_entries.get(url_hash)
             if cached_entry:
                 expiry = cached_entry.get('expiry_timestamp')
                 if expiry and expiry < time.time():
