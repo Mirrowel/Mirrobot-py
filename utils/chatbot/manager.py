@@ -132,40 +132,40 @@ class ChatbotManager:
             config = self.config_manager.get_channel_config(guild_id, channel_id)
             existing_history = await self.conversation_manager.load_conversation_history(guild_id, channel_id)
             
-            after_timestamp = config.last_cleared_timestamp or 0
-            after_message_id = 0
-            if existing_history:
-                after_message_id = max(msg.message_id for msg in existing_history)
-
-            # Determine the true 'after' point
-            after_param = None
-            if after_timestamp > 0:
-                after_param = discord.Object(id=((int(after_timestamp * 1000) - DISCORD_EPOCH) << 22)) # Convert timestamp to snowflake
-                if after_message_id > after_param.id:
-                    after_param = discord.Object(id=after_message_id)
-            elif after_message_id > 0:
-                after_param = discord.Object(id=after_message_id)
-
-            messages_to_add = []
-            # Unified logic: Always fetch a limited number of recent messages, then filter.
-            limit = config.max_context_messages
-            logger.debug(f"Fetching up to {limit} recent messages for #{channel.name} to check against criteria.")
-
-            # 1. Fetch the most recent N messages.
-            # If after_param is set, it acts as a starting point for the fetch.
-            # If not, it fetches the absolute most recent messages in the channel.
-            history_iterator = channel.history(limit=limit, after=after_param)
-            recent_messages = [msg async for msg in history_iterator if msg.type in [discord.MessageType.default, discord.MessageType.reply]]
-
-            # 2. Filter these messages by the time window.
-            # This is a secondary check to ensure we don't include messages from outside the window,
-            # even if they are within the message limit.
+            # 1. Determine the definitive start time for fetching.
             time_window_cutoff = time.time() - (config.context_window_hours * 3600)
-            messages_to_add = [msg for msg in recent_messages if msg.created_at.timestamp() >= time_window_cutoff]
+            last_cleared_cutoff = config.last_cleared_timestamp or 0
+            last_message_timestamp = 0
+            if existing_history:
+                last_message_timestamp = max(msg.timestamp for msg in existing_history)
 
-            # 3. Reverse to get chronological order for processing.
-            messages_to_add.reverse()
-            logger.debug(f"Fetched {len(recent_messages)} messages, {len(messages_to_add)} are within the final time window and limits.")
+            # The true start time is the most recent of these three timestamps.
+            start_timestamp = max(time_window_cutoff, last_cleared_cutoff, last_message_timestamp)
+            
+            # Convert the timestamp to a Discord snowflake ID to use in the 'after' parameter.
+            after_param = discord.Object(id=((int(start_timestamp * 1000) - DISCORD_EPOCH) << 22))
+            
+            # 2. Fetch messages iteratively from newest to oldest until we have enough potentially valid ones.
+            messages_to_add = []
+            max_messages = config.max_context_messages
+            logger.debug(f"Fetching up to {max_messages} recent messages for #{channel.name} after {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(start_timestamp))}.")
+
+            # Fetch newest first to respect the message limit correctly.
+            history_iterator = channel.history(limit=None, after=after_param, oldest_first=False)
+
+            raw_messages = []
+            async for message in history_iterator:
+                # Perform a lightweight pre-filter. The full filter happens in bulk_add.
+                if message.type in [discord.MessageType.default, discord.MessageType.reply]:
+                    raw_messages.append(message)
+                
+                # Stop fetching if we have enough messages to likely meet the context limit.
+                if len(raw_messages) >= max_messages:
+                    break
+            
+            # The messages are newest-to-oldest, so we reverse them for chronological processing.
+            messages_to_add = list(reversed(raw_messages))
+            logger.debug(f"Fetched {len(messages_to_add)} raw messages to be processed for #{channel.name}.")
 
             if not messages_to_add:
                 logger.info(f"No new messages to index for #{channel.name}.")
