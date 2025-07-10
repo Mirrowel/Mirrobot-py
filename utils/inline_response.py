@@ -169,66 +169,77 @@ class InlineResponseManager:
         return self.get_channel_config(guild_id, channel_id).enabled
 
     async def build_context(self, message: discord.Message) -> List[ConversationMessage]:
-        """Builds a context for an inline response."""
+        """
+        Builds a context for an inline response based on a specific gathering logic.
+        1.  Gather the original triggering message.
+        2.  Gather the replied-to message from the trigger message (if any).
+        3.  Gather a number of recent channel messages, excluding already gathered ones.
+        4.  Gather a number of recent messages from the author, excluding already gathered ones.
+        5.  For all messages gathered so far, fetch any message they are replying to (depth of 1), if not already present.
+        6.  Sort all messages chronologically and convert them to the ConversationMessage format.
+        """
         config = self.get_channel_config(message.guild.id, message.channel.id)
-        
-        all_messages: Dict[int, discord.Message] = {}
+        gathered_messages: Dict[int, discord.Message] = {}
 
-        # 1. Fetch replied-to message
+        # 1. Gather the original triggering message
+        gathered_messages[message.id] = message
+
+        # 2. Gather the replied-to message from the trigger message
         if message.reference and message.reference.message_id:
-            try:
-                replied_to_message = await message.channel.fetch_message(message.reference.message_id)
-                all_messages[replied_to_message.id] = replied_to_message
-            except discord.NotFound:
-                logger.warning(f"Could not find replied-to message {message.reference.message_id}")
-            except discord.HTTPException as e:
-                logger.error(f"Failed to fetch replied-to message: {e}")
+            if message.reference.message_id not in gathered_messages:
+                try:
+                    replied_to = await message.channel.fetch_message(message.reference.message_id)
+                    gathered_messages[replied_to.id] = replied_to
+                except (discord.NotFound, discord.HTTPException) as e:
+                    logger.warning(f"Could not fetch replied-to message {message.reference.message_id}: {e}")
 
-        # 2. Fetch channel history
+        # 3. Gather channel history
         if config.context_messages > 0:
-            async for history_message in message.channel.history(limit=config.context_messages, before=message):
-                all_messages[history_message.id] = history_message
-
-        # 3. Fetch user history and the messages they replied to
+            channel_messages_to_fetch = config.context_messages
+            async for history_msg in message.channel.history(limit=channel_messages_to_fetch + len(gathered_messages), before=message):
+                if history_msg.id not in gathered_messages:
+                    gathered_messages[history_msg.id] = history_msg
+                if len(gathered_messages) >= (channel_messages_to_fetch + 2): # +2 for trigger and its reply
+                    break
+        
+        # 4. Gather author's message history
         if config.user_context_messages > 0:
             user_messages_found = 0
-            user_messages_for_reply_check = []
-            # We search a bit wider to find user messages
-            async for history_message in message.channel.history(limit=100, before=message):
-                if history_message.author.id == message.author.id:
-                    if history_message.id not in all_messages:
-                        all_messages[history_message.id] = history_message
-                        user_messages_for_reply_check.append(history_message)
+            # Check how many of the author's messages are already in the context
+            for msg in gathered_messages.values():
+                if msg.author.id == message.author.id:
                     user_messages_found += 1
+            
+            if user_messages_found < config.user_context_messages:
+                # We search a bit wider to find the remaining user messages
+                async for history_msg in message.channel.history(limit=100, before=message):
                     if user_messages_found >= config.user_context_messages:
                         break
-            
-            # For each of the user's messages, fetch any message they replied to
-            for user_msg in user_messages_for_reply_check:
-                if user_msg.reference and user_msg.reference.message_id:
-                    if user_msg.reference.message_id not in all_messages:
-                        try:
-                            # Use resolved if available, otherwise fetch
-                            if user_msg.reference.resolved and isinstance(user_msg.reference.resolved, discord.Message):
-                                replied_to_message = user_msg.reference.resolved
-                            else:
-                                replied_to_message = await message.channel.fetch_message(user_msg.reference.message_id)
-                            all_messages[replied_to_message.id] = replied_to_message
-                        except discord.NotFound:
-                            logger.warning(f"Could not find replied-to message {user_msg.reference.message_id} from user's history.")
-                        except discord.HTTPException as e:
-                            logger.error(f"Failed to fetch replied-to message {user_msg.reference.message_id}: {e}")
+                    if history_msg.author.id == message.author.id:
+                        if history_msg.id not in gathered_messages:
+                            gathered_messages[history_msg.id] = history_msg
+                        user_messages_found += 1
+
+        # 5. Gather all referenced messages (depth of 1)
+        messages_to_check_for_replies = list(gathered_messages.values())
+        for msg in messages_to_check_for_replies:
+            if msg.reference and msg.reference.message_id:
+                if msg.reference.message_id not in gathered_messages:
+                    try:
+                        # Use resolved if available, otherwise fetch
+                        if msg.reference.resolved and isinstance(msg.reference.resolved, discord.Message):
+                            replied_to = msg.reference.resolved
+                        else:
+                            replied_to = await message.channel.fetch_message(msg.reference.message_id)
+                        gathered_messages[replied_to.id] = replied_to
+                    except (discord.NotFound, discord.HTTPException) as e:
+                        logger.warning(f"Could not fetch replied-to message {msg.reference.message_id} from context: {e}")
+
+        # 6. Sort chronologically and convert to ConversationMessage
+        sorted_messages = sorted(gathered_messages.values(), key=lambda m: m.created_at)
         
-        # Add the trigger message itself
-        all_messages[message.id] = message
-
-        # 4. Sort chronologically
-        sorted_messages = sorted(all_messages.values(), key=lambda m: m.created_at)
-
-        # 5. Convert to ConversationMessage
         context_messages = []
         for msg in sorted_messages:
-            # Use the centralized function from the chatbot manager's conversation utility
             cleaned_content, image_urls, _ = await chatbot_manager.conversation_manager._process_discord_message_for_context(msg)
             
             multimodal_content = []
