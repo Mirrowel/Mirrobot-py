@@ -583,6 +583,7 @@ class LLMCommands(commands.Cog):
         # 2. Stream Processing Loop
         response_buffer = ""
         last_update_time = time.time()
+        stream_chunks = [] # To save the full response for debugging
         
         try:
             async for chunk in stream_generator:
@@ -605,6 +606,7 @@ class LLMCommands(commands.Cog):
                         break
                     
                     data = json.loads(chunk_str)
+                    stream_chunks.append(data)
 
                     # Handle errors from the proxy
                     if "error" in data:
@@ -630,10 +632,18 @@ class LLMCommands(commands.Cog):
                 # 3. Rate-Limited Updates
                 current_time = time.time()
                 if current_time - last_update_time > 1:  # Update every second
-                    cleaned_response, thinking_content, is_thinking_only = self.strip_thinking_tokens(response_buffer)
+                    cleaned_response, thinking_content, is_thinking_only, summaries = self.strip_thinking_tokens(response_buffer, model_name)
                     
                     # If we only have thinking content and no final answer yet, wait for more chunks.
                     if is_thinking_only and is_thinking:
+                        if summaries:
+                            try:
+                                summary_text = f"Thinking... ({summaries[-1]})"
+                                if message.embeds and message.embeds[0].description != summary_text:
+                                    new_embed = discord.Embed(description=summary_text, color=discord.Color.blue())
+                                    await message.edit(embed=new_embed)
+                            except discord.errors.HTTPException as e:
+                                logger.warning(f"Failed to update thinking summary: {e}")
                         last_update_time = current_time # Reset timer to avoid rapid-fire updates
                         continue
 
@@ -669,7 +679,8 @@ class LLMCommands(commands.Cog):
 
         finally:
             # 4. Final Update
-            cleaned_response, thinking_content, _ = self.strip_thinking_tokens(response_buffer)
+            self._save_debug_stream_response(stream_chunks, model_name.split('/')[0])
+            cleaned_response, thinking_content, _, _ = self.strip_thinking_tokens(response_buffer, model_name)
             
             title = "LLM Thinking Response" if is_thinking else "LLM Response"
             color = discord.Color.purple() if is_thinking else discord.Color.blue()
@@ -695,7 +706,7 @@ class LLMCommands(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to send final update for streaming response: {e}", exc_info=True)
     
-    def strip_thinking_tokens(self, response: str) -> Tuple[str, str, bool]:
+    def strip_thinking_tokens(self, response: str, model_name: str) -> Tuple[str, str, bool, List[str]]:
         """
         Strip thinking tokens from the response using a state machine to handle unclosed tags.
         
@@ -703,33 +714,46 @@ class LLMCommands(commands.Cog):
             - cleaned_response (str): The response with all thinking blocks removed.
             - thinking_content (str): The combined content of all thinking blocks.
             - is_thinking_only (bool): True if the response contains only thinking content (or is empty).
+            - summaries (List[str]): A list of extracted summary titles (only for supported models).
         """
         # logger.debug("Stripping thinking tokens from response")
         
         thinking_content_parts = []
         answer_parts = []
+        summaries = []
         
         in_thinking_block = False
         last_pos = 0
         
-        # Simplified regex to find any of the opening or closing tags
-        # This allows us to process the string piece by piece
-        tag_regex = re.compile(r'(<(?:/)?(?:think|thinking|thought)>|\[(?:/)?thinking\]|\*thinking\*|\*/thinking\*)', re.IGNORECASE)
+        # Determine if we should look for summaries
+        extract_summaries = "gemini-2.5" in model_name
+
+        # Regex to find thinking tags and, optionally, summary titles
+        regex_pattern = r'(<(?:/)?(?:think|thinking|thought)>|\[(?:/)?thinking\]|\*thinking\*|\*/thinking\*)'
+        if extract_summaries:
+            regex_pattern += r'|^\s*#\s.*$'
+        
+        tag_regex = re.compile(regex_pattern, re.IGNORECASE | re.MULTILINE)
         
         for match in tag_regex.finditer(response):
             start, end = match.span()
-            tag = match.group(1).lower()
+            tag = match.group(1)
             
             # Add the text between the last tag and this one
             text_slice = response[last_pos:start]
-            if text_slice:
+            if text_slice.strip():
                 if in_thinking_block:
                     thinking_content_parts.append(text_slice)
                 else:
                     answer_parts.append(text_slice)
             
-            # State transition based on the tag
-            if tag.startswith('</') or tag.startswith('[/') or tag.startswith('*/'):
+            # Handle state transition and summary extraction
+            if extract_summaries and tag.strip().startswith('#'):
+                if in_thinking_block:
+                    summary_title = tag.strip().lstrip('# ').strip()
+                    summaries.append(summary_title)
+                    thinking_content_parts.append(tag) # Keep summary in full thinking content
+            elif tag.lower().startswith('</') or tag.lower().startswith('[/') or tag.lower().startswith('*/'):
                 in_thinking_block = False
             else:
                 in_thinking_block = True
@@ -738,7 +762,7 @@ class LLMCommands(commands.Cog):
             
         # Add any remaining text after the last tag
         remaining_text = response[last_pos:]
-        if remaining_text:
+        if remaining_text.strip():
             if in_thinking_block:
                 thinking_content_parts.append(remaining_text)
             else:
@@ -752,10 +776,28 @@ class LLMCommands(commands.Cog):
         is_thinking_only = bool(combined_thinking) and not bool(cleaned_response)
 
         if combined_thinking:
-            logger.debug(f"Extracted {len(combined_thinking)} chars of thinking. Is only thinking: {is_thinking_only}")
+            logger.debug(f"Extracted {len(combined_thinking)} chars of thinking. Summaries: {summaries}. Is only thinking: {is_thinking_only}")
             
-        return cleaned_response, combined_thinking, is_thinking_only
+        return cleaned_response, combined_thinking, is_thinking_only, summaries
     
+    def _save_debug_stream_response(self, response_chunks: List[Dict[str, Any]], provider: str):
+        """Save the full streaming response chunks to a file for debugging."""
+        try:
+            debug_dir = os.path.join("llm_data", "debug_prompts")
+            os.makedirs(debug_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            debug_filename = f"llm_stream_response_{provider}.json"
+            debug_filepath = os.path.join(debug_dir, debug_filename)
+            
+            with open(debug_filepath, 'w', encoding='utf-8') as f:
+                f.write(f"// filepath: {debug_filepath}\n")
+                f.write(f"// Provider: {provider}\n")
+                f.write(f"// Timestamp: {timestamp}\n")
+                f.write("// FULL STREAM RESPONSE CHUNKS:\n")
+                json.dump(response_chunks, f, indent=2, ensure_ascii=False)
+            logger.debug(f"Saved debug stream response to {debug_filepath}")
+        except Exception as e:
+            logger.warning(f"Failed to save debug stream response: {e}")
 
     async def _process_multimodal_input(self, message: discord.Message, question: str) -> Tuple[str, List[str]]:
         """Helper to process attachments and URLs from a message for multimodal input."""

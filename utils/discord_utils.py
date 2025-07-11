@@ -85,6 +85,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
     # 2. Stream Processing Loop
     response_buffer = ""
     last_update_time = time.time()
+    stream_chunks = [] # To save the full response for debugging
     
     try:
         async for chunk in stream_generator:
@@ -101,6 +102,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                     continue
                 
                 data = json.loads(chunk_str)
+                stream_chunks.append(data)
 
                 if "error" in data:
                     error_message = data.get("error", "Unknown error from proxy")
@@ -126,10 +128,17 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                 
                 # Format and split the content
                 formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(response_buffer, message_to_reply_to.guild.id if message_to_reply_to.guild else None)
-                cleaned_content, _, is_thinking_only = llm_cog.strip_thinking_tokens(formatted_content)
+                cleaned_content, _, is_thinking_only, summaries = llm_cog.strip_thinking_tokens(formatted_content, model_name)
                 
                 # If we only have thinking content and no final answer yet, wait for more chunks.
                 if is_thinking_only:
+                    if summaries:
+                        try:
+                            summary_text = f"Thinking... ({summaries[-1]})"
+                            if sent_messages[0].content != summary_text:
+                                await sent_messages[0].edit(content=summary_text)
+                        except discord.errors.HTTPException as e:
+                            logger.warning(f"Failed to update thinking summary: {e}")
                     continue
 
                 if not cleaned_content.strip():
@@ -178,9 +187,10 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
 
     finally:
         # 4. Final Update
+        llm_cog._save_debug_stream_response(stream_chunks, model_name.split('/')[0])
         await asyncio.sleep(1) # Short delay to ensure stream is fully closed
         formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(response_buffer, message_to_reply_to.guild.id if message_to_reply_to.guild else None)
-        cleaned_content, _, _ = llm_cog.strip_thinking_tokens(formatted_content)
+        cleaned_content, _, _, _ = llm_cog.strip_thinking_tokens(formatted_content, model_name)
         
         if not cleaned_content.strip():
              cleaned_content = "No response generated."
