@@ -289,7 +289,7 @@ class LLMContextFormatter:
         
         return processed_content
 
-    async def format_llm_output_for_discord(self, text: str, guild_id: int, bot_user_id: int = 0, bot_names: List[str] = []) -> str:
+    async def format_llm_output_for_discord(self, text: str, guild: discord.Guild, bot_user_id: int = 0, bot_names: List[str] = []) -> str:
         """
         Cleans and formats LLM output for display on Discord.
         Handles:
@@ -313,7 +313,10 @@ class LLMContextFormatter:
             # 1. Protect custom emotes by replacing them with placeholders
             processed_text = re.sub(r'<a?:\w+:\d+>', store_emote, text)
 
-            # 2. Failsafe: Strip any context formatting the LLM might have parroted.
+            # 2. Remove mass mentions
+            processed_text = re.sub(r'@(everyone|here)', '', processed_text, flags=re.IGNORECASE)
+
+            # 3. Failsafe: Strip any context formatting the LLM might have parroted.
             # This is a multi-pass failsafe to handle different parroting scenarios.
             # First, handle the complex case with a reply block, which may or may not have a username.
             p1 = r'\[\d+\].*?\[Replying to #\d+\]\s*'
@@ -343,8 +346,36 @@ class LLMContextFormatter:
             username_colon_pattern = r'^\s*[^:\n.!?]{1,60}:\s*'
             processed_text = re.sub(username_colon_pattern, '', processed_text).strip()
 
-            # 4. Convert all username mentions to display names
-            user_index = await self.index_manager.load_user_index(guild_id)
+            # 4. Sanitize mentions
+            user_index = await self.index_manager.load_user_index(guild.id)
+
+            # 4a. Convert raw user mentions (<@123>) to display names
+            def replace_user_mention(match):
+                user_id = int(match.group(1))
+                if user_id == creator_id:
+                    return creator_username
+                if user_index and user_id in user_index:
+                    return user_index[user_id].display_name
+                # Fallback for users not in the index
+                member = guild.get_member(user_id)
+                if member:
+                    return member.display_name
+                return f"`@Unknown User`"
+            
+            processed_text = re.sub(r'<@!?(\d+)>', replace_user_mention, processed_text)
+
+            # 4b. Convert role mentions (<@&123>) to role names
+            def replace_role_mention(match):
+                role_id = int(match.group(1))
+                role = guild.get_role(role_id)
+                if role:
+                    # Return as code block to prevent ping but show name
+                    return f"`@{role.name}`"
+                return f"`@deleted-role`"
+
+            processed_text = re.sub(r'<@&(\d+)>', replace_role_mention, processed_text)
+
+            # 5. Convert all username mentions to display names
             if user_index:
                 # Create a mapping from various names to user objects
                 name_to_user = {}
@@ -395,6 +426,11 @@ class LLMContextFormatter:
             processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
             # Remove space before punctuation (this will also join lines if punctuation is on a new line)
             processed_text = re.sub(r'\s+([.,!?:;])', r'\1', processed_text)
+
+            # 7. Final mention sanitization pass to catch any stragglers
+            processed_text = re.sub(r'<@&(\d+)>', r'`<@&\1>`', processed_text)
+            processed_text = re.sub(r'<@!?(\d+)>', r'`<@\1>`', processed_text)
+            
             processed_text = processed_text.strip()
             
             return processed_text
