@@ -316,7 +316,7 @@ class InlineResponseManager:
             if not multimodal_content:
                 continue
 
-            formatted_context.append(ConversationMessage(
+            conv_message = ConversationMessage(
                 user_id=msg.author.id,
                 username=msg.author.display_name,
                 content=cleaned_content,
@@ -327,7 +327,19 @@ class InlineResponseManager:
                 referenced_message_id=getattr(msg.reference, 'message_id', None) if msg.reference else None,
                 attachment_urls=image_urls,
                 multimodal_content=multimodal_content
-            ))
+            )
+
+            # Pre-emptive filtering for bot's own embed-only messages, which don't get saved to history
+            # but need to be filtered from on-the-fly context building.
+            if conv_message.is_self_bot_response and not conv_message.content.strip():
+                continue
+
+            # Apply the standard validation logic used for persistent history
+            is_valid, _ = chatbot_manager.conversation_manager._is_valid_context_message(conv_message)
+            if not is_valid:
+                continue
+
+            formatted_context.append(conv_message)
             
         return formatted_context
 

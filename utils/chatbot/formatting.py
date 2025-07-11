@@ -69,33 +69,15 @@ class LLMContextFormatter:
         Private helper to format the content of a single message.
         Returns a list of content parts for multimodal messages, or a single string for text-only.
         """
-        # --- Assistant Role (Bot's own messages) ---
-        if msg.is_self_bot_response:
-            if not msg.multimodal_content:
-                return msg.content or ""
-            
-            content_parts = []
-            for part in msg.multimodal_content:
-                if part.type == "text" and part.text:
-                    content_parts.append({"type": "text", "text": part.text})
-                elif part.type == "image_url" and part.image_url and part.image_url.get("url"):
-                    content_parts.append({"type": "image_url", "image_url": {"url": part.image_url["url"]}})
-            
-            if not content_parts:
-                return msg.content or ""
-            
-            # If there's only one part, return its text content if it's text, otherwise return the list.
-            if len(content_parts) == 1:
-                if content_parts[0].get("type") == "text":
-                    return content_parts[0].get('text', "")
-                else:
-                    return content_parts # It's a single image, return as a list
-            
-            return content_parts
-
-        # --- User Role (User messages) ---
+        # --- Unified Message Formatting ---
         user_index = await self.index_manager.load_user_index(guild_id)
-        role_label = user_index.get(msg.user_id).username if user_index.get(msg.user_id) else msg.username
+        
+        # Determine the role label. Use the bot's name for its own messages.
+        if msg.is_self_bot_response:
+            bot_user = user_index.get(msg.user_id)
+            role_label = bot_user.username if bot_user else "Mirrobot"
+        else:
+            role_label = user_index.get(msg.user_id).username if user_index.get(msg.user_id) else msg.username
         
         reply_info = ""
         if msg.referenced_message_id:

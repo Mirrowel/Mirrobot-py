@@ -74,8 +74,11 @@ class ConversationManager:
         """
         try:
             # --- Pre-emptive Filtering ---
-            # This check is now handled more intelligently in _process_discord_message_for_context
-            # by differentiating between image embeds and other types.
+            # If the message is from the bot and has no text content, it's likely an embed-only
+            # response (e.g., from /ask) and should not be part of the conversational history.
+            if message.author.id == self.bot_user_id and not message.content:
+                logger.debug(f"Ignoring bot's embed-only message {message.id} from being added to history.")
+                return False, []
 
             if await self.check_duplicate_message(guild_id, channel_id, message.id):
                 return True, []
@@ -203,6 +206,7 @@ class ConversationManager:
                 debug_steps.append(f"📝 **Original Message:** `{content}`")
                 debug_steps.append(f"👤 **From User:** {msg.username} (ID: {msg.user_id})")
                 debug_steps.append(f"🖼️ **Has Image:** {has_image}")
+            
 
             # A message is invalid if it has no text AND no images.
             if not content and not has_image:
