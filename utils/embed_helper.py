@@ -461,10 +461,11 @@ async def create_llm_response(
     show_thinking: bool = False,
     title: str = "LLM Response",
     color: discord.Color = discord.Color.blue(),
-    performance_metrics: Optional[Dict[str, Any]] = None
+    performance_metrics: Optional[Dict[str, Any]] = None,
+    message_to_edit: Optional[discord.Message] = None
 ) -> Union[discord.Message, List[discord.Message]]:
     """
-    Create a specialized LLM response embed with intelligent formatting.
+    Create or update a specialized LLM response embed using a consistent, field-based format.
     
     Args:
         ctx: Discord context
@@ -472,54 +473,15 @@ async def create_llm_response(
         question: The original question asked
         model_name: Name of the LLM model used
         thinking_content: Optional thinking process content
-        show_thinking: Whether to display thinking content
+        show_thinking: Whether to display thinking content in a spoiler.
         title: Embed title
         color: Embed color
-        performance_metrics: Optional performance metrics dict with elapsed_time, chars_per_sec, etc.
+        performance_metrics: Optional performance metrics dict.
+        message_to_edit: An existing message to edit instead of sending a new one.
         
     Returns:
-        Union[discord.Message, List[discord.Message]]: Single message or list of messages
+        A single discord.Message object (either new or edited).
     """
-    # Calculate total content size for strategy decision
-    total_content_size = len(response_text) + (len(thinking_content) if show_thinking else 0)
-    
-    # Strategy 1: Small responses (< 2800 chars) - use description
-    if total_content_size <= 2800:  # Leave room for other embed elements
-        if show_thinking and thinking_content:
-            formatted_content = f"**🤖 Model:** `{model_name}`\n\n"
-            formatted_content += f"||🧠 **Thinking Process:**\n\n{thinking_content}||\n\n"
-            formatted_content += f"**💡 Answer:**\n{response_text}"
-        else:
-            formatted_content = f"**🤖 Model:** `{model_name}`\n\n{response_text}"
-        
-        # Add performance metrics to formatted content if available
-        if performance_metrics:
-            if performance_metrics.get('has_token_data', False):
-                perf_text = (
-                    f"\n\n**📈 Performance:**\n"
-                    f"🚀 {performance_metrics['tokens_per_sec']:.0f} tokens/s\n"
-                    f"📊 {performance_metrics['completion_tokens']} tokens generated in ⏱️ {performance_metrics['elapsed_time']:.2f}s\n"
-                    f"🔢 {performance_metrics['total_tokens']} total tokens ({performance_metrics['prompt_tokens']} prompt + {performance_metrics['completion_tokens']} completion)"
-                )
-            else:
-                perf_text = (
-                    f"\n\n**📈 Performance:**\n"
-                    f"🚀 {performance_metrics['chars_per_sec']:.0f} chars/s (~{performance_metrics['tokens_per_sec']:.0f} tokens/s)\n"
-                    f"📊 {performance_metrics['char_count']} chars (~{performance_metrics['char_count']//4} tokens) in ⏱️ {performance_metrics['elapsed_time']:.2f}s"
-                )
-            formatted_content += perf_text
-        
-        return await create_embed_response(
-            ctx,
-            formatted_content,
-            title=title,
-            footer_text=f"Question: {question[:100]}{'...' if len(question) > 100 else ''}",
-            color=color,
-            author_name=f"Response from {model_name}",
-            author_icon_url=ctx.bot.user.avatar.url if ctx.bot.user.avatar else None
-        )
-    
-    # Strategy 2: Large responses - use structured fields
     sections = []
     
     # Model info section
@@ -530,13 +492,26 @@ async def create_llm_response(
         "emoji": "🤖"
     })
     
-    # Add spacer
-    sections.append({
-        "name": "\u200b",
-        "content": "\u200b",
-        "inline": True
-    })
-    
+    # Performance metrics section if available
+    if performance_metrics:
+        if performance_metrics.get('has_token_data', False):
+            perf_text = (
+                f"🚀 {performance_metrics['tokens_per_sec']:.0f} t/s | "
+                f"⏱️ {performance_metrics['elapsed_time']:.2f}s | "
+                f"📊 {performance_metrics['completion_tokens']} tokens"
+            )
+        else:
+            perf_text = (
+                f"🚀 {performance_metrics['chars_per_sec']:.0f} c/s | "
+                f"⏱️ {performance_metrics['elapsed_time']:.2f}s"
+            )
+        sections.append({
+            "name": "Performance",
+            "content": perf_text,
+            "inline": True,
+            "emoji": "📈"
+        })
+
     # Thinking section if needed
     if show_thinking and thinking_content:
         sections.append({
@@ -549,35 +524,31 @@ async def create_llm_response(
     # Answer section
     sections.append({
         "name": "Answer",
-        "content": response_text,
+        "content": response_text or "No answer content.",
         "emoji": "💡"
-    })      
-    # Performance metrics section if available
-    if performance_metrics:
-        if performance_metrics.get('has_token_data', False):
-            perf_text = (
-                f"🚀 {performance_metrics['tokens_per_sec']:.0f} tokens/s\n"
-                f"📊 {performance_metrics['completion_tokens']} tokens generated in ⏱️ {performance_metrics['elapsed_time']:.2f}s\n"
-                f"🔢 {performance_metrics['total_tokens']} total tokens ({performance_metrics['prompt_tokens']} prompt + {performance_metrics['completion_tokens']} completion)"
-            )
-        else:
-            perf_text = (
-                f"🚀 {performance_metrics['chars_per_sec']:.0f} chars/s (~{performance_metrics['tokens_per_sec']:.0f} tokens/s)\n"
-                f"📊 {performance_metrics['char_count']} chars (~{performance_metrics['char_count']//4} tokens) in ⏱️ {performance_metrics['elapsed_time']:.2f}s"
-            )
-        sections.append({
-            "name": "Performance",
-            "content": perf_text,
-            "emoji": "📈"
-        })
+    })
 
-    return await create_embed_response(
-        ctx,
-        sections=sections,
+    # This is a simplified call to a hypothetical universal embed sender.
+    # The actual implementation will be in `create_embed_response`.
+    # For now, we construct the embed directly and then send or edit.
+
+    embed = discord.Embed(
         title=title,
-        footer_text=f"Question: {question[:80]}{'...' if len(question) > 80 else ''}",
         color=color,
-        author_name=f"Response from {model_name}",
-        author_icon_url=ctx.bot.user.avatar.url if ctx.bot.user.avatar else None,
-        field_unbroken=True
+        description=f"**Question:** {question[:250]}{'...' if len(question) > 250 else ''}"
     )
+    
+    embed.set_author(
+        name=f"Response from {model_name}",
+        icon_url=ctx.bot.user.avatar.url if ctx.bot.user.avatar else None
+    )
+
+    # Use the structured field creator
+    structured_fields = create_structured_fields(sections)
+    for field in structured_fields:
+        embed.add_field(name=field['name'], value=field['value'], inline=field.get('inline', False))
+
+    if message_to_edit:
+        return await message_to_edit.edit(embed=embed)
+    else:
+        return await ctx.send(embed=embed)

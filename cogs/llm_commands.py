@@ -572,172 +572,133 @@ class LLMCommands(commands.Cog):
                            f"{performance_metrics['chars_per_sec']:.1f} chars/s, "
                            f"~{performance_metrics['tokens_per_sec']:.1f} tokens/s)")
 
-    async def handle_streaming_embed_response(self, ctx, stream_generator: AsyncGenerator, model_name: str, question: str, is_thinking: bool):
+    async def handle_streaming_embed_response(self, ctx, stream_generator: AsyncGenerator, model_name: str, question: str, show_thinking: bool):
         """
-        Process a streaming LLM response and update a single Discord embed in real-time.
+        Process a streaming LLM response and update a single Discord embed in real-time
+        using the unified `create_llm_response` function.
         """
         # 1. Initial Message
-        embed = discord.Embed(
-            description=f"Thinking with `{model_name}`...",
-            color=discord.Color.blue()
-        )
-        message = await ctx.send(embed=embed)
+        embed = discord.Embed(description=f"Thinking with `{model_name}`...", color=discord.Color.blue())
+        message_to_edit = await ctx.send(embed=embed)
 
-        # 2. Stream Processing Loop
+        # 2. Stream Processing
         answer_buffer = ""
         reasoning_buffer = ""
         last_update_time = time.time()
-        stream_chunks = [] # To save the full response for debugging
-        last_known_summaries = []
-        cleaned_response = ""
-        thinking_content = ""
-        was_thinking = False # Flag to track if the last state was 'thinking'
-        thinking_completed = False # Flag to stop parsing for summaries once the answer starts
+        stream_chunks = []
         
+        # Summary-related variables
+        last_known_summaries = []
+        thinking_completed = False
+        
+        start_time = time.time()
+
         try:
             async for chunk in stream_generator:
                 try:
-                    # Handle different chunk formats (bytes vs. str)
-                    if isinstance(chunk, bytes):
-                        chunk_str = chunk.decode('utf-8')
-                    else:
-                        chunk_str = str(chunk)
+                    if isinstance(chunk, bytes): chunk_str = chunk.decode('utf-8')
+                    else: chunk_str = str(chunk)
 
-                    # Clean potential "data: " prefixes from SSE
-                    if chunk_str.startswith('data: '):
-                        chunk_str = chunk_str[6:]
-                    
-                    if not chunk_str.strip():
-                        continue
-
-                    # Handle stream termination
-                    if chunk_str.strip() == '[DONE]':
-                        continue
+                    if chunk_str.startswith('data: '): chunk_str = chunk_str[6:]
+                    if not chunk_str.strip() or chunk_str.strip() == '[DONE]': continue
                     
                     data = json.loads(chunk_str)
                     stream_chunks.append(data)
 
-                    # Handle errors from the proxy
                     if "error" in data:
-                        error_message = data.get("error", "Unknown error from proxy")
-                        error_embed = discord.Embed(title="LLM Error", description=error_message, color=discord.Color.red())
-                        await message.edit(embed=error_embed)
+                        error_embed = discord.Embed(title="LLM Error", description=data.get("error", "Unknown error"), color=discord.Color.red())
+                        await message_to_edit.edit(embed=error_embed)
                         return
 
-                    # Append delta to buffers
                     delta = data.get('choices', [{}])[0].get('delta', {})
-                    if delta.get('content'):
-                        answer_buffer += delta['content']
-                    if delta.get('reasoning_content'):
-                        reasoning_buffer += delta['reasoning_content']
+                    if delta.get('content'): answer_buffer += delta['content']
+                    if delta.get('reasoning_content'): reasoning_buffer += delta['reasoning_content']
 
-                except json.JSONDecodeError:
-                    logger.warning(f"Received non-JSON chunk, skipping: {chunk_str[:100]}")
+                except (json.JSONDecodeError, IndexError) as e:
+                    logger.warning(f"Skipping invalid stream chunk: {chunk_str[:100]} | Error: {e}")
                     continue
                 except Exception as e:
                     logger.error(f"Error processing stream chunk: {e}", exc_info=True)
                     error_embed = discord.Embed(title="Streaming Error", description=f"An unexpected error occurred: {e}", color=discord.Color.red())
-                    await message.edit(embed=error_embed)
+                    await message_to_edit.edit(embed=error_embed)
                     return
 
-                # 3. Format, Parse, and Update Summaries (only if thinking is not complete)
-                is_thinking_only = False
-                if not thinking_completed:
+                # 3. Rate-limited updates
+                current_time = time.time()
+                if current_time - last_update_time > 1.2:
+                    last_update_time = current_time
+                    
                     full_response_text = f"<thinking>{reasoning_buffer}</thinking>{answer_buffer}"
                     cleaned_response, thinking_content, is_thinking_only, current_summaries = self.strip_thinking_tokens(full_response_text, model_name)
 
-                    # 4. Immediate Summary Update
-                    if is_thinking_only and is_thinking and current_summaries and current_summaries != last_known_summaries:
+                    # Handle summary updates for `think` command
+                    if show_thinking and is_thinking_only and current_summaries and current_summaries != last_known_summaries:
                         last_known_summaries = current_summaries
-                        summary_text = f"Thinking... ({current_summaries[-1]})"
+                        summary_text = f"**Thinking...** ({current_summaries[-1]})"
+                        summary_embed = discord.Embed(description=summary_text, color=discord.Color.purple())
                         try:
-                            if not message.embeds or message.embeds[0].description != summary_text:
-                                new_embed = discord.Embed(description=summary_text, color=discord.Color.blue())
-                                await message.edit(embed=new_embed)
+                            await message_to_edit.edit(embed=summary_embed)
                         except discord.errors.HTTPException as e:
                             logger.warning(f"Failed to update thinking summary: {e}")
+                        continue # Skip the full embed update for summaries
 
-                    # 5. State tracking and conditional delay
-                    thinking_just_ended = was_thinking and not is_thinking_only
-                    was_thinking = is_thinking_only # Update for next iteration
+                    # Once we start getting the answer, stop showing summaries
+                    if not is_thinking_only:
+                        thinking_completed = True
 
-                    if thinking_just_ended:
-                        await asyncio.sleep(1) # Wait 1 second after the last summary
-                        thinking_completed = True # Stop parsing for summaries from now on
-                else:
-                    # If thinking is completed, we only need the answer part
-                    cleaned_response = answer_buffer
-                    # thinking_content remains the same as its last state
-                    is_thinking_only = False
+                    if not thinking_completed:
+                        continue
 
-                # 6. Rate-Limited FINAL ANSWER Update
-                current_time = time.time()
-                if not is_thinking_only and current_time - last_update_time > 1.0:
-                    last_update_time = current_time
-                    
-                    title = "LLM Thinking Response" if is_thinking else "LLM Response"
-                    color = discord.Color.purple() if is_thinking else discord.Color.blue()
-
-                    if is_thinking and thinking_content:
-                        desc = f"**🤖 Model:** `{model_name}`\n\n"
-                        desc += f"||🧠 **Thinking Process:**\n\n{thinking_content}||\n\n"
-                        desc += f"**💡 Answer:**\n{cleaned_response}"
-                    else:
-                        desc = f"**🤖 Model:** `{model_name}`\n\n{cleaned_response}"
-
-                    if len(desc) > 4096:
-                        desc = desc[:4093] + "..."
-
-                    new_embed = discord.Embed(title=title, description=desc, color=color)
-                    new_embed.set_footer(text=f"Question: {question[:100]}{'...' if len(question) > 100 else ''}")
-                    
                     try:
-                        await message.edit(embed=new_embed)
-                    except discord.errors.NotFound:
-                        logger.warning("Message to edit was deleted, stopping stream.")
-                        return
+                        await create_llm_response(
+                            ctx,
+                            response_text=cleaned_response,
+                            question=question,
+                            model_name=model_name,
+                            thinking_content=thinking_content,
+                            show_thinking=show_thinking,
+                            title="LLM Thinking Response" if show_thinking else "LLM Response",
+                            color=discord.Color.purple() if show_thinking else discord.Color.blue(),
+                            performance_metrics=None, # Not available till the end
+                            message_to_edit=message_to_edit
+                        )
                     except discord.errors.HTTPException as e:
                         if e.status == 429:
-                            logger.warning("Hit rate limit, slowing down updates.")
-                            last_update_time = current_time + 2
+                            logger.warning("Rate limited on streaming update, slowing down.")
+                            last_update_time += 2.0 # Add extra delay
                         else:
-                            logger.error(f"Failed to edit message: {e}")
+                            logger.error(f"Failed to edit message during stream: {e}")
                             return
 
         finally:
-            # Ensure the generator is closed to trigger usage logging
+            # 4. Final Update
             if 'stream_generator' in locals() and hasattr(stream_generator, 'aclose'):
                 await stream_generator.aclose()
 
-            # 4. Final Update
             self._save_debug_stream_response_raw(stream_chunks, model_name.split('/')[0])
-            self._save_debug_stream_response_assembled(stream_chunks, model_name.split('/')[0])
+            assembled_response = self._save_debug_stream_response_assembled(stream_chunks, model_name.split('/')[0])
             
-            # Final processing of the complete response
-            # The final cleaned_response and thinking_content are already available from the last loop iteration.
-            if not cleaned_response and not thinking_content:
-                full_response_text = f"<thinking>{reasoning_buffer}</thinking>{answer_buffer}"
-                cleaned_response, thinking_content, _, _ = self.strip_thinking_tokens(full_response_text, model_name)
+            # Extract final content and usage from the assembled response
+            final_content = assembled_response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            usage_data = assembled_response.get("usage")
+
+            performance_metrics = self._calculate_performance_metrics(start_time, final_content, usage_data)
             
-            title = "LLM Thinking Response" if is_thinking else "LLM Response"
-            color = discord.Color.purple() if is_thinking else discord.Color.blue()
+            cleaned_response, thinking_content, _, _ = self.strip_thinking_tokens(final_content, model_name)
 
-            if is_thinking and thinking_content:
-                desc = f"**🤖 Model:** `{model_name}`\n\n"
-                desc += f"||🧠 **Thinking Process:**\n\n{thinking_content}||\n\n"
-                desc += f"**💡 Answer:**\n{cleaned_response}"
-            else:
-                desc = f"**🤖 Model:** `{model_name}`\n\n{cleaned_response}"
-
-            if len(desc) > 4096:
-                desc = desc[:4093] + "..."
-
-            final_embed = discord.Embed(title=title, description=desc, color=color)
-            final_embed.set_footer(text=f"Question: {question[:100]}{'...' if len(question) > 100 else ''}")
-            final_embed.set_author(name=f"Response from {model_name}", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
-            
             try:
-                await message.edit(embed=final_embed)
+                await create_llm_response(
+                    ctx,
+                    response_text=cleaned_response,
+                    question=question,
+                    model_name=model_name,
+                    thinking_content=thinking_content,
+                    show_thinking=show_thinking,
+                    title="LLM Thinking Response" if show_thinking else "LLM Response",
+                    color=discord.Color.purple() if show_thinking else discord.Color.blue(),
+                    performance_metrics=performance_metrics,
+                    message_to_edit=message_to_edit
+                )
             except discord.errors.NotFound:
                 logger.warning("Message to edit for final update was deleted.")
             except Exception as e:
@@ -946,7 +907,7 @@ class LLMCommands(commands.Cog):
     @commands.command(name='ask', help='Ask the LLM a question')
     @has_command_permission('manage_messages')
     @command_category("AI Assistant")
-    async def ask_llm(self, ctx, *, question: str, stream: bool = True):
+    async def ask_llm(self, ctx, *, question: str):
         """Ask the LLM a question without showing thinking process."""
         logger.info(f"User {ctx.author} asking LLM: {question[:100]}")
 
@@ -956,60 +917,30 @@ class LLMCommands(commands.Cog):
 
         async with ctx.typing():
             try:
-                # Use the helper to process multimodal input
                 question, image_urls = await self._process_multimodal_input(ctx.message, question)
-                
                 guild_id = ctx.guild.id if ctx.guild else None
-                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
                 
-                users_for_context = [ctx.author]
-                if ctx.guild:
-                    bot_member = ctx.guild.get_member(self.bot.user.id)
-                    if bot_member:
-                        users_for_context.append(bot_member)
-                user_context = await chatbot_manager.formatter.format_user_context_for_llm_from_objects(users_for_context)
-                
-                context = f"{channel_context}\n{user_context}"
+                # Use the unified streaming response handler for a consistent look
+                stream_generator, model_name = await self.make_llm_request(
+                    prompt=f"{ctx.author.display_name}: {question}",
+                    model_type="ask",
+                    guild_id=guild_id,
+                    channel_id=ctx.channel.id,
+                    image_urls=image_urls,
+                    context=await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel),
+                    stream=True
+                )
+                await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, show_thinking=False)
 
-                formatted_prompt = f"{ctx.author.display_name}: {question}"
-
-                if stream:
-                    stream_generator, model_name = await self.make_llm_request(
-                        prompt=formatted_prompt,
-                        model_type="ask",
-                        guild_id=guild_id,
-                        channel_id=ctx.channel.id,
-                        image_urls=image_urls,
-                        context=context,
-                        stream=True
-                    )
-                    await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, is_thinking=False)
-                else:
-                    response, performance_metrics = await self.make_llm_request(
-                        prompt=formatted_prompt,
-                        model_type="ask",
-                        guild_id=guild_id,
-                        channel_id=ctx.channel.id,
-                        image_urls=image_urls,
-                        context=context,
-                        stream=False
-                    )
-                    cleaned_response, _, _ = self.strip_thinking_tokens(response)
-                    final_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                        cleaned_response,
-                        guild_id,
-                        bot_user_id=self.bot.user.id,
-                        bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
-                    )
-                    await self.send_llm_response(ctx, final_response, question, model_type="ask", performance_metrics=performance_metrics)
             except Exception as e:
+                logger.error(f"Error in !ask command: {e}", exc_info=True)
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
-    
+
     @commands.command(name='think', help='Ask the LLM a question and show its thinking process.')
     @has_command_permission('manage_guild')
     @command_category("AI Assistant")
-    async def think_llm(self, ctx, *, question: str, stream: bool = True):
-        """Ask the LLM a question and show the thinking process."""
+    async def think_llm(self, ctx, display_thinking: Optional[bool] = False, *, question: str):
+        """Ask the LLM a question, with an option to show the thinking process."""
         logger.info(f"User {ctx.author} using think command: {question[:100]}")
 
         if not self.api_keys and not self.llm_config.get("base_url"):
@@ -1018,53 +949,23 @@ class LLMCommands(commands.Cog):
 
         async with ctx.typing():
             try:
-                # Use the helper to process multimodal input
                 question, image_urls = await self._process_multimodal_input(ctx.message, question)
-
                 guild_id = ctx.guild.id if ctx.guild else None
-                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
 
-                users_for_context = [ctx.author]
-                if ctx.guild:
-                    bot_member = ctx.guild.get_member(self.bot.user.id)
-                    if bot_member:
-                        users_for_context.append(bot_member)
-                user_context = await chatbot_manager.formatter.format_user_context_for_llm_from_objects(users_for_context)
+                # Use the unified streaming response handler
+                stream_generator, model_name = await self.make_llm_request(
+                    prompt=f"{ctx.author.display_name}: {question}",
+                    model_type="think",
+                    guild_id=guild_id,
+                    channel_id=ctx.channel.id,
+                    image_urls=image_urls,
+                    context=await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel),
+                    stream=True
+                )
+                await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, show_thinking=display_thinking)
 
-                context = f"{channel_context}\n{user_context}"
-
-                formatted_prompt = f"{ctx.author.display_name}: {question}"
-
-                if stream:
-                    stream_generator, model_name = await self.make_llm_request(
-                        prompt=formatted_prompt,
-                        model_type="think",
-                        guild_id=guild_id,
-                        channel_id=ctx.channel.id,
-                        image_urls=image_urls,
-                        context=context,
-                        stream=True
-                    )
-                    await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, is_thinking=True)
-                else:
-                    response, performance_metrics = await self.make_llm_request(
-                        prompt=formatted_prompt,
-                        model_type="think",
-                        guild_id=guild_id,
-                        channel_id=ctx.channel.id,
-                        image_urls=image_urls,
-                        context=context,
-                        stream=False
-                    )
-                    
-                    formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                        response,
-                        guild_id,
-                        bot_user_id=self.bot.user.id,
-                        bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
-                    )
-                    await self.send_llm_response(ctx, formatted_response, question, model_type="think", performance_metrics=performance_metrics)
             except Exception as e:
+                logger.error(f"Error in !think command: {e}", exc_info=True)
                 await create_embed_response(ctx, f"An error occurred: {e}", title="LLM Error", color=discord.Color.red())
     
     @commands.command(name='llm_status', help='Check the status of all configured LLM providers.')
