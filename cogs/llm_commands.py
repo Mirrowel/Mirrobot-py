@@ -987,69 +987,72 @@ class LLMCommands(commands.Cog):
     async def list_models(self, ctx, *args):
         """
         List available models with advanced filtering.
-        Usage: !llm_models [provider] [filter] [file]
-        - No args: List all providers with default filters.
+        Usage: !llm_models [full] [provider] [filter] [file]
+        - No args: List whitelisted models from all providers.
+        - [full]: List all models from provider(s), ignoring the whitelist.
         - [provider]: List models for a specific provider.
-        - [provider] [filter]: Apply a text filter to a provider's models.
-        - [filter]: Apply a text filter to all providers.
-        - "all" as filter: Disables default filters.
-        - "file": Outputs the list to a file.
+        - [filter]: Apply a text filter to the model list.
+        - [file]: Outputs the list to a file.
         """
         # Parse arguments
         provider_filter = None
         text_filter = None
         output_to_file = False
+        show_all_models = False
 
-        # This logic is complex because arguments are optional and positional
-        # A simple state machine to parse args
         possible_args = list(args)
-        if possible_args:
-            # Check for 'file' keyword anywhere
-            if "file" in [arg.lower() for arg in possible_args]:
-                output_to_file = True
-                possible_args = [arg for arg in possible_args if arg.lower() != "file"]
 
-            # First argument could be a provider or a filter
-            if possible_args:
-                first_arg = possible_args.pop(0)
-                # Check if it's a known provider
-                all_providers = list(self.api_keys.keys())
-                if self.llm_config.get("base_url"):
-                    all_providers.append("local")
-                
-                if first_arg.lower() in [p.lower() for p in all_providers]:
-                    provider_filter = first_arg
-                    # If there's another argument, it's the text filter
-                    if possible_args:
-                        text_filter = possible_args.pop(0)
-                else:
-                    # It's a text filter
-                    text_filter = first_arg
+        # Extract keywords 'file' and 'full'
+        if "file" in [arg.lower() for arg in possible_args]:
+            output_to_file = True
+            possible_args = [arg for arg in possible_args if arg.lower() != "file"]
+        
+        if "full" in [arg.lower() for arg in possible_args]:
+            show_all_models = True
+            possible_args = [arg for arg in possible_args if arg.lower() != "full"]
 
-        logger.info(f"User {ctx.author} requesting model list. Provider: {provider_filter}, Filter: {text_filter}, File: {output_to_file}")
+        # Determine provider and text filter from the rest of the arguments
+        all_providers = list(self.api_keys.keys())
+        if self.llm_config.get("base_url"):
+            all_providers.append("local")
+        
+        remaining_args = []
+        for arg in possible_args:
+            # Check if the argument is a known provider
+            if arg.lower() in [p.lower() for p in all_providers]:
+                provider_filter = arg
+            else:
+                remaining_args.append(arg)
+        
+        # Whatever is left is the text filter
+        if remaining_args:
+            text_filter = " ".join(remaining_args)
+
+        logger.info(f"User {ctx.author} requesting model list. Full: {show_all_models}, Provider: {provider_filter}, Filter: {text_filter}, File: {output_to_file}")
         await ctx.typing()
 
         try:
             async with RotatingClient(api_keys=self.api_keys) as client:
-                all_models = await client.get_all_available_models(grouped=True)
+                all_models_from_provider = await client.get_all_available_models(grouped=True)
                 if self.llm_config.get("base_url"):
                     try:
                         local_models = await client.get_available_models("local")
                         if local_models:
-                            all_models["local"] = local_models
+                            all_models_from_provider["local"] = local_models
                     except Exception as e:
                         logger.warning(f"Could not fetch local models: {e}")
 
-            if not all_models:
+            if not all_models_from_provider:
                 await create_embed_response(ctx, "No models found for any provider.", title="No Models Found", color=discord.Color.orange())
                 return
 
-            model_filters = self.load_model_filters()
+            model_whitelist = self.load_model_filters()
             
             sections = []
             total_model_count = 0
-            
-            providers_to_show = sorted(all_models.keys())
+            unavailable_whitelisted_models = []
+
+            providers_to_show = sorted(all_models_from_provider.keys())
             if provider_filter:
                 providers_to_show = [p for p in providers_to_show if provider_filter.lower() == p.lower()]
                 if not providers_to_show:
@@ -1057,47 +1060,44 @@ class LLMCommands(commands.Cog):
                     return
 
             for provider in providers_to_show:
-                models = all_models.get(provider, [])
-                if not models:
-                    continue
-
-                # Apply default filters
-                filtered_models = models
-                use_default_filter = text_filter is None or text_filter.lower() != 'all'
+                provider_models = all_models_from_provider.get(provider, [])
                 
-                if use_default_filter and provider in model_filters:
-                    filter_config = model_filters[provider]
-                    if filter_config.get("type") == "exact_match":
-                        # This keeps only the models listed in the filter file
-                        filtered_models = [m for m in models if m in filter_config.get("models", [])]
+                # Determine the base list of models to show
+                if show_all_models:
+                    models_to_filter = provider_models
+                else:
+                    whitelisted_provider_models = model_whitelist.get(provider, {}).get("models", [])
+                    # Find available models that are on the whitelist
+                    models_to_filter = [m for m in provider_models if m in whitelisted_provider_models]
+                    # Find whitelisted models that are NOT available
+                    unavailable = [m for m in whitelisted_provider_models if m not in provider_models]
+                    if unavailable:
+                        unavailable_whitelisted_models.extend(unavailable)
 
-                # Apply user's text filter
-                if text_filter and text_filter.lower() != 'all':
-                    filtered_models = [m for m in filtered_models if text_filter.lower() in m.lower()]
+                # Apply user's text filter if any
+                if text_filter:
+                    final_models_to_display = sorted([m for m in models_to_filter if text_filter.lower() in m.lower()])
+                else:
+                    final_models_to_display = sorted(models_to_filter)
 
-                if filtered_models:
+                if final_models_to_display:
                     model_lines = []
                     guild_id = ctx.guild.id if ctx.guild else None
-                    for model in sorted(filtered_models):
+                    for model in final_models_to_display:
                         indicators = []
                         for model_type in ["default", "chat", "ask", "think"]:
                             if model == self.get_model_for_guild(guild_id, model_type):
                                 indicators.append(model_type.title())
                         
-                        indicator_str = ""
-                        if indicators:
-                            indicator_str = f"🟢 ({', '.join(indicators)})"
-                        else:
-                            indicator_str = "⚪️"
-                            
+                        indicator_str = f"🟢 ({', '.join(indicators)})" if indicators else "⚪️"
                         model_lines.append(f"{indicator_str} `{model}`")
                     
                     sections.append({
-                        "name": f"{provider.upper()} ({len(filtered_models)} models)",
+                        "name": f"{provider.upper()} ({len(final_models_to_display)} models)",
                         "content": "\n".join(model_lines),
                         "inline": False
                     })
-                    total_model_count += len(filtered_models)
+                    total_model_count += len(final_models_to_display)
 
             if not sections:
                 await create_embed_response(ctx, "No models match the specified criteria.", title="No Models Found", color=discord.Color.orange())
@@ -1114,16 +1114,21 @@ class LLMCommands(commands.Cog):
 
             description = f"Found **{total_model_count}** models matching your criteria.\n\n**Models for this Server:**\n" + "\n".join(models_info)
             
+            warning_footer = ""
+            if unavailable_whitelisted_models and not show_all_models:
+                warning_footer = f"\n\n⚠️ The following whitelisted models are currently unavailable: {', '.join(f'`{m}`' for m in unavailable_whitelisted_models)}"
+
             if output_to_file:
                 file_content = f"{title}\n{description}\n\n"
                 for section in sections:
                     file_content += f"--- {section['name']} ---\n"
-                    # We need to clean up the content for the text file
                     clean_content = section['content'].replace('`', '').replace('🟢', '->').replace('⚪️', '  ')
                     file_content += f"{clean_content}\n\n"
                 
                 file_content += "Use `!llm_select [type] <model_name>` to choose a model (e.g., `!llm_select think <model>`)."
-                
+                if warning_footer:
+                    file_content += warning_footer.replace('`', '')
+
                 with open("model_list.txt", "w", encoding="utf-8") as f:
                     f.write(file_content)
                 await ctx.send("Here is the list of models as a file:", file=discord.File("model_list.txt"))
@@ -1134,7 +1139,7 @@ class LLMCommands(commands.Cog):
                     description=description,
                     sections=sections,
                     title=title,
-                    footer_text="Use `!llm_select [type] <model_name>` to choose a model (e.g., `!llm_select think <model>`).",
+                    footer_text=f"Use `!llm_select [type] <model_name>` to choose a model.{warning_footer}",
                     color=discord.Color.blue()
                 )
 
@@ -1176,36 +1181,50 @@ class LLMCommands(commands.Cog):
         if not model_name:
             await create_embed_response(ctx, "You must provide a model name.", title="Missing Model Name", color=discord.Color.orange())
             return
-        
-        # model_type is already validated by the `valid_types` check above.
 
         try:
-            if not is_manual:
-                async with RotatingClient(api_keys=self.api_keys) as client:
-                    all_models_grouped = await client.get_all_available_models(grouped=True)
-                all_models_flat = [model for models in all_models_grouped.values() for model in models]
-
-                if not all_models_flat:
-                    await create_embed_response(ctx, "No models available to select.", title="Error", color=discord.Color.red())
+            # Owner check for manual mode
+            if is_manual:
+                app_info = await self.bot.application_info()
+                if ctx.author.id != app_info.owner.id:
+                    await create_embed_response(ctx, "The `manual` flag is only available to the bot owner.", title="Permission Denied", color=discord.Color.red())
                     return
 
-                if model_name not in all_models_flat:
-                    partial_matches = [m for m in all_models_flat if model_name.lower() in m.lower()]
+            if not is_manual:
+                # Fetch available models and filter by whitelist
+                async with RotatingClient(api_keys=self.api_keys) as client:
+                    all_models_from_provider = await client.get_all_available_models(grouped=True)
+                
+                model_whitelist = self.load_model_filters()
+                
+                # Flatten the list of all whitelisted models
+                all_whitelisted_models = [model for provider_rules in model_whitelist.values() for model in provider_rules.get("models", [])]
+                
+                # Flatten the list of all available models from the provider
+                all_available_models_flat = [model for models in all_models_from_provider.values() for model in models]
+
+                # The list of models users can select from is the intersection of what's available and what's whitelisted
+                selectable_models = [m for m in all_available_models_flat if m in all_whitelisted_models]
+
+                if model_name not in selectable_models:
+                    # Try to find a partial match within the selectable models
+                    partial_matches = [m for m in selectable_models if model_name.lower() in m.lower()]
                     if len(partial_matches) == 1:
                         model_name = partial_matches[0]
                     else:
                         suggestions = "\n".join(f"- `{m}`" for m in partial_matches[:5])
-                        msg = f"Model `{model_name}` not found."
+                        msg = f"Model `{model_name}` is not on the approved list or is currently unavailable."
                         if suggestions:
                             msg += f"\n\nDid you mean one of these?\n{suggestions}"
-                        await create_embed_response(ctx, msg, title="Model Not Found", color=discord.Color.orange())
+                        await create_embed_response(ctx, msg, title="Model Not Selectable", color=discord.Color.orange())
                         return
 
+            # If we're here, the model is valid (or manual mode is on for the owner)
             await self.save_model_to_config(ctx.guild.id, model_name, model_type)
             
             response_msg = f"Set **{model_type}** model for this server to:\n`{model_name}`"
             if is_manual:
-                response_msg += "\n*(Manual selection: Model was set regardless of availability check.)*"
+                response_msg += "\n*(Manual selection by owner: Model was set regardless of availability or whitelist.)*"
             
             await create_embed_response(ctx, response_msg, title="Model Selected", color=discord.Color.green())
 
