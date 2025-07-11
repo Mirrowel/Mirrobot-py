@@ -117,11 +117,24 @@ def create_bot(config):
     # Chatbot message queue
     bot.chatbot_message_queues = defaultdict(asyncio.Queue)
     bot.chatbot_worker_tasks = {}
+
+    # For caching application info
+    bot.app_info = None
+    bot.app_info_lock = asyncio.Lock()
     
     # Set up event handlers
     @bot.event
     async def on_ready():
         logger.info(f'Logged in as {bot.user.name}!')
+
+        # Fetch and cache application info
+        async with bot.app_info_lock:
+            if bot.app_info is None:
+                try:
+                    bot.app_info = await bot.application_info()
+                    logger.info(f"Successfully cached application info for '{bot.app_info.name}'.")
+                except Exception as e:
+                    logger.error(f"Could not fetch application info: {e}", exc_info=True)
 
         # --- Set bot's user ID in chatbot_manager and start it ---
         chatbot_manager.set_bot_user_id(bot.user.id)

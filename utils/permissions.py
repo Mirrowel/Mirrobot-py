@@ -12,11 +12,16 @@ from functools import wraps
 import asyncio
 import os
 import json
+import time
 
 logger = get_logger()
 
+# Cache for guild permissions to reduce API calls
+_permission_cache = {}
+_CACHE_EXPIRY_SECONDS = 60  # Cache permissions for 60 seconds
+
 # System commands that only the owner can use
-SYSTEM_COMMANDS = ['shutdown', 'reload_patterns', 'host', 'llm_models', 'llm_select', 'llm_provider', 'llm_set_api_key']
+SYSTEM_COMMANDS = ['shutdown', 'reload_patterns', 'host']
 
 # Dictionary to store command categories
 _command_categories = {}
@@ -84,13 +89,27 @@ def has_command_permission(*required_permissions):
 
         # 1. Bot owner check
         try:
-            app_info = await ctx.bot.application_info()
-            if ctx.author.id == app_info.owner.id:
+            # Use cached app_info if available
+            if ctx.bot.app_info is None:
+                # If not cached, acquire lock and fetch
+                async with ctx.bot.app_info_lock:
+                    # Double-check if another thread has already fetched it
+                    if ctx.bot.app_info is None:
+                        logger.info("App info not cached, fetching now...")
+                        try:
+                            ctx.bot.app_info = await ctx.bot.application_info()
+                            logger.info("Successfully cached application info.")
+                        except Exception as e:
+                            logger.error(f"Permission check FAILED: Could not fetch application info. Error: {e}", exc_info=True)
+                            return False # Fail permission check if API call fails
+
+            if ctx.bot.app_info and ctx.author.id == ctx.bot.app_info.owner.id:
                 logger.debug(f"Permission GRANTED for '{ctx.command.name}': User is the bot owner.")
                 return True
+            
             logger.debug("Permission check: User is not the bot owner.")
         except Exception as e:
-            logger.error(f"Permission check FAILED: Could not verify bot owner. Error: {e}", exc_info=True)
+            logger.error(f"Permission check FAILED: An unexpected error occurred during owner check. Error: {e}", exc_info=True)
             # Continue to other checks, but this is a significant failure.
             pass
 
@@ -105,7 +124,20 @@ def has_command_permission(*required_permissions):
             return False
 
         # 2. Administrator / Manage Guild check
-        author_perms = ctx.author.guild_permissions
+        # --- Start Permission Caching Logic ---
+        now = time.time()
+        cache_key = (ctx.author.id, ctx.guild.id)
+        cached_perms = _permission_cache.get(cache_key)
+
+        if cached_perms and (now - cached_perms['timestamp']) < _CACHE_EXPIRY_SECONDS:
+            author_perms = cached_perms['perms']
+            logger.debug(f"Using cached permissions for '{ctx.author}'.")
+        else:
+            author_perms = ctx.author.guild_permissions
+            _permission_cache[cache_key] = {'perms': author_perms, 'timestamp': now}
+            logger.debug(f"Fetched and cached permissions for '{ctx.author}'.")
+        # --- End Permission Caching Logic ---
+
         logger.debug(f"Checking admin/manage_guild for '{ctx.author}'. Admin: {author_perms.administrator}, Manage Guild: {author_perms.manage_guild}")
         if author_perms.administrator or author_perms.manage_guild:
             logger.debug(f"Permission GRANTED for '{ctx.command.name}': User has Administrator or Manage Guild permission.")
@@ -127,9 +159,9 @@ def has_command_permission(*required_permissions):
                 
         # Check server-wide permissions if any required_permissions are specified
         if len(required_permissions) > 0:
-            guild_perms = ctx.author.guild_permissions
+            # Use the cached author_perms object from above
             for perm in required_permissions:
-                if getattr(guild_perms, perm, False):
+                if getattr(author_perms, perm, False):
                     return True
         
         # Check if user has a role that has permission for all commands
