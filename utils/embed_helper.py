@@ -14,47 +14,66 @@ from utils.constants import AUTHOR_ICON_URL, BOT_NAME, BOT_VERSION
 
 def split_content_intelligently(content: str, max_length: int) -> List[str]:
     """
-    Split content intelligently preserving paragraphs and sentences.
-    
-    Args:
-        content (str): The content to split
-        max_length (int): Maximum length per part
-        
-    Returns:
-        List[str]: List of content parts
+    Split content intelligently based on its structure.
+    - For list-like content (single newlines), it splits by line.
+    - For paragraph-based content, it splits by paragraph and then sentence.
     """
     if len(content) <= max_length:
         return [content]
-    
+
+    # Heuristic: Check if the content is more like a list or prose.
+    # Lists typically use single newlines, while prose uses double newlines for paragraphs.
+    is_list_like = '\n' in content and '\n\n' not in content
+
+    # --- Strategy 1: Split by lines for lists ---
+    if is_list_like:
+        parts = []
+        current_part = ""
+        lines = content.split('\n')
+
+        for line in lines:
+            if len(line) > max_length:  # Handle single lines that are too long
+                if current_part:
+                    parts.append(current_part.strip())
+                parts.append(line[:max_length - 4] + "...")
+                current_part = ""
+                continue
+
+            if len(current_part) + len(line) + 1 > max_length:
+                if current_part:
+                    parts.append(current_part.strip())
+                current_part = line + '\n'
+            else:
+                current_part += line + '\n'
+
+        if current_part.strip():
+            parts.append(current_part.strip())
+        return parts
+
+    # --- Strategy 2: Split by paragraphs and sentences for prose ---
     parts = []
     current_part = ""
-    
-    # Try to split by paragraphs first
     paragraphs = content.split('\n\n')
     
     for paragraph in paragraphs:
-        # If adding this paragraph would exceed the limit
-        if len(current_part + paragraph + '\n\n') > max_length:
-            # If we have content in current_part, save it
+        if len(current_part) + len(paragraph) + 2 > max_length:
             if current_part:
                 parts.append(current_part.strip())
                 current_part = ""
             
-            # If the paragraph itself is too long, split by sentences
             if len(paragraph) > max_length:
                 sentences = paragraph.split('. ')
                 for i, sentence in enumerate(sentences):
                     sentence_with_period = sentence + ('.' if i < len(sentences) - 1 else '')
                     
-                    if len(current_part + sentence_with_period + ' ') > max_length:
+                    if len(current_part) + len(sentence_with_period) + 1 > max_length:
                         if current_part:
                             parts.append(current_part.strip())
                             current_part = ""
                         
-                        # If single sentence is still too long, force split
                         if len(sentence_with_period) > max_length:
                             while len(sentence_with_period) > max_length:
-                                split_point = max_length - 10  # Leave room for "..."
+                                split_point = max_length - 10
                                 parts.append(sentence_with_period[:split_point] + "...")
                                 sentence_with_period = "..." + sentence_with_period[split_point:]
                             current_part = sentence_with_period
@@ -67,7 +86,6 @@ def split_content_intelligently(content: str, max_length: int) -> List[str]:
         else:
             current_part += paragraph + '\n\n'
     
-    # Add any remaining content
     if current_part.strip():
         parts.append(current_part.strip())
     
@@ -319,33 +337,31 @@ async def create_embed_response(
                 embed_title = f"{title} (Part {i+1}/{len(embed_chunks)})" if len(embed_chunks) > 1 else title
                 embed_description = description if i == 0 else ""
                 embed_footer = footer_text if i == 0 else f"Continued... (Part {i+1}/{len(embed_chunks)})"
-                
-                # Recursive call for individual embeds (disable multi-embed to avoid infinite recursion)
-                message = await create_embed_response(
-                    ctx,
-                    embed_description,
-                    fields=chunk,
+
+                # Create a new embed for the chunk
+                chunk_embed = discord.Embed(
                     title=embed_title,
-                    footer_text=embed_footer,
-                    color=color,
-                    thumbnail_url=thumbnail_url if i == 0 else None,
-                    footer_icon_url=footer_icon_url,
-                    url=url if i == 0 else None,
-                    author_name=author_name if i == 0 else None,
-                    author_icon_url=author_icon_url if i == 0 else None,
-                    author_url=author_url if i == 0 else None,
-                    field_unbroken=field_unbroken,
-                    smart_split=smart_split,
-                    max_description_length=max_description_length,
-                    # Disable advanced features for recursive calls
-                    sections=None,
-                    content="",
-                    auto_strategy=False,
-                    max_fields_per_embed=25,  # Set high to prevent recursion
-                    max_embed_chars=5800     # Set high to prevent recursion
+                    description=embed_description,
+                    color=color
                 )
+                if url and i == 0:
+                    chunk_embed.url = url
+
+                for field in chunk:
+                    chunk_embed.add_field(name=field.get('name', ''), value=field.get('value', ''), inline=field.get('inline', False))
+
+                if embed_footer:
+                    chunk_embed.set_footer(text=embed_footer, icon_url=footer_icon_url)
+
+                if thumbnail_url and i == 0:
+                    chunk_embed.set_thumbnail(url=thumbnail_url)
+
+                if author_name and i == 0:
+                    chunk_embed.set_author(name=author_name, icon_url=author_icon_url, url=author_url)
+
+                message = await ctx.send(embed=chunk_embed)
                 messages.append(message)
-                
+
                 # Small delay between messages to avoid rate limits
                 if i < len(embed_chunks) - 1:
                     await asyncio.sleep(0.5)

@@ -273,6 +273,9 @@ class LLMCommands(commands.Cog):
             "stream": stream
         }
 
+        if stream:
+            request_kwargs["stream_options"] = {"include_usage": True}
+
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
 
@@ -581,9 +584,15 @@ class LLMCommands(commands.Cog):
         message = await ctx.send(embed=embed)
 
         # 2. Stream Processing Loop
-        response_buffer = ""
+        answer_buffer = ""
+        reasoning_buffer = ""
         last_update_time = time.time()
         stream_chunks = [] # To save the full response for debugging
+        last_known_summaries = []
+        cleaned_response = ""
+        thinking_content = ""
+        was_thinking = False # Flag to track if the last state was 'thinking'
+        thinking_completed = False # Flag to stop parsing for summaries once the answer starts
         
         try:
             async for chunk in stream_generator:
@@ -603,7 +612,7 @@ class LLMCommands(commands.Cog):
 
                     # Handle stream termination
                     if chunk_str.strip() == '[DONE]':
-                        break
+                        continue
                     
                     data = json.loads(chunk_str)
                     stream_chunks.append(data)
@@ -615,10 +624,12 @@ class LLMCommands(commands.Cog):
                         await message.edit(embed=error_embed)
                         return
 
-                    # Append delta to buffer
-                    delta = data.get('choices', [{}])[0].get('delta', {}).get('content', '')
-                    if delta:
-                        response_buffer += delta
+                    # Append delta to buffers
+                    delta = data.get('choices', [{}])[0].get('delta', {})
+                    if delta.get('content'):
+                        answer_buffer += delta['content']
+                    if delta.get('reasoning_content'):
+                        reasoning_buffer += delta['reasoning_content']
 
                 except json.JSONDecodeError:
                     logger.warning(f"Received non-JSON chunk, skipping: {chunk_str[:100]}")
@@ -629,24 +640,41 @@ class LLMCommands(commands.Cog):
                     await message.edit(embed=error_embed)
                     return
 
-                # 3. Rate-Limited Updates
-                current_time = time.time()
-                if current_time - last_update_time > 1:  # Update every second
-                    cleaned_response, thinking_content, is_thinking_only, summaries = self.strip_thinking_tokens(response_buffer, model_name)
-                    
-                    # If we only have thinking content and no final answer yet, wait for more chunks.
-                    if is_thinking_only and is_thinking:
-                        if summaries:
-                            try:
-                                summary_text = f"Thinking... ({summaries[-1]})"
-                                if message.embeds and message.embeds[0].description != summary_text:
-                                    new_embed = discord.Embed(description=summary_text, color=discord.Color.blue())
-                                    await message.edit(embed=new_embed)
-                            except discord.errors.HTTPException as e:
-                                logger.warning(f"Failed to update thinking summary: {e}")
-                        last_update_time = current_time # Reset timer to avoid rapid-fire updates
-                        continue
+                # 3. Format, Parse, and Update Summaries (only if thinking is not complete)
+                is_thinking_only = False
+                if not thinking_completed:
+                    full_response_text = f"<thinking>{reasoning_buffer}</thinking>{answer_buffer}"
+                    cleaned_response, thinking_content, is_thinking_only, current_summaries = self.strip_thinking_tokens(full_response_text, model_name)
 
+                    # 4. Immediate Summary Update
+                    if is_thinking_only and is_thinking and current_summaries and current_summaries != last_known_summaries:
+                        last_known_summaries = current_summaries
+                        summary_text = f"Thinking... ({current_summaries[-1]})"
+                        try:
+                            if not message.embeds or message.embeds[0].description != summary_text:
+                                new_embed = discord.Embed(description=summary_text, color=discord.Color.blue())
+                                await message.edit(embed=new_embed)
+                        except discord.errors.HTTPException as e:
+                            logger.warning(f"Failed to update thinking summary: {e}")
+
+                    # 5. State tracking and conditional delay
+                    thinking_just_ended = was_thinking and not is_thinking_only
+                    was_thinking = is_thinking_only # Update for next iteration
+
+                    if thinking_just_ended:
+                        await asyncio.sleep(1) # Wait 1 second after the last summary
+                        thinking_completed = True # Stop parsing for summaries from now on
+                else:
+                    # If thinking is completed, we only need the answer part
+                    cleaned_response = answer_buffer
+                    # thinking_content remains the same as its last state
+                    is_thinking_only = False
+
+                # 6. Rate-Limited FINAL ANSWER Update
+                current_time = time.time()
+                if not is_thinking_only and current_time - last_update_time > 1.0:
+                    last_update_time = current_time
+                    
                     title = "LLM Thinking Response" if is_thinking else "LLM Response"
                     color = discord.Color.purple() if is_thinking else discord.Color.blue()
 
@@ -665,7 +693,6 @@ class LLMCommands(commands.Cog):
                     
                     try:
                         await message.edit(embed=new_embed)
-                        last_update_time = current_time
                     except discord.errors.NotFound:
                         logger.warning("Message to edit was deleted, stopping stream.")
                         return
@@ -678,9 +705,19 @@ class LLMCommands(commands.Cog):
                             return
 
         finally:
+            # Ensure the generator is closed to trigger usage logging
+            if 'stream_generator' in locals() and hasattr(stream_generator, 'aclose'):
+                await stream_generator.aclose()
+
             # 4. Final Update
-            self._save_debug_stream_response(stream_chunks, model_name.split('/')[0])
-            cleaned_response, thinking_content, _, _ = self.strip_thinking_tokens(response_buffer, model_name)
+            self._save_debug_stream_response_raw(stream_chunks, model_name.split('/')[0])
+            self._save_debug_stream_response_assembled(stream_chunks, model_name.split('/')[0])
+            
+            # Final processing of the complete response
+            # The final cleaned_response and thinking_content are already available from the last loop iteration.
+            if not cleaned_response and not thinking_content:
+                full_response_text = f"<thinking>{reasoning_buffer}</thinking>{answer_buffer}"
+                cleaned_response, thinking_content, _, _ = self.strip_thinking_tokens(full_response_text, model_name)
             
             title = "LLM Thinking Response" if is_thinking else "LLM Response"
             color = discord.Color.purple() if is_thinking else discord.Color.blue()
@@ -716,44 +753,31 @@ class LLMCommands(commands.Cog):
             - is_thinking_only (bool): True if the response contains only thinking content (or is empty).
             - summaries (List[str]): A list of extracted summary titles (only for supported models).
         """
-        # logger.debug("Stripping thinking tokens from response")
-        
         thinking_content_parts = []
         answer_parts = []
-        summaries = []
         
         in_thinking_block = False
         last_pos = 0
         
-        # Determine if we should look for summaries
-        extract_summaries = "gemini-2.5" in model_name
+        # This regex finds any of the opening or closing thinking tags
+        tag_regex = re.compile(r'<(/?)(?:think|thinking|thought)>|(\[/?thinking\])|(\*/?thinking\*)', re.IGNORECASE)
 
-        # Regex to find thinking tags and, optionally, summary titles
-        regex_pattern = r'(<(?:/)?(?:think|thinking|thought)>|\[(?:/)?thinking\]|\*thinking\*|\*/thinking\*)'
-        if extract_summaries:
-            regex_pattern += r'|^\s*#\s.*$'
-        
-        tag_regex = re.compile(regex_pattern, re.IGNORECASE | re.MULTILINE)
-        
         for match in tag_regex.finditer(response):
             start, end = match.span()
-            tag = match.group(1)
             
             # Add the text between the last tag and this one
             text_slice = response[last_pos:start]
-            if text_slice.strip():
+            if text_slice:
                 if in_thinking_block:
                     thinking_content_parts.append(text_slice)
                 else:
                     answer_parts.append(text_slice)
             
-            # Handle state transition and summary extraction
-            if extract_summaries and tag.strip().startswith('#'):
-                if in_thinking_block:
-                    summary_title = tag.strip().lstrip('# ').strip()
-                    summaries.append(summary_title)
-                    thinking_content_parts.append(tag) # Keep summary in full thinking content
-            elif tag.lower().startswith('</') or tag.lower().startswith('[/') or tag.lower().startswith('*/'):
+            # Determine if it's an opening or closing tag
+            tag_content = match.group(0)
+            is_closing = tag_content.startswith(('</', '[/', '*/'))
+            
+            if is_closing:
                 in_thinking_block = False
             else:
                 in_thinking_block = True
@@ -762,7 +786,7 @@ class LLMCommands(commands.Cog):
             
         # Add any remaining text after the last tag
         remaining_text = response[last_pos:]
-        if remaining_text.strip():
+        if remaining_text:
             if in_thinking_block:
                 thinking_content_parts.append(remaining_text)
             else:
@@ -770,6 +794,14 @@ class LLMCommands(commands.Cog):
 
         cleaned_response = "".join(answer_parts).strip()
         combined_thinking = "".join(thinking_content_parts).strip()
+        
+        # Stage 2: Extract summaries from the isolated thinking content
+        summaries = []
+        if "gemini-2.5" in model_name and combined_thinking:
+            # This regex finds markdown bold sections (summaries) that are on their own line
+            summary_regex = re.compile(r'^\s*\*\*(.*?)\*\*\s*$', re.MULTILINE)
+            for summary_match in summary_regex.finditer(combined_thinking):
+                summaries.append(summary_match.group(1).strip())
         
         # Determine if the response is only thinking content
         # This is true if there is thinking content but the cleaned response is empty.
@@ -780,24 +812,102 @@ class LLMCommands(commands.Cog):
             
         return cleaned_response, combined_thinking, is_thinking_only, summaries
     
-    def _save_debug_stream_response(self, response_chunks: List[Dict[str, Any]], provider: str):
-        """Save the full streaming response chunks to a file for debugging."""
+    def _save_debug_stream_response_raw(self, response_chunks: List[Dict[str, Any]], provider: str):
+        """Save the raw streaming response chunks to a file for debugging."""
         try:
             debug_dir = os.path.join("llm_data", "debug_prompts")
             os.makedirs(debug_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            debug_filename = f"llm_stream_response_{provider}.json"
+            debug_filename = f"llm_stream_response_raw_{provider}.json"
             debug_filepath = os.path.join(debug_dir, debug_filename)
             
             with open(debug_filepath, 'w', encoding='utf-8') as f:
                 f.write(f"// filepath: {debug_filepath}\n")
                 f.write(f"// Provider: {provider}\n")
                 f.write(f"// Timestamp: {timestamp}\n")
-                f.write("// FULL STREAM RESPONSE CHUNKS:\n")
+                f.write("// RAW STREAM RESPONSE CHUNKS:\n")
                 json.dump(response_chunks, f, indent=2, ensure_ascii=False)
-            logger.debug(f"Saved debug stream response to {debug_filepath}")
+            logger.debug(f"Saved raw debug stream response to {debug_filepath}")
         except Exception as e:
-            logger.warning(f"Failed to save debug stream response: {e}")
+            logger.warning(f"Failed to save raw debug stream response: {e}", exc_info=True)
+
+    def _save_debug_stream_response_assembled(self, response_chunks: List[Dict[str, Any]], provider: str):
+        """Assembles and saves the full streaming response as a single JSON object for debugging."""
+        if not response_chunks:
+            return
+
+        try:
+            # Initialize the final response object with potential top-level fields
+            final_response = {
+                "id": None, "model": None, "created": None,
+                "object": "chat.completion", "choices": [], "usage": None
+            }
+            # Dynamically add any other top-level keys found
+            for chunk in response_chunks:
+                for key, value in chunk.items():
+                    if key not in ['choices', 'usage'] and key not in final_response:
+                        final_response[key] = value
+
+            # Populate initial values from the first chunk that has them
+            for chunk in response_chunks:
+                if not final_response.get("id") and chunk.get("id"):
+                    final_response["id"] = chunk.get("id")
+                if not final_response.get("model") and chunk.get("model"):
+                    final_response["model"] = chunk.get("model")
+                if not final_response.get("created") and chunk.get("created"):
+                    final_response["created"] = chunk.get("created")
+                if all(final_response.get(k) for k in ["id", "model", "created"]):
+                    break
+
+            full_content = ""
+            full_reasoning_content = ""
+            final_finish_reason = None
+            
+            # Process all chunks to assemble the full response
+            for chunk in response_chunks:
+                if chunk.get("choices"):
+                    choice = chunk["choices"][0]
+                    delta = choice.get("delta", {})
+                    if delta.get("content"):
+                        full_content += delta["content"]
+                    if delta.get("reasoning_content"):
+                        full_reasoning_content += delta["reasoning_content"]
+                    
+                    if choice.get("finish_reason"):
+                        final_finish_reason = choice.get("finish_reason")
+
+                if chunk.get("usage"):
+                    final_response["usage"] = chunk["usage"]
+
+            # Assemble the final 'choices' array
+            final_message = { "role": "assistant", "content": full_content }
+            if full_reasoning_content:
+                final_message["reasoning_content"] = full_reasoning_content
+
+            final_response["choices"].append({
+                "finish_reason": final_finish_reason,
+                "index": 0,
+                "message": final_message
+            })
+
+            # Save the assembled response
+            debug_dir = os.path.join("llm_data", "debug_prompts")
+            os.makedirs(debug_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            debug_filename = f"llm_stream_response_assembled_{provider}.json"
+            debug_filepath = os.path.join(debug_dir, debug_filename)
+            
+            with open(debug_filepath, 'w', encoding='utf-8') as f:
+                f.write(f"// filepath: {debug_filepath}\n")
+                f.write(f"// Provider: {provider}\n")
+                f.write(f"// Timestamp: {timestamp}\n")
+                f.write("// ASSEMBLED STREAM RESPONSE:\n")
+                json.dump(final_response, f, indent=2, ensure_ascii=False)
+            
+            logger.debug(f"Saved assembled debug stream response to {debug_filepath}")
+
+        except Exception as e:
+            logger.warning(f"Failed to save assembled debug stream response: {e}", exc_info=True)
 
     async def _process_multimodal_input(self, message: discord.Message, question: str) -> Tuple[str, List[str]]:
         """Helper to process attachments and URLs from a message for multimodal input."""
@@ -2174,14 +2284,32 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "Invalid level. Use 'server' or a channel mention.", title="Error", color=discord.Color.red())
             return
 
-    @commands.command(name='set_reasoning_budget', help='Set the reasoning budget for a model.')
+    @commands.command(name='set_reasoning_budget', help="""Set the reasoning budget for a model.
+
+    Usage: `!set_reasoning_budget <model> <level> [mode] [custom_budget]`
+
+    Arguments:
+    - `model`: The name of the model to configure.
+    - `level`: `auto`, `none`, `low`, `medium`, or `high`.
+    - `mode` (optional): `all`, `default`, `chat`, `ask`, or `think`. Defaults to `default`.
+    - `custom_budget` (optional): `true` or `false`.
+    """)
     @has_command_permission('manage_guild')
     @command_category("AI Assistant")
-    async def set_reasoning_budget(self, ctx, model: str, level: str, mode: Optional[str] = None, custom_reasoning_budget: bool = False):
+    async def set_reasoning_budget(self, ctx, model: Optional[str] = None, level: Optional[str] = None, mode: Optional[str] = None, custom_reasoning_budget: bool = False):
         """Sets the reasoning budget for a specific model and mode."""
+        if not model or not level:
+            await ctx.send_help(ctx.command)
+            return
+
         if not ctx.guild:
             await create_embed_response(ctx, "This command can only be used in a server.", title="Error", color=discord.Color.red())
             return
+
+        # Workaround for optional positional bool argument
+        if mode and mode.lower() in ['true', 'false']:
+            custom_reasoning_budget = (mode.lower() == 'true')
+            mode = None
 
         guild_id = ctx.guild.id
         level_map = {"auto": -1, "none": 0, "low": 1, "medium": 2, "high": 3}
@@ -2191,13 +2319,18 @@ class LLMCommands(commands.Cog):
             await create_embed_response(ctx, "Invalid level. Use 'auto', 'none', 'low', 'medium', or 'high'.", title="Error", color=discord.Color.red())
             return
 
+        valid_modes = ["default", "chat", "ask", "think", "all"]
+        if mode and mode.lower() not in valid_modes:
+            await create_embed_response(ctx, f"Invalid mode. Use one of: `{'`, `'.join(valid_modes)}`", title="Error", color=discord.Color.red())
+            return
+
         if mode and mode.lower() == 'all':
             modes_to_set = ["default", "chat", "ask", "think"]
             for target_mode in modes_to_set:
                 save_reasoning_budget(model, target_mode, level_val, guild_id, custom_reasoning_budget=custom_reasoning_budget)
             await create_embed_response(ctx, f"Reasoning budget for model `{model}` for all modes set to `{level}` (Custom Reasoning Budget: {custom_reasoning_budget}).", title="Reasoning Budget Set", color=discord.Color.green())
         else:
-            target_mode = mode if mode else "default"
+            target_mode = mode.lower() if mode else "default"
             save_reasoning_budget(model, target_mode, level_val, guild_id, custom_reasoning_budget=custom_reasoning_budget)
             
             if mode:

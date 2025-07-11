@@ -171,114 +171,140 @@ class InlineResponseManager:
 
     async def build_context(self, message: discord.Message) -> List[ConversationMessage]:
         """
-        Builds a context for an inline response based on a specific gathering logic.
-        1.  Gather the original triggering message.
-        2.  Gather the replied-to message from the trigger message (if any).
-        3.  Gather a number of recent channel messages, excluding already gathered ones.
-        4.  Gather a number of recent messages from the author, excluding already gathered ones.
-        5.  For all messages gathered so far, fetch any message they are replying to (depth of 1), if not already present.
-        6.  Sort all messages chronologically and convert them to the ConversationMessage format.
+        Builds a context for an inline response by efficiently fetching and processing message history.
+        1.  Fetches a large batch of recent messages.
+        2.  Identifies required context messages (trigger, replies, user history).
+        3.  Enters a "fetch until found" loop if any replied-to messages are not in the initial batch.
+        4.  Processes all messages in-memory to stitch bot responses and format the final context.
         """
         config = self.get_channel_config(message.guild.id, message.channel.id)
-        gathered_messages: Dict[int, discord.Message] = {}
+        
+        # In-memory store for all messages fetched, keyed by ID for fast lookups.
+        message_pool: Dict[int, discord.Message] = {}
+        
+        # Set of message IDs that are required for full context (mainly replies).
+        required_message_ids = set()
 
-        # 1. Gather the original triggering message
-        gathered_messages[message.id] = message
+        # --- Step 1: Initial Batch Fetch ---
+        # Fetch a single large batch of messages to minimize initial API calls.
+        # This batch will serve as the primary source for context building.
+        history_limit = 100
+        oldest_message_in_pool = message
+        
+        async for history_msg in message.channel.history(limit=history_limit, before=message):
+            message_pool[history_msg.id] = history_msg
+            if history_msg.created_at < oldest_message_in_pool.created_at:
+                oldest_message_in_pool = history_msg
+        
+        # Add the triggering message itself to the pool.
+        message_pool[message.id] = message
 
-        # 2. Gather the replied-to message from the trigger message
-        if message.reference and message.reference.message_id:
-            if message.reference.message_id not in gathered_messages:
-                try:
-                    replied_to = await message.channel.fetch_message(message.reference.message_id)
-                    gathered_messages[replied_to.id] = replied_to
-                except (discord.NotFound, discord.HTTPException) as e:
-                    logger.warning(f"Could not fetch replied-to message {message.reference.message_id}: {e}")
+        # --- Step 2: Gather Core Context & Identify Missing Replies ---
+        # This set will hold the messages that form the core of our context.
+        context_messages: Dict[int, discord.Message] = {message.id: message}
 
-        # 3. Gather channel history
-        if config.context_messages > 0:
-            channel_messages_to_fetch = config.context_messages
-            async for history_msg in message.channel.history(limit=channel_messages_to_fetch + len(gathered_messages), before=message):
-                if history_msg.id not in gathered_messages:
-                    gathered_messages[history_msg.id] = history_msg
-                if len(gathered_messages) >= (channel_messages_to_fetch + 2): # +2 for trigger and its reply
+        # Add user-specific messages from the initial pool.
+        user_messages_found = 0
+        for msg in sorted(message_pool.values(), key=lambda m: m.created_at, reverse=True):
+            if msg.author.id == message.author.id and msg.id not in context_messages:
+                if user_messages_found < config.user_context_messages:
+                    context_messages[msg.id] = msg
+                    user_messages_found += 1
+                else:
                     break
         
-        # 4. Gather author's message history
-        if config.user_context_messages > 0:
-            user_messages_found = 0
-            # Check how many of the author's messages are already in the context
-            for msg in gathered_messages.values():
-                if msg.author.id == message.author.id:
-                    user_messages_found += 1
-            
-            if user_messages_found < config.user_context_messages:
-                # We search a bit wider to find the remaining user messages
-                async for history_msg in message.channel.history(limit=100, before=message):
-                    if user_messages_found >= config.user_context_messages:
-                        break
-                    if history_msg.author.id == message.author.id:
-                        if history_msg.id not in gathered_messages:
-                            gathered_messages[history_msg.id] = history_msg
-                        user_messages_found += 1
+        # Add general channel messages from the initial pool.
+        channel_messages_found = 0
+        for msg in sorted(message_pool.values(), key=lambda m: m.created_at, reverse=True):
+            if msg.id not in context_messages:
+                if channel_messages_found < config.context_messages:
+                    context_messages[msg.id] = msg
+                    channel_messages_found += 1
+                else:
+                    break
 
-        # 5. Gather all referenced messages (depth of 1)
-        messages_to_check_for_replies = list(gathered_messages.values())
-        for msg in messages_to_check_for_replies:
+        # Identify all unique replied-to message IDs from our current context.
+        for msg in context_messages.values():
             if msg.reference and msg.reference.message_id:
-                if msg.reference.message_id not in gathered_messages:
-                    try:
-                        # Use resolved if available, otherwise fetch
-                        if msg.reference.resolved and isinstance(msg.reference.resolved, discord.Message):
-                            replied_to = msg.reference.resolved
-                        else:
-                            replied_to = await message.channel.fetch_message(msg.reference.message_id)
-                        gathered_messages[replied_to.id] = replied_to
-                    except (discord.NotFound, discord.HTTPException) as e:
-                        logger.warning(f"Could not fetch replied-to message {msg.reference.message_id} from context: {e}")
+                required_message_ids.add(msg.reference.message_id)
 
-        # 6. For bot messages, try to gather the full response
-        messages_to_check_for_full_response = list(gathered_messages.values())
-        for msg in messages_to_check_for_full_response:
-            if msg.author.bot:
-                # Search forwards
-                after_msg = msg
-                while True:
-                    try:
-                        # Fetch the message immediately after the current one
-                        next_msg = await anext(msg.channel.history(limit=1, after=after_msg), None)
-                        if not next_msg or next_msg.id in gathered_messages:
-                            break # Already have this message or no more messages, stop searching
-                        # Check if it's a continuation of the bot's response
-                        if next_msg.author.id == msg.author.id and (next_msg.created_at - after_msg.created_at).total_seconds() < 2:
-                            gathered_messages[next_msg.id] = next_msg
-                            after_msg = next_msg
-                        else:
-                            break # Not a continuation
-                    except (StopAsyncIteration, discord.NotFound, discord.HTTPException):
-                        break # No more messages or error fetching
-
-                # Search backwards
-                before_msg = msg
-                while True:
-                    try:
-                        # Fetch the message immediately before the current one
-                        prev_msg = await anext(msg.channel.history(limit=1, before=before_msg), None)
-                        if not prev_msg or prev_msg.id in gathered_messages:
-                            break # Already have this message or no more messages, stop searching
-                        # Check if it's a continuation of the bot's response
-                        if prev_msg.author.id == msg.author.id and (before_msg.created_at - prev_msg.created_at).total_seconds() < 2:
-                            gathered_messages[prev_msg.id] = prev_msg
-                            before_msg = prev_msg
-                        else:
-                            break # Not a continuation
-                    except (StopAsyncIteration, discord.NotFound, discord.HTTPException):
-                        break # No more messages or error fetching
-
-        # 7. Sort chronologically and convert to ConversationMessage
-        sorted_messages = sorted(gathered_messages.values(), key=lambda m: m.created_at)
+        # --- Step 3: "Fetch Until Found" Loop for Deep Replies ---
+        # If a required reply is not in our pool, fetch older messages until it is found.
+        # This ensures context is complete, even for replies to very old messages.
+        fetch_attempts = 0
+        max_fetch_attempts = 10 # Safety break to prevent infinite loops
         
-        context_messages = []
-        for msg in sorted_messages:
+        missing_ids = required_message_ids - message_pool.keys()
+        
+        while missing_ids and fetch_attempts < max_fetch_attempts:
+            logger.debug(f"Missing {len(missing_ids)} replied-to messages. Fetching older history...")
+            fetch_attempts += 1
+            
+            new_messages_fetched = 0
+            async for history_msg in message.channel.history(limit=history_limit, before=oldest_message_in_pool):
+                if history_msg.id not in message_pool:
+                    message_pool[history_msg.id] = history_msg
+                    new_messages_fetched += 1
+                    if history_msg.created_at < oldest_message_in_pool.created_at:
+                        oldest_message_in_pool = history_msg
+            
+            if new_messages_fetched == 0:
+                logger.warning("No more messages in channel history, but some replies are still missing.")
+                break # Exit if channel history is exhausted.
+
+            missing_ids = required_message_ids - message_pool.keys()
+
+        # Add all found replies to our final context set.
+        for msg_id in required_message_ids:
+            if msg_id in message_pool and msg_id not in context_messages:
+                context_messages[msg_id] = message_pool[msg_id]
+
+        # --- Step 4: In-Memory Bot Message Stitching ---
+        # The message_pool contains a wide swath of channel history. We can search it
+        # to stitch together multi-part bot messages without any new API calls.
+        final_messages: Dict[int, discord.Message] = context_messages.copy()
+        
+        # Create a sorted list of all messages in the pool for efficient searching.
+        sorted_pool = sorted(message_pool.values(), key=lambda m: m.created_at)
+        pool_indices = {msg.id: i for i, msg in enumerate(sorted_pool)}
+
+        # Check messages that are already in our core context.
+        messages_to_check = list(context_messages.values())
+        
+        for msg in messages_to_check:
+            if msg.author.bot:
+                # This message is from a bot. Search for its other parts in the pool.
+                current_index = pool_indices.get(msg.id)
+                if current_index is None: continue
+
+                # Search backwards from the message's position in the sorted pool.
+                for i in range(current_index - 1, -1, -1):
+                    prev_msg = sorted_pool[i]
+                    # Check if the previous message is from the same bot and within a close time frame.
+                    if prev_msg.author.id == msg.author.id and (sorted_pool[i+1].created_at - prev_msg.created_at).total_seconds() < 10:
+                        if prev_msg.id not in final_messages:
+                            final_messages[prev_msg.id] = prev_msg
+                    else:
+                        # Break if the chain is interrupted by another author or a time gap.
+                        break
+                
+                # Search forwards from the message's position.
+                for i in range(current_index + 1, len(sorted_pool)):
+                    next_msg = sorted_pool[i]
+                    # Check if the next message is a continuation from the same bot.
+                    if next_msg.author.id == msg.author.id and (next_msg.created_at - sorted_pool[i-1].created_at).total_seconds() < 10:
+                        if next_msg.id not in final_messages:
+                            final_messages[next_msg.id] = next_msg
+                    else:
+                        # Break if the chain is interrupted.
+                        break
+
+        # --- Step 5: Final Formatting ---
+        # Convert the final set of discord.Message objects into ConversationMessage format.
+        final_sorted_list = sorted(final_messages.values(), key=lambda m: m.created_at)
+        
+        formatted_context = []
+        for msg in final_sorted_list:
             cleaned_content, image_urls, _ = await chatbot_manager.conversation_manager._process_discord_message_for_context(msg)
             
             multimodal_content = []
@@ -290,7 +316,7 @@ class InlineResponseManager:
             if not multimodal_content:
                 continue
 
-            context_messages.append(ConversationMessage(
+            formatted_context.append(ConversationMessage(
                 user_id=msg.author.id,
                 username=msg.author.display_name,
                 content=cleaned_content,
@@ -303,7 +329,7 @@ class InlineResponseManager:
                 multimodal_content=multimodal_content
             ))
             
-        return context_messages
+        return formatted_context
 
 
 def split_message(text: str, limit: int = 2000) -> List[str]:
