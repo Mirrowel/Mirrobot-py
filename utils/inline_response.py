@@ -259,7 +259,30 @@ class InlineResponseManager:
             if msg_id in message_pool and msg_id not in context_messages:
                 context_messages[msg_id] = message_pool[msg_id]
 
-        # --- Step 4: In-Memory Bot Message Stitching ---
+        # --- Step 4: Proactive User Indexing ---
+        # Ensure all users in the context are fully indexed before formatting.
+        author_ids_in_context = {msg.author.id for msg in context_messages.values()}
+        user_index = await chatbot_manager.index_manager.load_user_index(message.guild.id)
+        
+        missing_user_ids = {uid for uid in author_ids_in_context if uid not in user_index}
+        
+        if missing_user_ids:
+            logger.debug(f"Found {len(missing_user_ids)} users not in index. Fetching full member data.")
+            newly_fetched_members = []
+            for user_id in missing_user_ids:
+                try:
+                    member = await message.guild.fetch_member(user_id)
+                    newly_fetched_members.append(member)
+                except discord.NotFound:
+                    logger.warning(f"Could not fetch member with ID {user_id} for inline context; they may have left the server.")
+                except Exception as e:
+                    logger.error(f"Error fetching member {user_id}: {e}", exc_info=True)
+            
+            if newly_fetched_members:
+                await chatbot_manager.index_manager.update_users_bulk(message.guild.id, newly_fetched_members)
+                logger.debug(f"Updated user index with {len(newly_fetched_members)} newly fetched members.")
+
+        # --- Step 5: In-Memory Bot Message Stitching ---
         # The message_pool contains a wide swath of channel history. We can search it
         # to stitch together multi-part bot messages without any new API calls.
         final_messages: Dict[int, discord.Message] = context_messages.copy()
@@ -299,7 +322,7 @@ class InlineResponseManager:
                         # Break if the chain is interrupted.
                         break
 
-        # --- Step 5: Final Formatting ---
+        # --- Step 6: Final Formatting ---
         # Convert the final set of discord.Message objects into ConversationMessage format.
         final_sorted_list = sorted(final_messages.values(), key=lambda m: m.created_at)
         
