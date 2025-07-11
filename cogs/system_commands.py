@@ -379,28 +379,6 @@ class HelpView(discord.ui.View):
 class SystemCommandsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._permission_cache = {}  # Cache for command permissions
-    
-    # Clear the permission cache periodically or when permissions might have changed
-    def clear_permission_cache(self):
-        self._permission_cache.clear()
-
-    # Helper method to check permissions with caching
-    async def check_command_permission(self, ctx, cmd):
-        # Create a unique cache key based on user, guild, and command
-        cache_key = f"{ctx.author.id}:{ctx.guild.id}:{cmd.name}"
-        
-        # Check if we have a cached result
-        if cache_key in self._permission_cache:
-            return self._permission_cache[cache_key]
-            
-        try:
-            result = await cmd.can_run(ctx)
-            self._permission_cache[cache_key] = result
-            return result
-        except:
-            self._permission_cache[cache_key] = False
-            return False
 
     @commands.command(name='shutdown', help='Shut down the bot completely (owner only).\nNo arguments required.\nExample: !shutdown')
     @commands.is_owner()  # Only the bot owner can use this command
@@ -435,8 +413,8 @@ class SystemCommandsCog(commands.Cog):
         if command_name:
             cmd = self.bot.get_command(command_name)
             if cmd:
-                # Check if user has permission to use this command - use cached check
-                can_run = await self.check_command_permission(ctx, cmd)
+                # Check if user has permission to use this command
+                can_run = await cmd.can_run(ctx)
                     
                 if not can_run:
                     await ctx.send(f"You don't have permission to use the `{command_name}` command.")
@@ -496,18 +474,25 @@ class SystemCommandsCog(commands.Cog):
         # Dynamically organize commands by their categories
         categories = {}
         
-        # Collect all commands for permission check
-        commands_to_check = list(self.bot.commands)
-        check_tasks = [self.check_command_permission(ctx, cmd) for cmd in commands_to_check]
+        # --- Batched Permission Check ---
+        author_perms = ctx.author.guild_permissions
         
-        # Run permission checks in parallel
-        results = await asyncio.gather(*check_tasks, return_exceptions=True)
-        
-        # Process results
-        for i, cmd in enumerate(commands_to_check):
-            # Skip commands the user can't use
-            if not isinstance(results[i], bool) or not results[i]:
+        # Dynamically organize commands by their categories
+        categories = {}
+        for cmd in self.bot.commands:
+            # Preliminary check if the command is hidden or disabled
+            if cmd.hidden or not cmd.enabled:
                 continue
+
+            try:
+                # This check is now significantly faster due to the caching in has_command_permission
+                if await cmd.can_run(ctx):
+                    category = getattr(cmd, 'category', "Miscellaneous")
+                    if category not in categories:
+                        categories[category] = []
+                    categories[category].append(cmd)
+            except commands.CommandError:
+                continue # Ignore commands that fail checks
             
             # Get the command's category (or "Miscellaneous" if not set)
             # Make sure to check the command itself first, then the callback
@@ -579,32 +564,42 @@ class SystemCommandsCog(commands.Cog):
             'categories': {}
         }
         
-        # Collect all commands for permission check
-        commands_to_check = list(self.bot.commands)
-        check_tasks = [self.check_command_permission(ctx, cmd) for cmd in commands_to_check]
-        
-        # Run permission checks in parallel
-        results = await asyncio.gather(*check_tasks, return_exceptions=True)
-        
-        # Process results
-        for i, cmd in enumerate(commands_to_check):
-            # Skip commands the user can't use
-            if not isinstance(results[i], bool) or not results[i]:
+        # --- Batched Permission Check ---
+        author_perms = ctx.author.guild_permissions
+
+        # 1. Gather all unique permissions required by any command
+        all_required_perms = set()
+        for cmd in self.bot.commands:
+            if cmd.hidden or not cmd.enabled:
                 continue
+            for check in cmd.checks:
+                if isinstance(check, commands.core.has_permissions):
+                    all_required_perms.update(check.permissions)
+
+        # 2. Check which of the required permissions the user actually has.
+        user_has_perms = {perm for perm in all_required_perms if getattr(author_perms, perm, False)}
+
+        # 3. Filter commands based on the user's permissions.
+        for cmd in self.bot.commands:
+            if cmd.hidden or not cmd.enabled:
+                continue
+
+            can_run = True
+            for check in cmd.checks:
+                if isinstance(check, commands.core.has_permissions):
+                    if not all(p in user_has_perms for p in check.permissions):
+                        can_run = False
+                        break
             
-            # Get the command's category
-            if hasattr(cmd, 'category'):
-                category = cmd.category
-            elif hasattr(cmd, 'callback') and hasattr(cmd.callback, 'category'):
-                category = cmd.callback.category
-            else:
-                category = "Miscellaneous"
-                
-            # Add command to its category
-            if category not in help_data['categories']:
-                help_data['categories'][category] = []
-                
-            help_data['categories'][category].append(cmd)
+            if can_run:
+                try:
+                    if await cmd.can_run(ctx):
+                        category = getattr(cmd, 'category', "Miscellaneous")
+                        if category not in help_data['categories']:
+                            help_data['categories'][category] = []
+                        help_data['categories'][category].append(cmd)
+                except commands.CommandError:
+                    continue
             
         # Create and send the interactive help view
         view = HelpView(ctx, help_data)
