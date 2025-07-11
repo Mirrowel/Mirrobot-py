@@ -49,9 +49,11 @@ The bot can be configured to re-upload Discord media attachments to third-party 
 
 - **media_caching**:
   - **enabled**: `true` or `false`. Enables or disables the media caching feature.
-  - **services**: A list of services to use for uploading. Supported services are `"catbox"` and `"pixeldrain"`. The bot will randomly select a service from this list for each upload.
+  - **services**: A list of services to use for uploading. Supported services are `"litterbox"`, `"catbox"`, and `"pixeldrain"`.
   - **upload_timeout_seconds**: The timeout in seconds for each upload attempt.
+  - **permanent_host_fallback**: `true` or `false`. If `true`, the bot will fall back to a permanent host if the temporary host (`litterbox`) fails.
   - **pixeldrain_api_key**: Your API key for the Pixeldrain service.
+  - **catbox_user_hash**: Your user hash for the Catbox service.
 
 ## Environment Variables
 

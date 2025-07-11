@@ -25,7 +25,10 @@ class MediaCacheManager:
         self.services = self.config.get('services', [])
         self.pixeldrain_api_key = self.config.get('pixeldrain_api_key')
         self.catbox_user_hash = self.config.get('catbox_user_hash')
+        self.imgbb_api_key = self.config.get('imgbb_api_key')
+        self.filebin_bin_name = self.config.get('filebin_bin_name')
         self.upload_timeout = self.config.get('upload_timeout_seconds', 30)
+        self.permanent_host_fallback = self.config.get('permanent_host_fallback', True)
         self._load_cache()
         self._lock = asyncio.Lock()
         self._dirty = False
@@ -176,25 +179,45 @@ class MediaCacheManager:
             ]
             is_permanent = any(pattern in url for pattern in permanent_patterns)
 
+            # Define service priority: URL-based services first
+            url_upload_services = ['catbox', 'imgbb']
+            file_upload_services = ['pixeldrain', 'filebin', 'litterbox']
+
+            # Prioritize services based on upload method
+            def get_prioritized_services(service_list):
+                """Sorts a list of services, placing URL-based ones first."""
+                url_first = [s for s in url_upload_services if s in service_list]
+                file_then = [s for s in file_upload_services if s in service_list]
+                # Shuffle within each priority group to distribute load
+                random.shuffle(url_first)
+                random.shuffle(file_then)
+                return url_first + file_then
+
             services_to_try = []
             if is_permanent:
-                permanent_services = [s for s in ['pixeldrain', 'catbox'] if s in self.services]
+                permanent_services = [s for s in ['pixeldrain', 'catbox', 'imgbb', 'filebin'] if s in self.services]
                 if permanent_services:
-                    services_to_try = random.sample(permanent_services, len(permanent_services))
-                elif 'litterbox' in self.services:
+                    services_to_try = get_prioritized_services(permanent_services)
+                else:
+                    # Fallback to temporary if no permanent services are configured
                     logger.warning(f"No permanent storage service for {url}. Falling back to temporary.")
-                    services_to_try = ['litterbox']
+                    temporary_services = [s for s in ['litterbox', 'imgbb'] if s in self.services]
+                    services_to_try = get_prioritized_services(temporary_services)
             else:
-                if 'litterbox' in self.services:
-                    services_to_try = ['litterbox']
+                temporary_services = [s for s in ['litterbox', 'imgbb'] if s in self.services]
+                if temporary_services:
+                    services_to_try = get_prioritized_services(temporary_services)
 
             if not services_to_try:
                 logger.warning(f"No available caching service for {url}.")
                 return url
 
+            # Attempt to upload to the selected services
             for service in services_to_try:
                 try:
-                    new_url, expiry_timestamp = await self._upload_file(service, file_data, filename)
+                    # Pass whether the original intent was for a temporary upload
+                    is_temp_upload = not is_permanent
+                    new_url, expiry_timestamp = await self._upload_file(service, file_data, filename, is_temp_upload, source_url=url)
                     if new_url:
                         logger.debug(f"Successfully cached {url} to {service}: {new_url}")
                         self.media_entries[file_hash] = {
@@ -208,20 +231,52 @@ class MediaCacheManager:
                 except Exception as e:
                     logger.error(f"Failed to upload to {service}: {e}")
                     continue
+            
+            # If a temporary upload fails and fallback is enabled, try permanent services
+            if not is_permanent and self.permanent_host_fallback:
+                logger.warning(f"Temporary upload failed for {url}. Attempting fallback to permanent services.")
+                permanent_services = [s for s in ['pixeldrain', 'catbox', 'imgbb', 'filebin'] if s in self.services]
+                
+                # Prioritize the permanent services as well
+                prioritized_fallback_services = get_prioritized_services(permanent_services)
+
+                for service in prioritized_fallback_services:
+                    try:
+                        new_url, expiry_timestamp = await self._upload_file(service, file_data, filename, is_temp_upload=False, source_url=url)
+                        if new_url:
+                            logger.info(f"Successfully cached {url} to fallback service {service}: {new_url}")
+                            self.media_entries[file_hash] = {
+                                "url": new_url,
+                                "expiry_timestamp": expiry_timestamp, # Will be None for permanent
+                                "known_urls": [clean_url]
+                            }
+                            self.url_to_hash_map[clean_url] = file_hash
+                            self._mark_dirty()
+                            return new_url
+                    except Exception as e:
+                        logger.error(f"Failed to upload to fallback service {service}: {e}")
+                        continue
 
             logger.warning(f"Failed to cache media from {url} to any service.")
             return url
 
-    async def _upload_file(self, service: str, file_data: bytes, filename: str) -> tuple[Optional[str], Optional[float]]:
+    async def _upload_file(self, service: str, file_data: bytes, filename: str, is_temp_upload: bool, source_url: str) -> tuple[Optional[str], Optional[float]]:
         """Dispatches file upload to the correct service and returns the new URL and expiry."""
         if service == 'litterbox':
             url = await self._upload_to_litterbox(file_data, filename)
-            return url, time.time() + (72 * 3600) if url else (None, None)
+            expiry = time.time() + (72 * 3600) if url and is_temp_upload else None
+            return url, expiry
         elif service == 'catbox':
-            url = await self._upload_to_catbox(file_data, filename)
+            url = await self._upload_to_catbox(source_url)
             return url, None
         elif service == 'pixeldrain':
             url = await self._upload_to_pixeldrain(file_data, filename)
+            return url, None
+        elif service == 'imgbb':
+            url, expiry = await self._upload_to_imgbb(is_temp_upload, source_url=source_url)
+            return url, expiry
+        elif service == 'filebin':
+            url = await self._upload_to_filebin(file_data, filename)
             return url, None
         
         logger.warning(f"Unknown media caching service: {service}")
@@ -241,16 +296,16 @@ class MediaCacheManager:
             logger.error(f"Litterbox upload failed with status {response.status}: {await response.text()}")
             return None
 
-    async def _upload_to_catbox(self, file_data: bytes, filename: str) -> Optional[str]:
-        """Uploads file data to Catbox for permanent storage."""
-        url = "https://catbox.moe/user/api.php"
+    async def _upload_to_catbox(self, source_url: str) -> Optional[str]:
+        """Uploads a file from a URL to Catbox for permanent storage."""
+        api_url = "https://catbox.moe/user/api.php"
         data = aiohttp.FormData()
-        data.add_field('reqtype', 'fileupload')
+        data.add_field('reqtype', 'urlupload')
         if self.catbox_user_hash:
             data.add_field('userhash', self.catbox_user_hash)
-        data.add_field('fileToUpload', file_data, filename=filename)
+        data.add_field('url', source_url)
 
-        async with self.session.post(url, data=data, timeout=self.upload_timeout) as response:
+        async with self.session.post(api_url, data=data, timeout=self.upload_timeout) as response:
             if response.status == 200:
                 return await response.text()
             logger.error(f"Catbox upload failed with status {response.status}: {await response.text()}")
@@ -276,4 +331,57 @@ class MediaCacheManager:
                     logger.error(f"Error parsing Pixeldrain response: {e}")
                     return None
             logger.error(f"Pixeldrain upload failed with status {response.status}: {await response.text()}")
+            return None
+
+    async def _upload_to_imgbb(self, is_temp: bool, source_url: str) -> tuple[Optional[str], Optional[float]]:
+        """Uploads an image to ImgBB from a URL. Can be temporary or permanent."""
+        if not self.imgbb_api_key:
+            logger.warning("ImgBB API key not configured.")
+            return None, None
+
+        api_url = "https://api.imgbb.com/1/upload"
+        
+        # ImgBB expects the image URL as form data, not a query parameter.
+        data = aiohttp.FormData()
+        data.add_field('image', source_url)
+        
+        params = {'key': self.imgbb_api_key}
+        if is_temp:
+            params['expiration'] = 60 * 60 * 24 * 3  # 3 days
+
+        try:
+            async with self.session.post(api_url, params=params, data=data, timeout=self.upload_timeout) as response:
+                if response.status == 200:
+                    resp_json = await response.json(content_type=None)
+                    if resp_json.get("success"):
+                        image_url = resp_json["data"]["url"]
+                        expiration_seconds = int(resp_json["data"].get("expiration", 0))
+                        expiry_timestamp = time.time() + expiration_seconds if expiration_seconds > 0 else None
+                        return image_url, expiry_timestamp
+                    else:
+                        logger.error(f"ImgBB upload failed: {resp_json.get('error', {}).get('message', 'Unknown error')}")
+                        return None, None
+                else:
+                    logger.error(f"ImgBB upload failed with status {response.status}: {await response.text()}")
+                    return None, None
+        except Exception as e:
+            logger.error(f"Exception during ImgBB upload: {e}")
+            return None, None
+
+    async def _upload_to_filebin(self, file_data: bytes, filename: str) -> Optional[str]:
+        """Uploads a file to Filebin for permanent storage."""
+        bin_name = self.filebin_bin_name or hashlib.sha1(str(time.time()).encode()).hexdigest()[:10]
+        url = f"https://filebin.net/{bin_name}/{filename}"
+        
+        headers = {'Content-Type': 'application/octet-stream'}
+        
+        try:
+            async with self.session.post(url, data=file_data, headers=headers, timeout=self.upload_timeout) as response:
+                if response.status == 201:
+                    return f"https://filebin.net/{bin_name}/{filename}"
+                else:
+                    logger.error(f"Filebin upload failed with status {response.status}: {await response.text()}")
+                    return None
+        except Exception as e:
+            logger.error(f"Exception during Filebin upload: {e}")
             return None

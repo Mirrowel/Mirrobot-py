@@ -169,21 +169,26 @@ To ensure the LLM has reliable, long-term access to image context, Mirrobot impl
 
 #### Caching Strategy and Services
 
-The media caching feature is configured in `config.json` and uses a specific strategy based on the type of asset. You must enable the desired services in the `"services"` list (e.g., `["litterbox", "catbox", "pixeldrain"]`).
+The media caching feature is configured in `config.json` and uses a specific strategy based on the type of asset. You must enable the desired services in the `"services"` list (e.g., `["litterbox", "catbox", "pixeldrain", "imgbb", "filebin"]`).
 
-*   **Permanent Assets (Catbox, Pixeldrain):** To ensure the longevity of important server and user assets, the bot attempts to upload these to a permanent storage service (`catbox` or `pixeldrain`). If multiple permanent services are enabled, one will be chosen at random.
-    *   **Fallback:** If no permanent services are enabled but `litterbox` is, the bot will fall back to using Litterbox for temporary (72-hour) storage of these assets.
+*   **Permanent Assets (Catbox, Pixeldrain, Filebin, ImgBB):** To ensure the longevity of important server and user assets, the bot attempts to upload these to a permanent storage service (`catbox`, `pixeldrain`, `filebin`, or `imgbb` without expiration). If multiple permanent services are enabled, one will be chosen at random.
+    *   **Fallback:** If no permanent services are enabled but a temporary one (`litterbox` or `imgbb` with expiration) is, the bot will fall back to using the temporary service.
     *   This applies to:
         *   User Avatars (`cdn.discordapp.com/avatars/`)
         *   Server Icons (`cdn.discordapp.com/icons/`)
         *   Server Banners (`cdn.discordapp.com/banners/`)
         *   Server Splashes (`cdn.discordapp.com/splashes/`)
         *   Custom Emojis (`cdn.discordapp.com/emojis/`)
-    *   **Configuration:**
-        *   `pixeldrain`: Requires a `pixeldrain_api_key` in `config.json`.
-        *   `catbox`: Can be used anonymously, but for files to be tied to your account, you must provide a `catbox_user_hash` in `config.json`.
+    *   **Configuration & Upload Methods:**
+        *   `catbox`: Supports **URL uploads**. Can be used anonymously, but for files to be tied to your account, you must provide a `catbox_user_hash` in `config.json`.
+        *   `imgbb`: Supports **URL uploads**. Requires an `imgbb_api_key` in `config.json`. Can be used for both temporary and permanent storage.
+        *   `pixeldrain`: Supports **file uploads**. Requires a `pixeldrain_api_key` in `config.json`.
+        *   `filebin`: Supports **file uploads**. No API key required, but you can set a default `filebin_bin_name` in `config.json`.
 
-*   **Temporary Assets (Litterbox):** All other media attachments (standard user uploads) are considered temporary and are **exclusively** uploaded to `Litterbox`, the temporary file hosting service from Catbox. These links expire after 72 hours. This requires `litterbox` to be in the `"services"` list.
+*   **Temporary Assets (Litterbox, ImgBB):** All other media attachments (standard user uploads) are considered temporary and are uploaded to a temporary file hosting service.
+    *   `litterbox`: Supports **file uploads**. Links expire after 72 hours.
+    *   `imgbb`: Supports **URL uploads**. Can be configured with an expiration time.
+    *   **Fallback:** If a temporary upload fails and `permanent_host_fallback` is enabled, the bot will attempt to upload to a permanent service instead.
 
 #### Cache Mechanism
 
@@ -194,7 +199,7 @@ To maximize efficiency and prevent re-uploading the same content, the bot uses a
     1.  **Fast Path (URL Check):** When a new image URL is seen, the bot first checks its clean version against the URL-to-hash map. If a match is found, the cached link is returned instantly, avoiding any downloads.
     2.  **Medium Path (Hash Check):** If the URL is new, the bot downloads the image and computes its content hash. It then checks if this hash already exists in the cache (meaning the same image was seen before, but from a different URL, like `media.discordapp.net` vs. `cdn.discordapp.com`). If it exists, the bot updates its URL map to include the new URL and returns the existing cached link. This avoids a re-upload.
     3.  **Slow Path (New Upload):** If both the URL and the content hash are new, the bot uploads the media to the appropriate service (permanent or temporary) and stores the new link in the cache, keyed by its content hash and linked to its clean URL.
-*   **Expiry:** Only links cached to the temporary service (`litterbox`) are stored with a 72-hour expiry time and are automatically purged from the cache when they expire.
+*   **Expiry:** Links cached to temporary services (`litterbox`, `imgbb` with expiration) are stored with an expiry time and are automatically purged from the cache when they expire.
 
 ### User and Channel Indexing
 

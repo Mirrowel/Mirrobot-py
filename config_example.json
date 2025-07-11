@@ -17,9 +17,12 @@
   },
   "media_caching": {
     "enabled": true,
-    "services": ["litterbox", "catbox", "pixeldrain"],
+    "services": ["litterbox", "catbox", "pixeldrain", "imgbb", "filebin"],
     "upload_timeout_seconds": 30,
+    "permanent_host_fallback": true,
     "pixeldrain_api_key": "YOUR_PIXELDRAIN_API_KEY",
-    "catbox_user_hash": "YOUR_CATBOX_USER_HASH"
+    "catbox_user_hash": "YOUR_CATBOX_USER_HASH",
+    "imgbb_api_key": "YOUR_IMGBB_API_KEY",
+    "filebin_bin_name": "mirrobot-cache"
   }
 }
