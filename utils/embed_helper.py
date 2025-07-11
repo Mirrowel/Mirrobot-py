@@ -457,98 +457,97 @@ async def create_llm_response(
     response_text: str,
     question: str,
     model_name: str,
+    command_type: str,
     thinking_content: str = "",
     show_thinking: bool = False,
-    title: str = "LLM Response",
-    color: discord.Color = discord.Color.blue(),
     performance_metrics: Optional[Dict[str, Any]] = None,
-    message_to_edit: Optional[discord.Message] = None
-) -> Union[discord.Message, List[discord.Message]]:
+    messages_to_edit: Optional[List[discord.Message]] = None
+) -> List[discord.Message]:
     """
-    Create or update a specialized LLM response embed using a consistent, field-based format.
-    
-    Args:
-        ctx: Discord context
-        response_text: The main LLM response content
-        question: The original question asked
-        model_name: Name of the LLM model used
-        thinking_content: Optional thinking process content
-        show_thinking: Whether to display thinking content in a spoiler.
-        title: Embed title
-        color: Embed color
-        performance_metrics: Optional performance metrics dict.
-        message_to_edit: An existing message to edit instead of sending a new one.
-        
-    Returns:
-        A single discord.Message object (either new or edited).
+    Create or update a specialized LLM response embed, handling multi-message splitting for streaming.
+    Returns the list of messages (new or edited).
     """
-    sections = []
-    
-    # Model info section
-    sections.append({
-        "name": "Model",
-        "content": model_name,
-        "inline": True,
-        "emoji": "🤖"
-    })
-    
-    # Performance metrics section if available
-    if performance_metrics:
-        if performance_metrics.get('has_token_data', False):
-            perf_text = (
-                f"🚀 {performance_metrics['tokens_per_sec']:.0f} t/s | "
-                f"⏱️ {performance_metrics['elapsed_time']:.2f}s | "
-                f"📊 {performance_metrics['completion_tokens']} tokens"
-            )
-        else:
-            perf_text = (
-                f"🚀 {performance_metrics['chars_per_sec']:.0f} c/s | "
-                f"⏱️ {performance_metrics['elapsed_time']:.2f}s"
-            )
-        sections.append({
-            "name": "Performance",
-            "content": perf_text,
-            "inline": True,
-            "emoji": "📈"
-        })
+    if messages_to_edit is None:
+        messages_to_edit = []
 
-    # Thinking section if needed
+    # 1. Determine Embed Properties
+    if command_type == "think":
+        title_base = "LLM Thinking Response"
+        color = discord.Color.blue()
+    else:  # 'ask'
+        title_base = "LLM Response"
+        color = discord.Color.orange()
+
+    # 2. Construct all content sections
+    all_sections = []
     if show_thinking and thinking_content:
-        sections.append({
-            "name": "Thinking Process",
-            "content": thinking_content,
-            "spoiler": True,
-            "emoji": "🧠"
+        all_sections.append({
+            "name": "Thinking Process", "content": thinking_content,
+            "spoiler": True, "emoji": "🧠"
         })
-    
-    # Answer section
-    sections.append({
-        "name": "Answer",
-        "content": response_text or "No answer content.",
+    all_sections.append({
+        "name": "Answer", "content": response_text or "...",
         "emoji": "💡"
     })
 
-    # This is a simplified call to a hypothetical universal embed sender.
-    # The actual implementation will be in `create_embed_response`.
-    # For now, we construct the embed directly and then send or edit.
+    # 3. Generate all fields from sections
+    all_fields = create_structured_fields(all_sections)
 
-    embed = discord.Embed(
-        title=title,
-        color=color,
-        description=f"**Question:** {question[:250]}{'...' if len(question) > 250 else ''}"
-    )
-    
-    embed.set_author(
-        name=f"Response from {model_name}",
-        icon_url=ctx.bot.user.avatar.url if ctx.bot.user.avatar else None
-    )
+    # 4. Distribute fields across embeds
+    embeds_data = []
+    current_fields_chunk = []
+    char_count = 0
+    for field in all_fields:
+        field_len = len(field.get('name', '')) + len(field.get('value', ''))
+        if current_fields_chunk and (len(current_fields_chunk) >= 25 or char_count + field_len > 5800):
+            embeds_data.append(current_fields_chunk)
+            current_fields_chunk = []
+            char_count = 0
+        current_fields_chunk.append(field)
+        char_count += field_len
+    if current_fields_chunk:
+        embeds_data.append(current_fields_chunk)
 
-    # Use the structured field creator
-    structured_fields = create_structured_fields(sections)
-    for field in structured_fields:
-        embed.add_field(name=field['name'], value=field['value'], inline=field.get('inline', False))
+    # 5. Create/Update Messages
+    num_embeds_needed = len(embeds_data)
+    for i in range(num_embeds_needed):
+        is_first_embed = (i == 0)
+        is_last_embed = (i == num_embeds_needed - 1)
+        
+        title = f"{title_base} (Part {i+1}/{num_embeds_needed})" if num_embeds_needed > 1 else title_base
 
-    if message_to_edit:
-        return await message_to_edit.edit(embed=embed)
-    else:
-        return await ctx.send(embed=embed)
+        embed = discord.Embed(title=title, color=color)
+        if is_first_embed:
+            embed.description = f"**Question:** {question[:250]}{'...' if len(question) > 250 else ''}"
+
+        for field in embeds_data[i]:
+            embed.add_field(name=field['name'], value=field['value'], inline=field.get('inline', False))
+
+        if is_last_embed:
+            footer_parts = [f"Model: {model_name}"]
+            if performance_metrics:
+                if performance_metrics.get('has_token_data', False):
+                    perf_text = (f"🚀 {performance_metrics['tokens_per_sec']:.0f} t/s | "
+                                 f"⏱️ {performance_metrics['elapsed_time']:.2f}s | "
+                                 f"📊 {performance_metrics['completion_tokens']} tokens")
+                else:
+                    perf_text = (f"🚀 {performance_metrics['chars_per_sec']:.0f} c/s | "
+                                 f"⏱️ {performance_metrics['elapsed_time']:.2f}s")
+                footer_parts.append(perf_text)
+            embed.set_footer(text=" | ".join(footer_parts))
+
+        if i < len(messages_to_edit):
+            await messages_to_edit[i].edit(embed=embed)
+        else:
+            new_msg = await ctx.send(embed=embed)
+            messages_to_edit.append(new_msg)
+
+    # 6. Clean up extra messages
+    if len(messages_to_edit) > num_embeds_needed:
+        for msg in messages_to_edit[num_embeds_needed:]:
+            try:
+                await msg.delete()
+            except discord.NotFound: pass
+        messages_to_edit = messages_to_edit[:num_embeds_needed]
+
+    return messages_to_edit

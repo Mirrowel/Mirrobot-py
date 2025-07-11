@@ -411,9 +411,14 @@ class LLMCommands(commands.Cog):
         char_count = len(content) if content else 0
         chars_per_sec = char_count / elapsed_time if elapsed_time > 0 else 0
         
-        prompt_tokens = getattr(usage, 'prompt_tokens', 0) if usage else 0
-        completion_tokens = getattr(usage, 'completion_tokens', 0) if usage else 0
-        total_tokens = getattr(usage, 'total_tokens', 0) if usage else 0
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            completion_tokens = usage.get('completion_tokens', 0)
+            total_tokens = usage.get('total_tokens', 0)
+        else:
+            prompt_tokens = getattr(usage, 'prompt_tokens', 0) if usage else 0
+            completion_tokens = getattr(usage, 'completion_tokens', 0) if usage else 0
+            total_tokens = getattr(usage, 'total_tokens', 0) if usage else 0
         
         tokens_per_sec = 0
         if completion_tokens > 0 and elapsed_time > 0:
@@ -572,33 +577,20 @@ class LLMCommands(commands.Cog):
                            f"{performance_metrics['chars_per_sec']:.1f} chars/s, "
                            f"~{performance_metrics['tokens_per_sec']:.1f} tokens/s)")
 
-    async def handle_streaming_embed_response(self, ctx, stream_generator: AsyncGenerator, model_name: str, question: str, show_thinking: bool):
+    async def handle_streaming_embed_response(self, ctx, stream_generator: AsyncGenerator, model_name: str, question: str, command_type: str, show_thinking: bool):
         """
-        Process a streaming LLM response and update a single Discord embed in real-time
-        using the unified `create_llm_response` function.
+        Process a streaming LLM response and update one or more Discord embeds in real-time.
         """
-        # 1. Initial Message
-        embed = discord.Embed(description=f"Thinking with `{model_name}`...", color=discord.Color.blue())
-        message_to_edit = await ctx.send(embed=embed)
-
-        # 2. Stream Processing
-        answer_buffer = ""
-        reasoning_buffer = ""
-        last_update_time = time.time()
-        stream_chunks = []
-        
-        # Summary-related variables
-        last_known_summaries = []
-        thinking_completed = False
-        
-        start_time = time.time()
+        messages_to_edit = []
+        answer_buffer, reasoning_buffer = "", ""
+        last_update_time, start_time = time.time(), time.time()
+        stream_chunks, last_known_summaries = [], []
+        usage_data, thinking_completed = None, False
 
         try:
             async for chunk in stream_generator:
                 try:
-                    if isinstance(chunk, bytes): chunk_str = chunk.decode('utf-8')
-                    else: chunk_str = str(chunk)
-
+                    chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else str(chunk)
                     if chunk_str.startswith('data: '): chunk_str = chunk_str[6:]
                     if not chunk_str.strip() or chunk_str.strip() == '[DONE]': continue
                     
@@ -607,9 +599,11 @@ class LLMCommands(commands.Cog):
 
                     if "error" in data:
                         error_embed = discord.Embed(title="LLM Error", description=data.get("error", "Unknown error"), color=discord.Color.red())
-                        await message_to_edit.edit(embed=error_embed)
+                        if messages_to_edit: await messages_to_edit[0].edit(embed=error_embed)
+                        else: await ctx.send(embed=error_embed)
                         return
 
+                    if "usage" in data: usage_data = data["usage"]
                     delta = data.get('choices', [{}])[0].get('delta', {})
                     if delta.get('content'): answer_buffer += delta['content']
                     if delta.get('reasoning_content'): reasoning_buffer += delta['reasoning_content']
@@ -620,84 +614,70 @@ class LLMCommands(commands.Cog):
                 except Exception as e:
                     logger.error(f"Error processing stream chunk: {e}", exc_info=True)
                     error_embed = discord.Embed(title="Streaming Error", description=f"An unexpected error occurred: {e}", color=discord.Color.red())
-                    await message_to_edit.edit(embed=error_embed)
+                    if messages_to_edit: await messages_to_edit[0].edit(embed=error_embed)
+                    else: await ctx.send(embed=error_embed)
                     return
 
-                # 3. Rate-limited updates
                 current_time = time.time()
                 if current_time - last_update_time > 1.2:
                     last_update_time = current_time
-                    
                     full_response_text = f"<thinking>{reasoning_buffer}</thinking>{answer_buffer}"
                     cleaned_response, thinking_content, is_thinking_only, current_summaries = self.strip_thinking_tokens(full_response_text, model_name)
 
-                    # Handle summary updates for `think` command
-                    if show_thinking and is_thinking_only and current_summaries and current_summaries != last_known_summaries:
+                    # Universal summary display
+                    if is_thinking_only and current_summaries and current_summaries != last_known_summaries:
                         last_known_summaries = current_summaries
                         summary_text = f"**Thinking...** ({current_summaries[-1]})"
                         summary_embed = discord.Embed(description=summary_text, color=discord.Color.purple())
                         try:
-                            await message_to_edit.edit(embed=summary_embed)
+                            if not messages_to_edit:
+                                messages_to_edit.append(await ctx.send(embed=summary_embed))
+                            else:
+                                await messages_to_edit[0].edit(embed=summary_embed)
                         except discord.errors.HTTPException as e:
                             logger.warning(f"Failed to update thinking summary: {e}")
-                        continue # Skip the full embed update for summaries
-
-                    # Once we start getting the answer, stop showing summaries
-                    if not is_thinking_only:
-                        thinking_completed = True
-
-                    if not thinking_completed:
                         continue
 
+                    if not is_thinking_only: thinking_completed = True
+                    if not thinking_completed: continue
+
                     try:
-                        await create_llm_response(
-                            ctx,
-                            response_text=cleaned_response,
-                            question=question,
-                            model_name=model_name,
-                            thinking_content=thinking_content,
-                            show_thinking=show_thinking,
-                            title="LLM Thinking Response" if show_thinking else "LLM Response",
-                            color=discord.Color.purple() if show_thinking else discord.Color.blue(),
-                            performance_metrics=None, # Not available till the end
-                            message_to_edit=message_to_edit
+                        messages_to_edit = await create_llm_response(
+                            ctx, cleaned_response, question, model_name, command_type,
+                            thinking_content, show_thinking, None, messages_to_edit
                         )
                     except discord.errors.HTTPException as e:
                         if e.status == 429:
                             logger.warning("Rate limited on streaming update, slowing down.")
-                            last_update_time += 2.0 # Add extra delay
+                            last_update_time += 2.0
                         else:
                             logger.error(f"Failed to edit message during stream: {e}")
                             return
-
         finally:
-            # 4. Final Update
             if 'stream_generator' in locals() and hasattr(stream_generator, 'aclose'):
                 await stream_generator.aclose()
 
             self._save_debug_stream_response_raw(stream_chunks, model_name.split('/')[0])
             assembled_response = self._save_debug_stream_response_assembled(stream_chunks, model_name.split('/')[0])
             
-            # Extract final content and usage from the assembled response
-            final_content = assembled_response.get("choices", [{}])[0].get("message", {}).get("content", "")
-            usage_data = assembled_response.get("usage")
+            if not assembled_response:
+                logger.error("Failed to assemble final response from stream chunks.")
+                return
+
+            final_message = assembled_response.get("choices", [{}])[0].get("message", {})
+            final_content = final_message.get("content", "")
+            final_reasoning = final_message.get("reasoning_content", "")
+            
+            # Reconstruct the full text to correctly strip thinking content for the final update
+            full_final_text = f"<thinking>{final_reasoning}</thinking>{final_content}"
 
             performance_metrics = self._calculate_performance_metrics(start_time, final_content, usage_data)
-            
-            cleaned_response, thinking_content, _, _ = self.strip_thinking_tokens(final_content, model_name)
+            cleaned_response, thinking_content, _, _ = self.strip_thinking_tokens(full_final_text, model_name)
 
             try:
                 await create_llm_response(
-                    ctx,
-                    response_text=cleaned_response,
-                    question=question,
-                    model_name=model_name,
-                    thinking_content=thinking_content,
-                    show_thinking=show_thinking,
-                    title="LLM Thinking Response" if show_thinking else "LLM Response",
-                    color=discord.Color.purple() if show_thinking else discord.Color.blue(),
-                    performance_metrics=performance_metrics,
-                    message_to_edit=message_to_edit
+                    ctx, cleaned_response, question, model_name, command_type,
+                    thinking_content, show_thinking, performance_metrics, messages_to_edit
                 )
             except discord.errors.NotFound:
                 logger.warning("Message to edit for final update was deleted.")
@@ -792,10 +772,12 @@ class LLMCommands(commands.Cog):
         except Exception as e:
             logger.warning(f"Failed to save raw debug stream response: {e}", exc_info=True)
 
-    def _save_debug_stream_response_assembled(self, response_chunks: List[Dict[str, Any]], provider: str):
-        """Assembles and saves the full streaming response as a single JSON object for debugging."""
+    def _save_debug_stream_response_assembled(self, response_chunks: List[Dict[str, Any]], provider: str) -> Optional[Dict[str, Any]]:
+        """
+        Assembles the full streaming response, saves it for debugging, and returns it.
+        """
         if not response_chunks:
-            return
+            return None
 
         try:
             # Initialize the final response object with potential top-level fields
@@ -803,55 +785,37 @@ class LLMCommands(commands.Cog):
                 "id": None, "model": None, "created": None,
                 "object": "chat.completion", "choices": [], "usage": None
             }
-            # Dynamically add any other top-level keys found
+            # ... (rest of the assembly logic is the same)
             for chunk in response_chunks:
                 for key, value in chunk.items():
                     if key not in ['choices', 'usage'] and key not in final_response:
                         final_response[key] = value
 
-            # Populate initial values from the first chunk that has them
             for chunk in response_chunks:
-                if not final_response.get("id") and chunk.get("id"):
-                    final_response["id"] = chunk.get("id")
-                if not final_response.get("model") and chunk.get("model"):
-                    final_response["model"] = chunk.get("model")
-                if not final_response.get("created") and chunk.get("created"):
-                    final_response["created"] = chunk.get("created")
-                if all(final_response.get(k) for k in ["id", "model", "created"]):
-                    break
+                if not final_response.get("id") and chunk.get("id"): final_response["id"] = chunk.get("id")
+                if not final_response.get("model") and chunk.get("model"): final_response["model"] = chunk.get("model")
+                if not final_response.get("created") and chunk.get("created"): final_response["created"] = chunk.get("created")
+                if all(final_response.get(k) for k in ["id", "model", "created"]): break
 
-            full_content = ""
-            full_reasoning_content = ""
-            final_finish_reason = None
+            full_content, full_reasoning_content, final_finish_reason = "", "", None
             
-            # Process all chunks to assemble the full response
             for chunk in response_chunks:
-                if chunk.get("choices"):
-                    choice = chunk["choices"][0]
-                    delta = choice.get("delta", {})
-                    if delta.get("content"):
-                        full_content += delta["content"]
-                    if delta.get("reasoning_content"):
-                        full_reasoning_content += delta["reasoning_content"]
-                    
-                    if choice.get("finish_reason"):
-                        final_finish_reason = choice.get("finish_reason")
+                if choice := chunk.get("choices", [{}])[0]:
+                    if delta := choice.get("delta", {}):
+                        if content := delta.get("content"): full_content += content
+                        if reasoning := delta.get("reasoning_content"): full_reasoning_content += reasoning
+                    if reason := choice.get("finish_reason"): final_finish_reason = reason
+                if usage := chunk.get("usage"): final_response["usage"] = usage
 
-                if chunk.get("usage"):
-                    final_response["usage"] = chunk["usage"]
-
-            # Assemble the final 'choices' array
-            final_message = { "role": "assistant", "content": full_content }
+            final_message = {"role": "assistant", "content": full_content}
             if full_reasoning_content:
                 final_message["reasoning_content"] = full_reasoning_content
 
             final_response["choices"].append({
-                "finish_reason": final_finish_reason,
-                "index": 0,
-                "message": final_message
+                "finish_reason": final_finish_reason, "index": 0, "message": final_message
             })
 
-            # Save the assembled response
+            # Save the assembled response for debugging
             debug_dir = os.path.join("llm_data", "debug_prompts")
             os.makedirs(debug_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -859,16 +823,14 @@ class LLMCommands(commands.Cog):
             debug_filepath = os.path.join(debug_dir, debug_filename)
             
             with open(debug_filepath, 'w', encoding='utf-8') as f:
-                f.write(f"// filepath: {debug_filepath}\n")
-                f.write(f"// Provider: {provider}\n")
-                f.write(f"// Timestamp: {timestamp}\n")
-                f.write("// ASSEMBLED STREAM RESPONSE:\n")
                 json.dump(final_response, f, indent=2, ensure_ascii=False)
             
             logger.debug(f"Saved assembled debug stream response to {debug_filepath}")
+            return final_response
 
         except Exception as e:
-            logger.warning(f"Failed to save assembled debug stream response: {e}", exc_info=True)
+            logger.warning(f"Failed to save or assemble debug stream response: {e}", exc_info=True)
+            return None
 
     async def _process_multimodal_input(self, message: discord.Message, question: str) -> Tuple[str, List[str]]:
         """Helper to process attachments and URLs from a message for multimodal input."""
@@ -920,6 +882,10 @@ class LLMCommands(commands.Cog):
                 question, image_urls = await self._process_multimodal_input(ctx.message, question)
                 guild_id = ctx.guild.id if ctx.guild else None
                 
+                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = await chatbot_manager.formatter.format_user_context_for_llm(ctx.author)
+                full_context = f"{channel_context}\n{user_context}"
+                
                 # Use the unified streaming response handler for a consistent look
                 stream_generator, model_name = await self.make_llm_request(
                     prompt=f"{ctx.author.display_name}: {question}",
@@ -927,10 +893,10 @@ class LLMCommands(commands.Cog):
                     guild_id=guild_id,
                     channel_id=ctx.channel.id,
                     image_urls=image_urls,
-                    context=await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel),
+                    context=full_context,
                     stream=True
                 )
-                await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, show_thinking=False)
+                await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, command_type="ask", show_thinking=False)
 
             except Exception as e:
                 logger.error(f"Error in !ask command: {e}", exc_info=True)
@@ -952,6 +918,10 @@ class LLMCommands(commands.Cog):
                 question, image_urls = await self._process_multimodal_input(ctx.message, question)
                 guild_id = ctx.guild.id if ctx.guild else None
 
+                channel_context = await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel)
+                user_context = await chatbot_manager.formatter.format_user_context_for_llm(ctx.author)
+                full_context = f"{channel_context}\n{user_context}"
+
                 # Use the unified streaming response handler
                 stream_generator, model_name = await self.make_llm_request(
                     prompt=f"{ctx.author.display_name}: {question}",
@@ -959,10 +929,10 @@ class LLMCommands(commands.Cog):
                     guild_id=guild_id,
                     channel_id=ctx.channel.id,
                     image_urls=image_urls,
-                    context=await chatbot_manager.formatter.format_channel_context_for_llm_from_object(ctx.channel),
+                    context=full_context,
                     stream=True
                 )
-                await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, show_thinking=display_thinking)
+                await self.handle_streaming_embed_response(ctx, stream_generator, model_name, question, command_type="think", show_thinking=display_thinking)
 
             except Exception as e:
                 logger.error(f"Error in !think command: {e}", exc_info=True)

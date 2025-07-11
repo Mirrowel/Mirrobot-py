@@ -502,6 +502,10 @@ class LLMContextFormatter:
             logger.error(f"Error formatting user context from objects: {e}", exc_info=True)
             return ""
 
+    async def format_user_context_for_llm(self, user: Union[discord.Member, discord.User]) -> str:
+        """Get user context information for LLM from a single live discord.User or discord.Member object."""
+        return await self.format_user_context_for_llm_from_objects([user])
+
     async def get_pinned_context_for_llm(self, guild_id: int, channel_id: int) -> str:
         """Formats pinned messages for LLM context."""
         try:
