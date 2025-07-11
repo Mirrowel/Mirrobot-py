@@ -125,6 +125,7 @@ def create_bot(config):
 
         # --- Set bot's user ID in chatbot_manager and start it ---
         chatbot_manager.set_bot_user_id(bot.user.id)
+        chatbot_manager.set_bot(bot)
         chatbot_manager.set_media_cache_manager(bot.media_cache_manager)
         await chatbot_manager.index_manager.start()
         await bot.media_cache_manager.start()

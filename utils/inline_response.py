@@ -319,6 +319,7 @@ class InlineResponseManager:
             conv_message = ConversationMessage(
                 user_id=msg.author.id,
                 username=msg.author.display_name,
+                guild_id=msg.guild.id if msg.guild else None,
                 content=cleaned_content,
                 timestamp=msg.created_at.timestamp(),
                 message_id=msg.id,

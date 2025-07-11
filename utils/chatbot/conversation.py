@@ -32,6 +32,11 @@ class ConversationManager:
         self.index_manager = index_manager
         self.media_cache_manager = media_cache_manager
         self.bot_user_id = bot_user_id
+        self.bot = None
+
+    def set_bot(self, bot):
+        """Sets the bot instance for accessing bot-level properties like config."""
+        self.bot = bot
 
     def set_bot_user_id(self, bot_id: int):
         self.bot_user_id = bot_id
@@ -93,6 +98,7 @@ class ConversationManager:
             conv_message = ConversationMessage(
                 user_id=message.author.id, username=message.author.display_name,
                 author=message.author,
+                guild_id=message.guild.id if message.guild else None,
                 content=cleaned_content, timestamp=message.created_at.timestamp(),
                 message_id=message.id, is_bot_response=message.author.bot,
                 is_self_bot_response=(message.author.id == self.bot_user_id),
@@ -160,6 +166,7 @@ class ConversationManager:
                 conv_message = ConversationMessage(
                     user_id=message.author.id, username=message.author.display_name,
                     author=message.author,
+                    guild_id=message.guild.id if message.guild else None,
                     content=cleaned_content, timestamp=message.created_at.timestamp(),
                     message_id=message.id, is_bot_response=message.author.bot,
                     is_self_bot_response=(message.author.id == self.bot_user_id),
@@ -241,14 +248,15 @@ class ConversationManager:
                 if debug_mode: debug_steps.append(f"❌ **Filter Result:** No alphanumeric characters in `{content_for_analysis}` - FILTERED")
                 return False, debug_steps
             
-            command_prefixes = ['!', '/', '$', '?', '.', '-', '+', '>', '<', '=', '~', '`']
-            if content_for_analysis.startswith(tuple(command_prefixes)):
-                if debug_mode: debug_steps.append(f"❌ **Filter Result:** Command prefix detected - FILTERED")
-                return False, debug_steps
-            
-            if re.match(r'^[a-zA-Z0-9]{1,5}!', content_for_analysis):
-                if debug_mode: debug_steps.append(f"❌ **Filter Result:** Command pattern detected - FILTERED")
-                return False, debug_steps
+            # Check for command prefixes in a server-aware manner
+            if self.bot and msg.guild_id:
+                # Directly access the bot's config to get the prefix.
+                default_prefix = self.bot.config.get('command_prefix', '!')
+                server_prefix = self.bot.config.get('server_prefixes', {}).get(str(msg.guild_id), default_prefix)
+                
+                if content_for_analysis.startswith(server_prefix):
+                    if debug_mode: debug_steps.append(f"❌ **Filter Result:** Command prefix '{server_prefix}' for guild {msg.guild_id} detected - FILTERED")
+                    return False, debug_steps
             
             if debug_mode:
                 debug_steps.append(f"✅ **Filter Result:** Message `{message_preview}` passed all filters - KEPT")

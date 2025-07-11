@@ -23,6 +23,7 @@ class ConversationMessage:
     content: str
     timestamp: float
     message_id: int
+    guild_id: Optional[int] = None
     author: Optional[Any] = None # discord.User or discord.Member
     is_bot_response: bool = False
     is_self_bot_response: bool = False # NEW: Is this bot's own response
@@ -71,6 +72,7 @@ class ConversationMessage:
             'content': self.content,
             'timestamp': self.timestamp,
             'message_id': self.message_id,
+            'guild_id': self.guild_id,
             'is_bot_response': self.is_bot_response,
             'is_self_bot_response': self.is_self_bot_response,
             'referenced_message_id': self.referenced_message_id,

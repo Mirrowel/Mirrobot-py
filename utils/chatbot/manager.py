@@ -46,6 +46,13 @@ class ChatbotManager:
         self.conversation_manager.media_cache_manager = media_cache_manager
         self.formatter.media_cache_manager = media_cache_manager
 
+    def set_bot(self, bot):
+        """Sets the bot instance for all relevant managers."""
+        self.conversation_manager.set_bot(bot)
+        # If other managers need the bot instance, set it here.
+        # self.indexing_manager.set_bot(bot)
+        # self.formatter.set_bot(bot)
+
     async def enable_chatbot(self, guild_id: int, channel_id: int, guild=None, channel=None) -> bool:
         """Enable chatbot mode and perform initial indexing."""
         channel_config = self.config_manager.get_channel_config(guild_id, channel_id)
