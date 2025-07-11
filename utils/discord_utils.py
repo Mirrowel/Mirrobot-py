@@ -69,10 +69,11 @@ def truncate_to_last_sentence(text: str, max_length: int = 2000) -> str:
     # Final fallback: hard truncate
     return text[:max_length-3] + "..."
 
-async def handle_streaming_text_response(bot, message_to_reply_to: discord.Message, stream_generator: AsyncGenerator, model_name: str, llm_cog, initial_message: discord.Message = None, max_messages: int = 1):
+async def handle_streaming_text_response(bot, message_to_reply_to: discord.Message, stream_generator: AsyncGenerator, model_name: str, llm_cog, initial_message: discord.Message = None, max_messages: int = 1) -> List[discord.Message]:
     """
     Processes a streaming LLM response and updates a series of plain-text Discord messages.
     Handles message splitting for long responses and enforces a message limit.
+    Returns the list of messages that were sent or edited.
     """
     # 1. Initial Message
     sent_messages: List[discord.Message] = []
@@ -113,7 +114,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                 if "error" in data:
                     error_message = data.get("error", "Unknown error from proxy")
                     await sent_messages[0].edit(content=f"An error occurred: {error_message}")
-                    return
+                    return []
 
                 delta = data.get('choices', [{}])[0].get('delta', {})
                 if delta.get('content'):
@@ -127,7 +128,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
             except Exception as e:
                 logger.error(f"Error processing stream chunk: {e}", exc_info=True)
                 await sent_messages[0].edit(content=f"An unexpected error occurred: {e}")
-                return
+                return []
 
             # 3. Format, Parse, and Update Summaries (only if thinking is not complete)
             is_thinking_only = False
@@ -192,14 +193,14 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                                     sent_messages[i] = new_msg
                                 except Exception as e:
                                     logger.error(f"Failed to resend deleted message: {e}")
-                                    return # Stop if we can't maintain the message chain
+                                    return [] # Stop if we can't maintain the message chain
                             except discord.errors.HTTPException as e:
                                 if e.status == 429:
                                     logger.warning("Hit rate limit, slowing down updates.")
                                     last_update_time = current_time + 2 # Back off more
                                 else:
                                     logger.error(f"Failed to edit message: {e}")
-                                    return
+                                    return []
                     else:
                         # Send new message
                         try:
@@ -207,7 +208,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                             sent_messages.append(new_message)
                         except Exception as e:
                             logger.error(f"Failed to send new message part: {e}")
-                            return # Stop if we can't send a part
+                            return [] # Stop if we can't send a part
 
     finally:
         # Ensure the generator is closed to trigger usage logging
@@ -262,3 +263,5 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                 except Exception as e:
                     logger.error(f"Failed to delete extra message {sent_messages[i].id}: {e}")
             sent_messages = sent_messages[:len(message_chunks)]
+        
+        return sent_messages

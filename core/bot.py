@@ -659,8 +659,11 @@ async def handle_chatbot_response(bot, message, stream: bool = True):
             )
 
             if stream:
-                await handle_streaming_text_response(bot, message, response_data, model_name, llm_cog, initial_message=thinking_message, max_messages=1)
-                logger.info(f"Sent streaming chatbot response to message {message.id} in channel {channel_id}")
+                bot_messages = await handle_streaming_text_response(bot, message, response_data, model_name, llm_cog, initial_message=thinking_message, max_messages=1)
+                logger.info(f"Sent streaming chatbot response to message {message.id} in channel {channel_id}. {len(bot_messages)} message(s) sent.")
+                for bot_msg in bot_messages:
+                    logger.debug(f"Adding bot message {bot_msg.id} to conversation history.")
+                    await chatbot_manager.add_message_to_conversation(guild_id, channel_id, bot_msg)
             else:
                 # Non-streaming logic
                 response_text = response_data
