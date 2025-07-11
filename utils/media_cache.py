@@ -101,6 +101,13 @@ class MediaCacheManager:
             self._dirty = False
             logger.debug("Media cache saved to disk.")
 
+    def get_hash_for_cached_url(self, url: str) -> Optional[str]:
+        """Finds the content hash for a given cached URL."""
+        for hash_key, entry in self.media_entries.items():
+            if entry.get('url') == url:
+                return hash_key
+        return None
+
     def _mark_dirty(self):
         """Marks the cache as dirty, to be saved by the periodic task."""
         self._dirty = True
@@ -137,9 +144,13 @@ class MediaCacheManager:
             # Medium/Slow Path: URL not in map, need to download
             try:
                 async with self.session.get(url) as response:
-                    if response.status != 200:
+                    if response.status in [403, 404]:
+                        logger.warning(f"Media at {url} is expired or inaccessible (HTTP {response.status}).")
+                        return None # Explicitly signal that the URL is dead
+                    elif response.status != 200:
                         logger.warning(f"Failed to download media from {url}: HTTP {response.status}")
-                        return url
+                        return url # Return original URL for other errors (e.g., server errors)
+                    
                     file_data = await response.read()
                     filename = clean_url.split('/')[-1]
             except Exception as e:

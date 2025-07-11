@@ -227,18 +227,6 @@ class LLMContextFormatter:
                 role = "assistant" if msg.is_self_bot_response else "user"
                 content_object = await self._format_message_content(msg, i + 1, guild_id, channel_id, message_id_to_local_index)
                 
-                # Validate and update image URLs
-                if isinstance(content_object, list):
-                    validated_parts = []
-                    for part in content_object:
-                        if part.get("type") == "image_url":
-                            validated_url = await self.validate_and_update_url(part["image_url"]["url"], msg, guild_id, channel_id)
-                            if validated_url:
-                                part["image_url"]["url"] = validated_url
-                                validated_parts.append(part)
-                        else:
-                            validated_parts.append(part)
-                    content_object = validated_parts
                 
                 history_messages.append({"role": role, "content": content_object})
 
@@ -547,13 +535,16 @@ class LLMContextFormatter:
                 content = await self._convert_discord_format_to_llm_readable(pin.content, guild_id)
                 
                 if pin.attachment_urls:
-                    validated_urls = []
+                    image_parts = []
                     for url in pin.attachment_urls:
-                        validated_url = await self.validate_and_update_url(url, pin, guild_id, channel_id)
+                        validated_url, expired_filename = await self.validate_and_update_url(url, pin, guild_id, channel_id)
                         if validated_url:
-                            validated_urls.append(validated_url)
-                    if validated_urls:
-                        content += f" (Image: {', '.join(validated_urls)})"
+                            image_parts.append(f"Image: {validated_url}")
+                        elif expired_filename:
+                            image_parts.append(f"Image {expired_filename} expired")
+                    if image_parts:
+                        content += f" ({', '.join(image_parts)})"
+                        logger.debug(f"Appended to pinned message content: {content}")
 
                 lines.append(f"{role_label}: {content.strip()}")
             
@@ -563,28 +554,41 @@ class LLMContextFormatter:
             logger.error(f"Error getting pinned context for LLM: {e}", exc_info=True)
             return ""
 
-    async def validate_and_update_url(self, url: str, message: ConversationMessage, guild_id: int, channel_id: int) -> Optional[str]:
-        """Validates a URL and updates the message if it's an expired cached link."""
-        if "discord" in url:
-            return await self.media_cache_manager.cache_url(url)
+    async def validate_and_update_url(self, url: str, message: ConversationMessage, guild_id: int, channel_id: int) -> tuple[Optional[str], Optional[str]]:
+        """
+        Validates a URL and returns a tuple of (validated_url, expired_filename).
+        If the URL is valid, it returns (new_or_original_url, None).
+        If the URL is expired, it returns (None, filename).
+        
+        Note: This function no longer appends text to the message content directly.
+        The calling function is responsible for handling the expired_filename.
+        """
+        original_url = url
+        filename = original_url.split('/')[-1].split('?')[0]
 
-        # It's a cached URL, check for expiry
-        url_hash = None
-        for h, entry in self.media_cache_manager.media_entries.items():
-            if entry['url'] == url:
-                url_hash = h
-                break
+        # 1. Handle Discord URLs by attempting to cache them.
+        if "discord" in url:
+            cached_url_result = await self.media_cache_manager.cache_url(url)
+            if cached_url_result is None:
+                logger.warning(f"Expired Discord URL {url} found in message {message.message_id}. Removing from history.")
+                if original_url in message.attachment_urls:
+                    message.attachment_urls.remove(original_url)
+                    await self.conv_manager.update_message_in_conversation(guild_id, channel_id, message)
+                return None, filename
+            url = cached_url_result
+
+        # 2. Handle non-Discord URLs (assumed to be from our cache).
+        else:
+            url_hash = self.media_cache_manager.get_hash_for_cached_url(url)
+            if url_hash:
+                cached_entry = self.media_cache_manager.media_entries.get(url_hash)
+                if cached_entry:
+                    expiry = cached_entry.get('expiry_timestamp')
+                    if expiry is not None and expiry < time.time():
+                        logger.warning(f"Expired cached URL {url} found in message {message.message_id}. Removing from history.")
+                        if original_url in message.attachment_urls:
+                            message.attachment_urls.remove(original_url)
+                            await self.conv_manager.update_message_in_conversation(guild_id, channel_id, message)
+                        return None, filename
         
-        if url_hash:
-            cached_entry = self.media_cache_manager.media_entries.get(url_hash)
-            if cached_entry:
-                expiry = cached_entry.get('expiry_timestamp')
-                if expiry and expiry < time.time():
-                    logger.warning(f"Expired cached URL {url} found in message {message.message_id}. Removing.")
-                    message.content += " (Image expired)"
-                    message.attachment_urls.remove(url)
-                    # Update the message in the history
-                    await self.conv_manager.edit_message_in_conversation(guild_id, channel_id, message.message_id, message.content)
-                    return None
-        
-        return url
+        return url, None

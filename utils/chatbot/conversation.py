@@ -292,14 +292,28 @@ class ConversationManager:
                 return url
 
         async def _add_image_url(url: str):
-            """Adds a URL to the list if it's a valid, non-duplicate image."""
+            """
+            Adds a valid image URL to the list or appends an expired notice to the content.
+            """
+            nonlocal content # Allow modification of the outer 'content' variable
             if not url or not self._is_image_url(url):
                 return
+            
             normalized_url = _normalize_url(url)
-            if normalized_url not in seen_normalized_urls:
-                cached_url = await self.media_cache_manager.cache_url(url)
+            if normalized_url in seen_normalized_urls:
+                return
+                
+            cached_url = await self.media_cache_manager.cache_url(url)
+            seen_normalized_urls.add(normalized_url)
+
+            if cached_url:
                 image_urls.append(cached_url)
-                seen_normalized_urls.add(normalized_url)
+            else:
+                # If caching returns None, the URL is dead. Append expiry notice.
+                filename = url.split('/')[-1].split('?')[0]
+                expiry_notice = f" (Image {filename} expired)"
+                content += expiry_notice
+                logger.debug(f"Appended expiry notice for {filename} to message content.")
 
         # 1. Process Attachments
         for attachment in message.attachments:
@@ -339,17 +353,22 @@ class ConversationManager:
         all_urls_to_strip = set(image_urls).union(other_urls)
         cleaned_content = content
         for url in all_urls_to_strip:
-            # Use a more robust replacement to avoid partial matches
-            cleaned_content = cleaned_content.replace(url, ' ')
+            # A check to ensure we don't try to replace a None value
+            if url:
+                # Use a more robust replacement to avoid partial matches
+                cleaned_content = cleaned_content.replace(url, ' ')
 
         # Final cleanup of whitespace
         cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
         
+        # Filter out any None values from the final list of image URLs
+        valid_image_urls = [url for url in image_urls if url]
+        
         # Ensure that URLs classified as images are not also in the "other" urls list.
-        final_other_urls = other_urls - set(image_urls)
+        final_other_urls = other_urls - set(valid_image_urls)
         
         # Return cleaned content, a list of unique image URLs, and a list of other URLs
-        return cleaned_content, image_urls, list(final_other_urls)
+        return cleaned_content, valid_image_urls, list(final_other_urls)
 
     async def check_duplicate_message(self, guild_id: int, channel_id: int, message_id: int) -> bool:
         """Check if a message is already in the conversation history"""
@@ -406,4 +425,29 @@ class ConversationManager:
         except Exception as e:
             logger.error(f"Error editing message in conversation: {e}", exc_info=True)
             return False
+    async def update_message_in_conversation(self, guild_id: int, channel_id: int, updated_message: ConversationMessage) -> bool:
+        """Update an entire message object in the conversation history."""
+        try:
+            messages = await self.load_conversation_history(guild_id, channel_id)
+            if not messages:
+                return False
+            
+            message_found = False
+            for i, msg in enumerate(messages):
+                if msg.message_id == updated_message.message_id:
+                    messages[i] = updated_message # Replace the whole object
+                    message_found = True
+                    logger.debug(f"Updated message object {updated_message.message_id} in conversation history")
+                    break
+            
+            if message_found:
+                await self.index_manager.replace_conversation_history(guild_id, channel_id, messages)
+                return True
+            else:
+                logger.debug(f"Message {updated_message.message_id} not found for updating")
+                return False
+        except Exception as e:
+            logger.error(f"Error updating message in conversation: {e}", exc_info=True)
+            return False
+
 
