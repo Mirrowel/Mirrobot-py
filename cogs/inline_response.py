@@ -587,7 +587,7 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                             image_urls=image_urls,
                             stream=True
                         )
-                        await handle_streaming_text_response(
+                        bot_messages = await handle_streaming_text_response(
                             bot=self.bot,
                             message_to_reply_to=message,
                             stream_generator=stream_generator,
@@ -596,7 +596,11 @@ class InlineResponseCog(commands.Cog, name="Inline Response"):
                             initial_message=thinking_message,
                             max_messages=5
                         )
-                        logger.info(f"Successfully streamed inline response to message {message.id}.")
+                        for bot_msg in bot_messages:
+                            await chatbot_manager.add_message_to_conversation(
+                                message.guild.id, message.channel.id, bot_msg
+                            )
+                        logger.info(f"Successfully streamed and saved inline response to message {message.id}.")
                     else:
                         response_text, _ = await llm_cog.make_llm_request(
                             prompt=trigger_message_content,

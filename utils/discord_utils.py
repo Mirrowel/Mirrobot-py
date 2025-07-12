@@ -134,7 +134,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
             is_thinking_only = False
             if not thinking_completed:
                 full_response_text = f"<thinking>{reasoning_buffer}</thinking>{answer_buffer}"
-                formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(full_response_text, message_to_reply_to.guild.id if message_to_reply_to.guild else None)
+                formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(full_response_text, message_to_reply_to.guild if message_to_reply_to.guild else None)
                 cleaned_content, _, is_thinking_only, current_summaries = llm_cog.strip_thinking_tokens(formatted_content, model_name)
 
                 # 4. Immediate Summary Update
@@ -158,7 +158,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
             else:
                 # If thinking is completed, just format the answer part
                 full_response_text = answer_buffer
-                formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(full_response_text, message_to_reply_to.guild.id if message_to_reply_to.guild else None)
+                formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(full_response_text, message_to_reply_to.guild if message_to_reply_to.guild else None)
                 cleaned_content = formatted_content # No thinking tags to strip
 
             # 6. Rate-Limited FINAL ANSWER Update
@@ -185,6 +185,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                         if sent_messages[i].content != chunk_content:
                             try:
                                 await sent_messages[i].edit(content=chunk_content)
+                                sent_messages[i].content = chunk_content # Manually update content
                             except discord.errors.NotFound:
                                 logger.warning(f"Message {sent_messages[i].id} to edit was deleted.")
                                 # Attempt to resend
@@ -223,7 +224,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
         # If the loop never ran (e.g., empty stream), we compute it once.
         if not formatted_content:
             full_response_text = f"<thinking>{reasoning_buffer}</thinking>{answer_buffer}"
-            formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(full_response_text, message_to_reply_to.guild.id if message_to_reply_to.guild else None)
+            formatted_content = await chatbot_manager.formatter.format_llm_output_for_discord(full_response_text, message_to_reply_to.guild if message_to_reply_to.guild else None)
             cleaned_content, _, _, _ = llm_cog.strip_thinking_tokens(formatted_content, model_name)
         
         if not cleaned_content.strip():
@@ -242,6 +243,7 @@ async def handle_streaming_text_response(bot, message_to_reply_to: discord.Messa
                 if sent_messages[i].content != chunk_content:
                     try:
                         await sent_messages[i].edit(content=chunk_content)
+                        sent_messages[i].content = chunk_content # Manually update content
                     except discord.errors.NotFound:
                         logger.warning(f"Message {sent_messages[i].id} for final update was deleted.")
                     except Exception as e:

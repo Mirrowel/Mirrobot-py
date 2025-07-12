@@ -683,7 +683,7 @@ async def handle_chatbot_response(bot, message, stream: bool = True):
                 response_text = response_data
                 if response_text:
                     formatted_response = await chatbot_manager.formatter.format_llm_output_for_discord(
-                        text=response_text, guild_id=message.guild.id, bot_user_id=bot.user.id,
+                        text=response_text, guild=message.guild, bot_user_id=bot.user.id,
                         bot_names=["Mirrobot", "Helper Retirement Machine 9000"]
                     )
                     final_response, _, _ = llm_cog.strip_thinking_tokens(formatted_response)

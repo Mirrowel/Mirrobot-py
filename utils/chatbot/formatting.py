@@ -318,29 +318,25 @@ class LLMContextFormatter:
 
             # 3. Failsafe: Strip any context formatting the LLM might have parroted.
             # This is a multi-pass failsafe to handle different parroting scenarios.
-            # First, handle the complex case with a reply block, which may or may not have a username.
-            p1 = r'\[\d+\].*?\[Replying to #\d+\]\s*'
-            processed_text = re.sub(p1, '', processed_text.strip())
-            # Second, handle the simpler case with just a username prefix.
-            p2 = r'\[\d+\]\s*.*?:'
-            processed_text = re.sub(p2, '', processed_text.strip())
-            # Third, handle standalone reply blocks on their own lines.
-            p3 = r'^\s*\[Replying to #\d+\]\s*'
-            processed_text = re.sub(p3, '', processed_text, flags=re.MULTILINE).strip()
+            
+            # First, handle the most common full-line prefixes.
+            # Matches "[1] [id:123] User:" or "[1] User:"
+            processed_text = re.sub(r'^\s*\[\d+\]\s*(\[id:\d+\]\s*)?.*?:\s*', '', processed_text)
+            
+            # Next, handle individual components that might be parroted alone.
+            # Matches "[Replying to #123]"
+            processed_text = re.sub(r'\[Replying to #\d+\]\s*', '', processed_text)
+            # Matches "[id:1234567890]"
+            processed_text = re.sub(r'\[id:\d+\]\s*', '', processed_text)
+            # Matches stray "[123]" anywhere in the text
+            processed_text = re.sub(r'\s*\[\d{1,3}\]\s*', ' ', processed_text)
 
-            # Handle "Replying to" with parentheses, a common parrot
-            p_reply_paren = r'\s*\(Replying to #\d+\)\s*'
-            processed_text = re.sub(p_reply_paren, ' ', processed_text).strip()
-
-            # Fourth, filter out stray numerical tags like [372] that the LLM sometimes outputs.
-            p4 = r'\s*\[\d{1,3}\]\s*'
-            processed_text = re.sub(p4, ' ', processed_text).strip()
             #logger.debug(f"Anti-parrot post-filter text: '{processed_text[:100]}...'")
 
             creator_id = 214161976534892545
             creator_username = "⭐ **Mirrowel**"
 
-            # 3. Strip "Username:" prefixes, but only if they are at the very start of the message.
+            # 4. Strip "Username:" prefixes, but only if they are at the very start of the message.
             # This regex is designed to be specific: it matches up to 60 characters that are not a newline or colon,
             # and do not contain sentence-ending punctuation, to avoid stripping legitimate sentences.
             username_colon_pattern = r'^\s*[^:\n.!?]{1,60}:\s*'
