@@ -61,38 +61,6 @@ Selects a preferred model to use for LLM requests for this server. You can set a
     - `!llm_select manual my-custom-local-model`: Forces the bot to use `my-custom-local-model` even if it's not detected as available.
 - **Permissions:** `manage_guild`
 
-### `llm_safety` (Command Group)
-This command group allows you to view or configure LLM content safety settings for the server or specific channels. These settings help control the types of content the LLM will generate or respond to.
-
-- **Permissions:** `manage_guild`
-
-#### `llm_safety view`
-View the current safety settings for the server or a specific channel. The settings shown are the result of the channel > server > global hierarchy.
-
-- **Usage:** `!llm_safety view [channel]`
-- **Arguments:**
-    - `[channel]` (Optional): A mention of the channel (e.g., `#general`) to view settings for. Defaults to the current channel.
-- **Examples:**
-    - `!llm_safety view`: Shows safety settings for the current channel.
-    - `!llm_safety view #other-channel`: Shows safety settings for `#other-channel`.
-- **Permissions:** `manage_guild`
-
-#### `llm_safety set`
-Set a safety setting for the server or a specific channel.
-
-- **Usage:** `!llm_safety set <level> <category> <threshold>`
-- **Arguments:**
-    - `<level>` (Required): Specify `server` to apply to the entire server, or mention a channel (e.g., `#general`) to apply to that channel.
-    - `<category>` (Required): The harm category to configure. Can be `all` (to apply to all categories), `harassment`, `hate_speech`, `sexually_explicit`, or `dangerous_content`.
-    - `<threshold>` (Required): The blocking threshold. Options are:
-        - `block_none`: Do not block content for this category.
-        - `block_low_and_above`: Block content at low, medium, and high confidence levels.
-        - `block_medium_and_above`: Block content at medium and high confidence levels.
-        - `block_only_high`: Only block content at high confidence levels.
-- **Examples:**
-    - `!llm_safety set server all block_none`: Disables all safety filters for the entire server.
-    - `!llm_safety set #general hate_speech block_medium_and_above`: Sets the hate speech filter for `#general` to block medium and high confidence content.
-- **Permissions:** `manage_guild`
 
 ### `set_reasoning_budget`
 Set the reasoning budget for a specific LLM model and mode. The reasoning budget controls how much "thinking" the model performs before generating a response, which can impact response quality and speed.

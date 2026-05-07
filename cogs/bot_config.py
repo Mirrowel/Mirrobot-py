@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 from utils.logging_setup import get_logger
 from utils.discord_utils import reply_or_send
@@ -9,273 +10,215 @@ import asyncio
 
 logger = get_logger()
 
-class BotConfigCog(commands.Cog):
-    def __init__(self, bot):
+class ServerConfigCog(commands.Cog, name="Server Configuration"):
+    """Cog for managing server-specific configurations."""
+
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.command(name='set_prefix', help='Change the command prefix for this server.\nArguments: prefix (str) - The new prefix to use\nExample: !set_prefix $ or !set_prefix >')
-    @has_command_permission()
-    @command_category("Bot Configuration")
-    async def set_prefix(self, ctx, prefix: str):
-        config = self.bot.config
-        server_prefixes = config.get('server_prefixes', {})
-        
-        if not ctx.guild:
-            await reply_or_send(ctx, "This command can only be used in a server.")
-            return
-        
-        # Limit prefix length to prevent abuse
-        if len(prefix) > 5:
-            await reply_or_send(ctx, "Prefix must be 5 characters or less.")
-            return
-        
-        guild_id = str(ctx.guild.id)
-        from core.bot import get_server_prefix
-        old_prefix = server_prefixes.get(guild_id, get_server_prefix(self.bot, ctx.message))
-        server_prefixes[guild_id] = prefix
-        
-        # Save the updated configuration
-        config['server_prefixes'] = server_prefixes
-        save_config(config)
-        
-        response = f"Command prefix for this server has been changed from `{old_prefix}` to `{prefix}`"
-        logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
-        logger.debug(f"Response: {response}")
-        await reply_or_send(ctx, response)
-
-    @commands.command(name='reset_prefix', help='Reset the command prefix for this server to the default (!).\nNo additional arguments required.\nExample: {prefix}reset_prefix')
-    @has_command_permission()
-    @command_category("Bot Configuration")
-    async def reset_prefix(self, ctx):
-        config = self.bot.config
-        server_prefixes = config.get('server_prefixes', {})
-        
-        if not ctx.guild:
-            await reply_or_send(ctx, "This command can only be used in a server.")
-            return
-        
-        guild_id = str(ctx.guild.id)
-        
-        if guild_id in server_prefixes:
-            old_prefix = server_prefixes[guild_id]
-            del server_prefixes[guild_id]
-            
-            # Save the updated configuration
-            config['server_prefixes'] = server_prefixes
-            save_config(config)
-            
-            response = f"Command prefix for this server has been reset from `{old_prefix}` to the default `!`"
+    async def _send_subcommand_help(self, ctx: commands.Context):
+        """Sends a detailed help embed for a specific subcommand."""
+        command = ctx.command
+        # For nested subcommands (like prefix set), get the parent's parent
+        if command.parent and command.parent.parent:
+            title = f"Help for: `!{command.parent.parent.name} {command.parent.name} {command.name}`"
         else:
-            response = f"Command prefix for this server is already set to the default `!`"
+            title = f"Help for: `!{command.parent.name} {command.name}`"
         
-        logger.debug(f"Server: {ctx.guild.name}:{ctx.guild.id}, Channel: {ctx.channel.name}:{ctx.channel.id}," + (f" Parent:{ctx.channel.parent}" if ctx.channel.type == 'public_thread' or ctx.channel.type == 'private_thread' else ""))
-        logger.debug(f"Response: {response}")
-        await reply_or_send(ctx, response)
+        help_embed = discord.Embed(
+            title=title,
+            description=command.help,
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=help_embed)
 
-    @commands.command(name='server_info', help='Display all bot configuration settings for this server.\nNo additional arguments required.\nExample: !server_info')
+    @commands.hybrid_group(name="server", help="""
+    Manages server-specific settings for the bot.
+    This command group provides tools to configure the command prefix and view the current server configuration.
+    Usage: `!server <subcommand> [value]`
+    """)
+    @has_command_permission()
+    @command_category("Bot Configuration")
+    async def server(self, ctx: commands.Context):
+        """Manages server-specific settings. Use without a subcommand to see help."""
+        if ctx.invoked_subcommand is None:
+            help_embed = discord.Embed(
+                title="Server Configuration Help",
+                description=self.server.help,
+                color=discord.Color.blue()
+            )
+            for command in self.server.commands:
+                signature = f"`!server {command.name}"
+                # Handle nested groups like 'prefix'
+                if isinstance(command, commands.Group):
+                    for sub_cmd in command.commands:
+                        sub_signature = f"`!server {command.name} {sub_cmd.name}"
+                        for param in sub_cmd.clean_params.values():
+                            sub_signature += f" <{param.name}>"
+                        sub_signature += "`"
+                        help_embed.add_field(name=f"**{command.name.capitalize()} {sub_cmd.name.capitalize()}**", value=f"{sub_signature}\n{sub_cmd.help}", inline=False)
+                else:
+                    for param in command.clean_params.values():
+                        signature += f" <{param.name}>"
+                    signature += "`"
+                    help_embed.add_field(name=f"**{command.name.capitalize()}**", value=f"{signature}\n{command.help}", inline=False)
+            await ctx.send(embed=help_embed)
+
+    @server.command(name="status", help="""
+    Displays all bot configuration settings for this server.
+    Shows the current command prefix, OCR settings, and permission configurations.
+    Usage: `!server status`
+    """)
     @has_command_permission()
     @commands.bot_has_permissions(embed_links=True)
-    @command_category("Bot Configuration")
-    async def server_info(self, ctx):
+    async def status(self, ctx: commands.Context):
         """Display all server configuration settings"""
-        # Check if the bot has required permissions to display rich embeds
-        has_perms, _, _ = check_target_permissions(
-            ctx.channel,
-            ["view_channel", "send_messages", "embed_links"],
-            ctx
-        )
-        if not has_perms:
-            return
-        
         if not ctx.guild:
             await reply_or_send(ctx, "This command can only be used in a server.")
             return
-        
+
         config = self.bot.config
         guild_id = str(ctx.guild.id)
         
-        # Get current prefix
         from core.bot import get_server_prefix
-        current_prefix = config.get('server_prefixes', {}).get(guild_id, config.get('command_prefix', '!'))
+        current_prefix = get_server_prefix(self.bot, ctx.message)
         
-        # Get server icon URL for the thumbnail
-        thumbnail_url = None
-        if ctx.guild and ctx.guild.icon:
-            thumbnail_url = ctx.guild.icon.url
-        elif ctx.guild and ctx.guild.me.avatar:  # Fallback to bot's server avatar if no server icon
-            thumbnail_url = ctx.guild.me.avatar.url
-        elif self.bot.user.avatar:  # Fallback to bot's global avatar if no server icon
-            thumbnail_url = self.bot.user.avatar.url
+        thumbnail_url = ctx.guild.icon.url if ctx.guild.icon else None
         
-        # Create description with server prefix info
         description = f"Server configuration for **{ctx.guild.name}**\n\n**Current prefix:** `{current_prefix}`"
         
-        # Get configurations needed for async fetching
-        ocr_read_channels = config.get('ocr_read_channels', {})
-        ocr_response_channels = config.get('ocr_response_channels', {})
-        ocr_response_fallback = config.get('ocr_response_fallback', {})
-        command_permissions = config.get('command_permissions', {})
-        
-        # Define async fetch functions
-        async def get_ocr_read_channels():
-            result = ""
-            if guild_id in ocr_read_channels and ocr_read_channels[guild_id]:
-                channels = []
-                for channel_id in ocr_read_channels[guild_id]:
-                    channel = self.bot.get_channel(channel_id)
-                    channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
-                    # Get language for this channel
-                    lang = "eng"
-                    if 'ocr_channel_config' in config and guild_id in config['ocr_channel_config'] and str(channel_id) in config['ocr_channel_config'][guild_id]:
-                        lang = config['ocr_channel_config'][guild_id][str(channel_id)].get('lang', 'eng')
-                    lang_display = " (Russian)" if lang == "rus" else ""
-                    channels.append(f"• {channel_name}{lang_display}")
-                result = "\n".join(channels)
-            else:
-                result = "No OCR read channels configured."
-            return {"name": "📷 OCR Read Channels", "value": result, "inline": False}
+        ocr_read_channels = config.get('ocr_read_channels', {}).get(guild_id, [])
+        ocr_response_channels = config.get('ocr_response_channels', {}).get(guild_id, [])
+        ocr_response_fallback = config.get('ocr_response_fallback', {}).get(guild_id, [])
+        command_permissions = config.get('command_permissions', {}).get(guild_id, {})
+
+        async def get_ocr_read_channels_field():
+            if not ocr_read_channels:
+                return {"name": "📷 OCR Read Channels", "value": "No OCR read channels configured.", "inline": False}
+            lines = []
+            for channel_id in ocr_read_channels:
+                channel = self.bot.get_channel(channel_id)
+                lang = config.get('ocr_channel_config', {}).get(guild_id, {}).get(str(channel_id), {}).get('lang', 'eng')
+                lang_display = " (Russian)" if lang == "rus" else ""
+                lines.append(f"• {channel.mention if channel else f'Unknown Channel ({channel_id})'}{lang_display}")
+            return {"name": "📷 OCR Read Channels", "value": "\n".join(lines), "inline": False}
+
+        async def get_ocr_response_channels_field():
+            if not ocr_response_channels:
+                return {"name": "💬 OCR Response Channels", "value": "No OCR response channels configured.", "inline": False}
+            lines = []
+            for channel_id in ocr_response_channels:
+                channel = self.bot.get_channel(channel_id)
+                lines.append(f"• {channel.mention if channel else f'Unknown Channel ({channel_id})'}")
+            return {"name": "💬 OCR Response Channels", "value": "\n".join(lines), "inline": False}
+
+        async def get_ocr_fallback_channels_field():
+            if not ocr_response_fallback:
+                return {"name": "🔄 OCR Fallback Channels", "value": "No OCR fallback channels configured.", "inline": False}
+            lines = []
+            for channel_id in ocr_response_fallback:
+                channel = self.bot.get_channel(channel_id)
+                lines.append(f"• {channel.mention if channel else f'Unknown Channel ({channel_id})'}")
+            return {"name": "🔄 OCR Fallback Channels", "value": "\n".join(lines), "inline": False}
+
+        async def get_manager_roles_field():
+            manager_roles = command_permissions.get("*", [])
+            if not manager_roles:
+                return {"name": "👑 Bot Manager Roles", "value": "No bot manager roles configured.", "inline": False}
+            lines = [f"• {ctx.guild.get_role(int(r_id)).mention if ctx.guild.get_role(int(r_id)) else f'Unknown Role ({r_id})'}" for r_id in manager_roles]
+            return {"name": "👑 Bot Manager Roles", "value": "\n".join(lines), "inline": False}
+
+        async def get_manager_users_field():
+            manager_users = command_permissions.get("users", {}).get("*", [])
+            if not manager_users:
+                return {"name": "👤 Bot Manager Users", "value": "No bot manager users configured.", "inline": False}
             
-        async def get_ocr_response_channels():
-            result = ""
-            if guild_id in ocr_response_channels and ocr_response_channels[guild_id]:
-                channels = []
-                for channel_id in ocr_response_channels[guild_id]:
-                    channel = self.bot.get_channel(channel_id)
-                    channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
-                    # Get language for this channel
-                    lang = "eng"
-                    if 'ocr_channel_config' in config and guild_id in config['ocr_channel_config'] and str(channel_id) in config['ocr_channel_config'][guild_id]:
-                        lang = config['ocr_channel_config'][guild_id][str(channel_id)].get('lang', 'eng')
-                    lang_display = " (Russian)" if lang == "rus" else ""
-                    channels.append(f"• {channel_name}{lang_display}")
-                result = "\n".join(channels)
-            else:
-                result = "No OCR response channels configured."
-            return {"name": "💬 OCR Response Channels", "value": result, "inline": False}
-            
-        async def get_ocr_fallback_channels():
-            result = ""
-            if guild_id in ocr_response_fallback and ocr_response_fallback[guild_id]:
-                channels = []
-                for channel_id in ocr_response_fallback[guild_id]:
-                    channel = self.bot.get_channel(channel_id)
-                    channel_name = channel.mention if channel else f"Unknown Channel ({channel_id})"
-                    channels.append(f"• {channel_name}")
-                result = "\n".join(channels)
-            else:
-                result = "No OCR fallback channels configured."
-            return {"name": "🔄 OCR Fallback Channels", "value": result, "inline": False}
-            
-        async def get_manager_roles():
-            result = ""
-            if guild_id in command_permissions and "*" in command_permissions[guild_id] and command_permissions[guild_id]["*"]:
-                roles = []
-                for role_id in command_permissions[guild_id]["*"]:
-                    role = ctx.guild.get_role(int(role_id))
-                    role_name = role.mention if role else f"Unknown Role ({role_id})"
-                    roles.append(f"• {role_name}")
-                result = "\n".join(roles)
-            else:
-                result = "No bot manager roles configured."
-            return {"name": "👑 Bot Manager Roles", "value": result, "inline": False}
-            
-        async def get_manager_users():
-            result = ""
-            if (guild_id in command_permissions and 
-                "users" in command_permissions[guild_id] and 
-                "*" in command_permissions[guild_id]["users"] and 
-                command_permissions[guild_id]["users"]["*"]):
-                users = []
-                fetch_tasks = []
-                for user_id in command_permissions[guild_id]["users"]["*"]:
-                    fetch_tasks.append(self.bot.fetch_user(int(user_id)))
-                
-                if fetch_tasks:
-                    fetched_users = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-                    for i, user_or_error in enumerate(fetched_users):
-                        user_id = command_permissions[guild_id]["users"]["*"][i]
-                        if isinstance(user_or_error, Exception):
-                            users.append(f"• Unknown User ({user_id})")
-                        else:
-                            users.append(f"• @{user_or_error.name}")
-                    result = "\n".join(users)
-                
-            if not result:
-                result = "No bot manager users configured."
-            return {"name": "👤 Bot Manager Users", "value": result, "inline": False}
-            
-        async def get_cmd_role_permissions():
-            result = ""
-            if guild_id in command_permissions:
-                sections = []
-                for cmd_name, roles in sorted(command_permissions[guild_id].items()):
-                    if cmd_name not in ["*", "users"] and roles:  # Skip wildcard and users entries
-                        role_lines = [f"**{cmd_name}**"]
-                        for role_id in roles:
-                            role = ctx.guild.get_role(int(role_id))
-                            role_name = role.mention if role else f"Unknown Role ({role_id})"
-                            role_lines.append(f"• {role_name}")
-                        sections.append("\n".join(role_lines))
-                if sections:
-                    result = "\n\n".join(sections)
-            if not result:
-                result = "No command-specific role permissions configured."
-            return {"name": "🔐 Command Role Permissions", "value": result, "inline": False}
-            
-        async def get_cmd_user_permissions():
-            result = ""
-            if guild_id in command_permissions and "users" in command_permissions[guild_id]:
-                sections = []
-                for cmd_name, users in sorted(command_permissions[guild_id]["users"].items()):
-                    if cmd_name != "*" and users:  # Skip the wildcard entry
-                        user_lines = [f"**{cmd_name}**"]
-                        fetch_tasks = []
-                        user_ids = []
-                        for user_id in users:
-                            user_ids.append(user_id)
-                            fetch_tasks.append(self.bot.fetch_user(int(user_id)))
-                        
-                        if fetch_tasks:
-                            fetched_users = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-                            for i, user_or_error in enumerate(fetched_users):
-                                user_id = user_ids[i]
-                                if isinstance(user_or_error, Exception):
-                                    user_lines.append(f"• Unknown User ({user_id})")
-                                else:
-                                    user_lines.append(f"• @{user_or_error.name}")
-                        sections.append("\n".join(user_lines))
-                if sections:
-                    result = "\n\n".join(sections)
-            if not result:
-                result = "No command-specific user permissions configured."
-            return {"name": "👤 Command User Permissions", "value": result, "inline": False}
-        
-        # Execute all fetch operations concurrently with asyncio.gather
-        fetch_tasks = [
-            get_ocr_read_channels(),
-            get_ocr_response_channels(),
-            get_ocr_fallback_channels(),
-            get_manager_roles(),
-            get_manager_users(),
-            get_cmd_role_permissions(),
-            get_cmd_user_permissions()
+            users = await asyncio.gather(*[self.bot.fetch_user(int(u_id)) for u_id in manager_users], return_exceptions=True)
+            lines = [f"• @{user.name}" if isinstance(user, discord.User) else f"• Unknown User ({uid})" for user, uid in zip(users, manager_users)]
+            return {"name": "👤 Bot Manager Users", "value": "\n".join(lines), "inline": False}
+
+        tasks = [
+            get_ocr_read_channels_field(),
+            get_ocr_response_channels_field(),
+            get_ocr_fallback_channels_field(),
+            get_manager_roles_field(),
+            get_manager_users_field(),
         ]
         
-        # Wait for all tasks to complete
-        fields = await asyncio.gather(*fetch_tasks)
+        fields = await asyncio.gather(*tasks)
         
-        # Add footer
         footer_text = f"{ctx.guild.name} | Server ID: {ctx.guild.id}"
         
-        # Use the universal embed response function
         await create_embed_response(
             ctx=ctx,
-            title="Server Configuration",
+            title="Server Configuration Status",
             description=description,
-            fields=fields,
+            fields=list(fields),
             footer_text=footer_text,
             thumbnail_url=thumbnail_url
         )
 
-async def setup(bot):
-    await bot.add_cog(BotConfigCog(bot))
+    @server.group(name="prefix", help="Manages the command prefix for this server.")
+    @has_command_permission()
+    async def prefix(self, ctx: commands.Context):
+        """Manages the command prefix."""
+        if ctx.invoked_subcommand is None:
+            await self._send_subcommand_help(ctx)
+
+    @prefix.command(name="set", help="""
+    Changes the command prefix for this server.
+    The prefix is the character(s) you put before a command name.
+    Usage: `!server prefix set <new_prefix>`
+    Example: `!server prefix set $`
+    """)
+    @has_command_permission()
+    @app_commands.describe(new_prefix="The new prefix to use (e.g., $, !, >). Max 5 characters.")
+    async def set_prefix(self, ctx: commands.Context, new_prefix: str):
+        """Change the command prefix for this server."""
+        if not ctx.guild:
+            await create_embed_response(ctx, title="❌ Error", description="This command can only be used in a server.", color=discord.Color.red())
+            return
+        
+        if len(new_prefix) > 5:
+            await create_embed_response(ctx, title="❌ Error", description="Prefix must be 5 characters or less.", color=discord.Color.red())
+            return
+        
+        config = self.bot.config
+        server_prefixes = config.get('server_prefixes', {})
+        guild_id = str(ctx.guild.id)
+        
+        from core.bot import get_server_prefix
+        old_prefix = get_server_prefix(self.bot, ctx.message)
+        
+        server_prefixes[guild_id] = new_prefix
+        config['server_prefixes'] = server_prefixes
+        save_config(config)
+        
+        await create_embed_response(ctx, title="✅ Prefix Updated", description=f"Command prefix for this server has been changed from `{old_prefix}` to `{new_prefix}`.", color=discord.Color.green())
+
+    @prefix.command(name="reset", help="""
+    Resets the command prefix for this server to the bot's default (!).
+    Usage: `!server prefix reset`
+    """)
+    @has_command_permission()
+    async def reset_prefix(self, ctx: commands.Context):
+        """Reset the command prefix for this server to the default."""
+        if not ctx.guild:
+            await create_embed_response(ctx, title="❌ Error", description="This command can only be used in a server.", color=discord.Color.red())
+            return
+            
+        config = self.bot.config
+        server_prefixes = config.get('server_prefixes', {})
+        guild_id = str(ctx.guild.id)
+        
+        if guild_id in server_prefixes:
+            old_prefix = server_prefixes.pop(guild_id)
+            config['server_prefixes'] = server_prefixes
+            save_config(config)
+            await create_embed_response(ctx, title="✅ Prefix Reset", description=f"Command prefix for this server has been reset from `{old_prefix}` to the default `!`.", color=discord.Color.green())
+        else:
+            await create_embed_response(ctx, title="ℹ️ Info", description="Command prefix for this server is already set to the default `!`.", color=discord.Color.blue())
+
+async def setup(bot: commands.Bot):
+    """Set up the ServerConfigCog."""
+    await bot.add_cog(ServerConfigCog(bot))

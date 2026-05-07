@@ -16,7 +16,12 @@ zstandard>=0.17.0
 # Environment variables
 python-dotenv>=1.0.0
 
-# Add these lines to your existing requirements.txt
+# Other
 psutil>=5.9.0
 pdfplumber
 chardet>=5.2.0
+
+# Rotator library (LLM key rotation)
+litellm>=1.0.0
+httpx>=0.24.0
+filelock>=3.0.0
