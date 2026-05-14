@@ -24,6 +24,10 @@ The main configuration file is `config.json`. You can copy `config_example.json`
   "ocr_response_fallback": {},                            // Fallback channels for OCR responses
   "server_prefixes": {},                                  // Server-specific command prefixes
   "command_permissions": {},                              // Command permission settings
+  "command_server_locks": {                               // Optional server blacklists for commands/categories
+    "commands": {},
+    "categories": {}
+  },
   "ocr_channel_config": {},                               // OCR language settings per channel
   "maintenance": {                                        // Auto-restart and maintenance settings
     "restart_threshold_seconds": 86400,                   // Auto-restart after 24 hours
@@ -41,6 +45,7 @@ The main configuration file is `config.json`. You can copy `config_example.json`
 - **ocr_response_fallback**: Format: `{"guild_id": [channel_id1, channel_id2]}` - Backup channels if primary unavailable
 - **server_prefixes**: Format: `{"guild_id": "prefix"}` - Custom prefixes per server (e.g., `"ocr!"`)
 - **command_permissions**: Format: `{"guild_id": {"command": ["role_id1"]}}` - Role-based command access
+- **command_server_locks**: Format: `{"commands": {"ask": ["guild_id"]}, "categories": {"role sharing": ["guild_id"]}}` - Server blacklists for command visibility and execution
 - **ocr_channel_config**: Format: `{"guild_id": {"channel_id": {"lang": "eng"}}}` - Language per channel
 
 ## Media Caching
@@ -97,6 +102,26 @@ Manage command permissions:
 - `!add_command_role @role command_name` - Give a role permission to use a command
 - `!remove_command_role @role command_name` - Remove permission
 - `!add_bot_manager @role` - Give a role access to all non-system commands
+
+## Command Locks
+
+Server-lock commands or categories using the `command_lock` hybrid command. Locks are server blacklists. A listed command/category is disabled only in configured servers. Unlisted commands/categories remain available normally.
+
+- `!command_lock command add ask 123456789012345678` - Disable `ask` in that server
+- `!command_lock category add "Role Sharing" 123456789012345678` - Disable role sharing in that server
+- `!command_lock list`
+
+## Role Sharing
+
+Role sharing can be disabled per server through the `Role Sharing` category with `!command_lock category add "Role Sharing"` or `/command_lock category add`.
+
+The normal command permission system gates `role_share`: bot owner, server admins/manage-guild users, bot managers, or explicitly permitted users/roles can invoke it. Sharing still requires the configured applier role, and configuring a share rule requires the invoker to have the target role.
+
+- `!role_share allow @trust @trust` - Allow users with `@trust` to give `@trust` to other users
+- `!role_share give @user @trust reason text` - Share the configured role
+- `!role_share revoke @user @trust reason text` - Revoke a role you shared, or revoke as an admin/server owner/bot owner
+- `!role_share lookup @user` - Show bot-recorded shares received and given by a user
+- `!role_share lookup @trust` - Show who received a role and who gave it
 
 ## Server-Specific Settings
 

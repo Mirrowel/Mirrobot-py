@@ -9,6 +9,10 @@
   "ocr_response_fallback": {},
   "server_prefixes": {},
   "command_permissions": {},
+  "command_server_locks": {
+    "commands": {},
+    "categories": {}
+  },
   "ocr_channel_config": {},
   "maintenance": {
     "restart_threshold_seconds": 86400,

@@ -483,16 +483,39 @@ class LLMContextFormatter:
             creator_id = 214161976534892545
             creator_username = "⭐ **Mirrowel**"
 
-            # 4. Strip "Username:" prefixes, but only if they are at the very start of the message.
-            # This regex is designed to be specific: it matches up to 60 characters that are not a newline or colon,
-            # and do not contain sentence-ending punctuation, to avoid stripping legitimate sentences.
-            username_colon_pattern = r"^\s*[^:\n.!?]{1,60}:\s*"
-            processed_text = re.sub(username_colon_pattern, "", processed_text).strip()
-
-            # 4. Sanitize mentions
+            # 4. Load user index early (needed for both prefix stripping and mention sanitization)
             user_index = await self.index_manager.load_user_index(guild.id)
 
-            # 4a. Convert raw user mentions (<@123>) to display names
+            # 4a. Strip known "Username:" prefixes at the very start of the message.
+            # Instead of a blanket regex that could eat legitimate content with colons,
+            # we only strip prefixes that match known usernames/display names/bot names.
+            known_prefix_names = set()
+            for user in (user_index or {}).values():
+                if user.username:
+                    known_prefix_names.add(user.username)
+                if user.display_name:
+                    known_prefix_names.add(user.display_name)
+            for bn in bot_names:
+                if bn:
+                    known_prefix_names.add(bn)
+            if bot_user_id:
+                bot_member = guild.get_member(bot_user_id)
+                if bot_member:
+                    known_prefix_names.add(bot_member.name)
+                    if bot_member.display_name:
+                        known_prefix_names.add(bot_member.display_name)
+
+            if known_prefix_names:
+                escaped_prefix_names = [
+                    re.escape(n) for n in sorted(known_prefix_names, key=len, reverse=True)
+                ]
+                username_prefix_pattern = re.compile(
+                    r"^\s*@?(?:" + "|".join(escaped_prefix_names) + r")\s*:\s+",
+                    re.IGNORECASE,
+                )
+                processed_text = username_prefix_pattern.sub("", processed_text).strip()
+
+            # 4b. Sanitize mentions: Convert raw user mentions (<@123>) to display names
             def replace_user_mention(match):
                 user_id = int(match.group(1))
                 if user_id == creator_id:
@@ -507,7 +530,7 @@ class LLMContextFormatter:
 
             processed_text = re.sub(r"<@!?(\d+)>", replace_user_mention, processed_text)
 
-            # 4b. Convert role mentions (<@&123>) to role names
+            # 4c. Convert role mentions (<@&123>) to role names
             def replace_role_mention(match):
                 role_id = int(match.group(1))
                 role = guild.get_role(role_id)

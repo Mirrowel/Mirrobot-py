@@ -447,7 +447,11 @@ class ConversationManager:
 
         # 1. Process Attachments
         for attachment in message.attachments:
-            if attachment.content_type and attachment.content_type.startswith("image/"):
+            is_image = (
+                (attachment.content_type and attachment.content_type.startswith("image/"))
+                or self._is_image_url(attachment.url)
+            )
+            if is_image:
                 await _add_image_url(attachment.url)
             else:
                 other_urls.add(attachment.url)
@@ -517,7 +521,11 @@ class ConversationManager:
         valid_image_urls = [url for url in image_urls if url]
 
         # Ensure that URLs classified as images are not also in the "other" urls list.
-        final_other_urls = other_urls - set(valid_image_urls)
+        # Use seen_normalized_urls for comparison since cache_url may return a different URL.
+        final_other_urls = {
+            url for url in other_urls
+            if _normalize_url(url) not in seen_normalized_urls
+        }
 
         # Return cleaned content, a list of unique image URLs, and a list of other URLs
         return cleaned_content, valid_image_urls, list(final_other_urls)

@@ -1112,41 +1112,213 @@ async def ocr_worker(bot, worker_id=1):
             await asyncio.sleep(1)
 
 
-async def cleanup_stale_commands(bot):
-    """Remove slash commands registered with Discord that the bot doesn't have."""
-    try:
-        await asyncio.sleep(1)
+def _locks_active(bot):
+    lock_config = bot.config.get("command_server_locks", {})
+    return bool(lock_config.get("commands") or lock_config.get("categories"))
 
-        existing_cmds = await bot.tree.fetch_commands()
-        expected_cmds = bot.tree.get_commands()
 
-        existing_names = {cmd.name for cmd in existing_cmds}
-        expected_names = {cmd.name for cmd in expected_cmds}
+def _normalize_slash_payload(command_payload):
+    """Normalize local/remote app command payloads for stable comparisons."""
+    if not isinstance(command_payload, dict):
+        return {}
 
-        if existing_names == expected_names:
-            logger.info(
-                f"Slash commands are in sync ({len(expected_names)} commands). No cleanup needed."
-            )
+    normalized = {
+        "name": command_payload.get("name"),
+        "description": command_payload.get("description"),
+        "type": int(command_payload.get("type", 1)),
+    }
+
+    options = command_payload.get("options") or []
+    if options:
+        normalized["options"] = sorted(
+            [_normalize_slash_payload(option) for option in options],
+            key=lambda option: (
+                str(option.get("name", "")),
+                int(option.get("type", 0)),
+            ),
+        )
+    else:
+        normalized["options"] = []
+
+    for optional_key in ("required", "channel_types", "min_value", "max_value"):
+        if optional_key in command_payload:
+            normalized[optional_key] = command_payload[optional_key]
+
+    return normalized
+
+
+def _normalize_slash_payloads(command_payloads):
+    return sorted(
+        [_normalize_slash_payload(payload) for payload in command_payloads],
+        key=lambda payload: (
+            str(payload.get("name", "")),
+            int(payload.get("type", 0)),
+        ),
+    )
+
+
+def _local_app_command_payloads(bot, commands_map):
+    return [command.to_dict(bot.tree) for command in commands_map.values()]
+
+
+def _remote_app_command_payloads(app_commands):
+    return [command.to_dict() for command in app_commands]
+
+
+def _slash_payloads_match(expected_payloads, remote_payloads):
+    return _normalize_slash_payloads(expected_payloads) == _normalize_slash_payloads(remote_payloads)
+
+
+def _build_filtered_guild_commands(bot, guild):
+    from utils.permissions import (
+        get_command_category,
+        get_locked_command_names_for_guild,
+        is_top_level_app_command_available,
+        normalize_command_lock_name,
+    )
+
+    global_commands = bot.tree._global_commands.copy()
+    command_categories = {
+        command.name: get_command_category(command)
+        for command in bot.commands
+    }
+
+    def get_app_command_binding(command):
+        binding = getattr(command, "binding", None)
+        if binding is not None:
+            return binding
+        for child in getattr(command, "_children", {}).values():
+            binding = get_app_command_binding(child)
+            if binding is not None:
+                return binding
+        return None
+
+    def remove_locked_app_command_children(command, prefix, locked_names):
+        children = getattr(command, "_children", None)
+        if not children:
             return
 
-        stale = existing_names - expected_names
-        missing = expected_names - existing_names
+        for child_name in list(children.keys()):
+            child = children[child_name]
+            qualified_name = f"{prefix} {child_name}"
+            if normalize_command_lock_name(qualified_name) in locked_names:
+                del children[child_name]
+                continue
 
-        if stale:
-            logger.info(
-                f"Stale slash commands found (will be removed): {sorted(stale)}"
-            )
-        if missing:
-            logger.info(f"Missing slash commands (will be added): {sorted(missing)}")
+            remove_locked_app_command_children(child, qualified_name, locked_names)
+            child_children = getattr(child, "_children", None)
+            if child_children is not None and not child_children:
+                del children[child_name]
 
-        synced = await bot.tree.sync()
-        logger.info(
-            f"Slash commands synced. Discord now has {len(synced)} commands "
-            f"(removed {len(stale)} stale, added {len(missing)} missing)."
+    locked_names = get_locked_command_names_for_guild(guild.id, bot.config)
+    allowed_commands = {}
+
+    for name, command in global_commands.items():
+        if not is_top_level_app_command_available(
+            name,
+            command_categories.get(name),
+            guild.id,
+            bot.config,
+        ):
+            continue
+
+        command_binding = get_app_command_binding(command)
+        command_copy = command._copy_with(
+            parent=None,
+            binding=command_binding,
+            bindings={command_binding: command_binding} if command_binding else {},
+            set_on_binding=False,
         )
 
+        remove_locked_app_command_children(command_copy, name, locked_names)
+        allowed_commands[name] = command_copy
+
+    return global_commands, allowed_commands
+
+
+async def sync_locked_commands_for_guild(bot, guild):
+    """Sync one guild's slash commands using current command server blacklists."""
+    global_commands, allowed_commands = _build_filtered_guild_commands(bot, guild)
+    bot.tree._guild_commands[guild.id] = allowed_commands
+    synced = await bot.tree.sync(guild=guild)
+    hidden_count = len(global_commands) - len(allowed_commands)
+    logger.info(
+        f"Synced {len(synced)} slash commands for {guild.name} ({guild.id}); "
+        f"hidden by locks: {hidden_count}."
+    )
+    return synced
+
+
+async def cleanup_stale_commands(bot, initial_delay=True, guild_ids=None):
+    """Sync slash commands, filtering guild command lists by server locks."""
+    try:
+        if initial_delay:
+            await asyncio.sleep(1)
+
+        locks_active = _locks_active(bot)
+        target_guild_ids = {str(guild_id) for guild_id in guild_ids} if guild_ids else None
+
+        if not locks_active:
+            expected_global_payloads = _local_app_command_payloads(
+                bot,
+                bot.tree._global_commands,
+            )
+            remote_global_commands = await bot.tree.fetch_commands()
+            if _slash_payloads_match(expected_global_payloads, _remote_app_command_payloads(remote_global_commands)):
+                logger.info(
+                    f"Global slash commands are in sync ({len(expected_global_payloads)} commands)."
+                )
+            else:
+                synced = await bot.tree.sync()
+                logger.info(f"Global slash commands synced: {len(synced)} commands.")
+
+            # If command locks were previously active, guild-specific commands may remain.
+            for guild in bot.guilds:
+                if target_guild_ids and str(guild.id) not in target_guild_ids:
+                    continue
+                existing_guild_commands = await bot.tree.fetch_commands(guild=guild)
+                if existing_guild_commands:
+                    bot.tree.clear_commands(guild=guild)
+                    await bot.tree.sync(guild=guild)
+                    logger.info(
+                        f"Cleared {len(existing_guild_commands)} guild-specific slash commands in {guild.name} ({guild.id})."
+                    )
+            return
+
+        # Server-locked visibility requires guild-specific registrations. Global
+        # commands would still appear in every guild, so remove them remotely while
+        # keeping the local tree intact for future sync decisions.
+        global_commands = bot.tree._global_commands.copy()
+        remote_global_commands = await bot.tree.fetch_commands()
+        if remote_global_commands:
+            try:
+                bot.tree._global_commands.clear()
+                cleared_global = await bot.tree.sync()
+                logger.info(
+                    f"Global slash commands cleared for server-lock mode: {len(cleared_global)} commands remain globally."
+                )
+            finally:
+                bot.tree._global_commands.update(global_commands)
+        else:
+            logger.info("Global slash commands already cleared for server-lock mode.")
+
+        for guild in bot.guilds:
+            if target_guild_ids and str(guild.id) not in target_guild_ids:
+                continue
+            _, expected_guild_commands = _build_filtered_guild_commands(bot, guild)
+            expected_payloads = _local_app_command_payloads(bot, expected_guild_commands)
+            remote_guild_commands = await bot.tree.fetch_commands(guild=guild)
+            if _slash_payloads_match(expected_payloads, _remote_app_command_payloads(remote_guild_commands)):
+                logger.info(
+                    f"Slash commands are in sync for {guild.name} ({guild.id}); "
+                    f"{len(expected_payloads)} commands expected."
+                )
+                continue
+
+            await sync_locked_commands_for_guild(bot, guild)
+
     except Exception as e:
-        logger.error(f"Failed to clean up stale slash commands: {e}", exc_info=True)
+        logger.error(f"Failed to sync slash commands: {e}", exc_info=True)
 
 
 async def load_cogs(bot):

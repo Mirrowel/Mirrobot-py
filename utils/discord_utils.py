@@ -46,10 +46,10 @@ async def reply_or_send(
     try:
         sent_message = await target.reply(content, **kwargs)
     except discord.errors.HTTPException as e:
-        # Error code 10008 is "Unknown Message"
-        if e.code == 10008:
+        # Error codes: 10008 Unknown Message, 10062 Unknown Interaction.
+        if e.code in (10008, 10062):
             logger.warning(
-                f"Failed to reply to message {target.message.id if isinstance(target, discord.ext.commands.Context) else target.id}. It was likely deleted. Sending to channel instead."
+                f"Failed to reply to message/interaction {target.message.id if isinstance(target, discord.ext.commands.Context) and target.message else getattr(target, 'id', 'unknown')}. Sending to channel instead."
             )
             channel = target.channel
             sent_message = await channel.send(content, **kwargs)

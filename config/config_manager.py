@@ -17,7 +17,8 @@ def validate_config(config):
         'ocr_response_channels': dict,
         'ocr_response_fallback': dict,
         'command_permissions': dict,
-        'server_prefixes': dict
+        'server_prefixes': dict,
+        'command_server_locks': dict
     }
     
     for field, field_type in required_fields.items():
@@ -57,6 +58,24 @@ def validate_config(config):
             errors.append(f"ocr_max_queue_size should be an integer, got {type(config['ocr_max_queue_size']).__name__}")
         elif config['ocr_max_queue_size'] < 10 or config['ocr_max_queue_size'] > 1000:
             errors.append(f"ocr_max_queue_size should be between 10 and 1000, got {config['ocr_max_queue_size']}")
+
+    if 'command_server_locks' in config:
+        locks = config['command_server_locks']
+        if not isinstance(locks, dict):
+            errors.append(f"command_server_locks should be a dictionary, got {type(locks).__name__}")
+        else:
+            for lock_type in ('commands', 'categories'):
+                entries = locks.get(lock_type, {})
+                if not isinstance(entries, dict):
+                    errors.append(f"command_server_locks.{lock_type} should be a dictionary, got {type(entries).__name__}")
+                    continue
+                for name, guild_ids in entries.items():
+                    if not isinstance(name, str):
+                        errors.append(f"command_server_locks.{lock_type} keys should be strings")
+                    if not isinstance(guild_ids, list):
+                        errors.append(f"command_server_locks.{lock_type}.{name} should be a list, got {type(guild_ids).__name__}")
+                    elif not all(isinstance(guild_id, (str, int)) for guild_id in guild_ids):
+                        errors.append(f"command_server_locks.{lock_type}.{name} should only contain string or integer guild IDs")
     
     if errors:
         for error in errors:
@@ -91,6 +110,11 @@ def load_config(config_file='config.json'):
                 config['command_permissions'] = {}
             if 'server_prefixes' not in config:
                 config['server_prefixes'] = {}
+            if 'command_server_locks' not in config:
+                config['command_server_locks'] = {"commands": {}, "categories": {}}
+            else:
+                config['command_server_locks'].setdefault('commands', {})
+                config['command_server_locks'].setdefault('categories', {})
             if 'command_prefix' not in config:
                 config['command_prefix'] = '!'
             if 'ocr_max_queue_size' not in config:

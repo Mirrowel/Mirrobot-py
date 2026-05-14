@@ -26,6 +26,8 @@ SYSTEM_COMMANDS = ['shutdown', 'reload_patterns', 'host']
 # Dictionary to store command categories
 _command_categories = {}
 
+COMMAND_LOCK_CONFIG_KEY = "command_server_locks"
+
 # File path for storing blacklists
 BLACKLIST_FILE = "data/permission_blacklists.json"
 
@@ -121,6 +123,12 @@ def has_command_permission(*required_permissions):
         # Check if we're in a guild for non-system commands
         if not ctx.guild:
             logger.warning(f"Permission DENIED for '{ctx.command.name}': Command cannot be used in DMs.")
+            return False
+
+        if not is_command_available_in_guild(ctx.command, ctx.guild.id, config):
+            logger.info(
+                f"Permission DENIED for '{ctx.command.name}': Command is locked outside guild {ctx.guild.id}."
+            )
             return False
 
         # 2. Administrator / Manage Guild check
@@ -271,6 +279,114 @@ Returns:
             return wrapper
     
     return decorator
+
+def normalize_command_lock_name(name: str) -> str:
+    """Normalize command and category names for config lookups."""
+    return name.strip().lower()
+
+def get_command_category(command) -> str:
+    """Get a command category from command or callback metadata."""
+    while command:
+        category = getattr(command, 'category', None)
+        if category:
+            return category
+        callback = getattr(command, 'callback', None)
+        category = getattr(callback, 'category', None)
+        if category:
+            return category
+        command = getattr(command, 'parent', None)
+    return None
+
+def get_command_root_name(command) -> str:
+    """Return the top-level command name for lock and slash-sync decisions."""
+    if not command:
+        return None
+    root = command
+    while getattr(root, 'parent', None):
+        root = root.parent
+    return getattr(root, 'name', None)
+
+def get_command_lock_config(config):
+    """Return normalized command lock config with expected sections present."""
+    locks = config.setdefault(COMMAND_LOCK_CONFIG_KEY, {})
+    commands = locks.setdefault('commands', {})
+    categories = locks.setdefault('categories', {})
+
+    return {
+        'commands': {
+            normalize_command_lock_name(name): [str(guild_id) for guild_id in guild_ids]
+            for name, guild_ids in commands.items()
+            if isinstance(name, str) and isinstance(guild_ids, list)
+        },
+        'categories': {
+            normalize_command_lock_name(name): [str(guild_id) for guild_id in guild_ids]
+            for name, guild_ids in categories.items()
+            if isinstance(name, str) and isinstance(guild_ids, list)
+        }
+    }
+
+def is_command_available_in_guild(command, guild_id, config) -> bool:
+    """Check command/category server blacklists for a command in a guild."""
+    if guild_id is None:
+        return False
+
+    guild_id = str(guild_id)
+    locks = get_command_lock_config(config)
+
+    command_names = []
+    command_name = getattr(command, 'name', None)
+    qualified_name = getattr(command, 'qualified_name', None)
+    root_name = get_command_root_name(command)
+    if command_name:
+        command_names.append(normalize_command_lock_name(command_name))
+    if qualified_name:
+        command_names.append(normalize_command_lock_name(qualified_name))
+    if root_name:
+        command_names.append(normalize_command_lock_name(root_name))
+
+    for name in set(command_names):
+        blocked_guilds = locks['commands'].get(name, [])
+        if guild_id in blocked_guilds:
+            return False
+
+    category = get_command_category(command)
+    if category:
+        blocked_guilds = locks['categories'].get(normalize_command_lock_name(category), [])
+        if guild_id in blocked_guilds:
+            return False
+
+    return True
+
+def is_top_level_app_command_available(command_name: str, category: str, guild_id, config) -> bool:
+    """Check server blacklists for top-level slash command registration."""
+    if guild_id is None:
+        return False
+
+    guild_id = str(guild_id)
+    locks = get_command_lock_config(config)
+
+    blocked_guilds = locks['commands'].get(normalize_command_lock_name(command_name), [])
+    if guild_id in blocked_guilds:
+        return False
+
+    if category:
+        blocked_guilds = locks['categories'].get(normalize_command_lock_name(category), [])
+        if guild_id in blocked_guilds:
+            return False
+
+    return True
+
+def get_locked_command_names_for_guild(guild_id, config):
+    """Return normalized command names explicitly blacklisted in a guild."""
+    if guild_id is None:
+        return set()
+    guild_id = str(guild_id)
+    locks = get_command_lock_config(config)
+    return {
+        name
+        for name, blocked_guilds in locks['commands'].items()
+        if guild_id in blocked_guilds
+    }
 
 async def get_permission_target(ctx, target):
     """
