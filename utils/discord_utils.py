@@ -8,20 +8,12 @@ import asyncio
 from utils.logging_setup import get_logger
 from utils.inline_response import split_message
 from utils.chatbot.manager import chatbot_manager
+from utils.llm_stream import (
+    normalize_reasoning_content,
+    parse_chat_completion_stream_chunk,
+)
 
 logger = get_logger()
-
-
-def normalize_reasoning_content(value):
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = []
-        for item in value:
-            if isinstance(item, dict) and item.get("type") == "thinking":
-                parts.append(item.get("thinking", ""))
-        return "".join(parts)
-    return ""
 
 
 async def reply_or_send(
@@ -197,24 +189,18 @@ async def handle_streaming_text_response(
                 data = json.loads(chunk_str)
                 stream_chunks.append(data)
 
-                if "error" in data:
-                    error_message = data.get("error", "Unknown error from proxy")
-                    if isinstance(error_message, dict):
-                        error_message = error_message.get("message", str(error_message))
-                    logger.error(f"Stream error from provider: {error_message}")
+                event = parse_chat_completion_stream_chunk(data)
+
+                if event.error:
+                    logger.error(f"Stream error from provider: {event.error}")
                     await sent_messages[0].edit(
-                        content=f"An error occurred: {error_message}"
+                        content=f"An error occurred: {event.error}"
                     )
                     stream_error = True
                     return []
 
-                delta = data.get("choices", [{}])[0].get("delta", {})
-                if delta.get("content"):
-                    answer_buffer += delta["content"]
-                if delta.get("reasoning_content"):
-                    reasoning_buffer += normalize_reasoning_content(
-                        delta["reasoning_content"]
-                    )
+                answer_buffer += event.content_delta
+                reasoning_buffer += event.reasoning_delta
 
             except json.JSONDecodeError:
                 logger.warning(f"Received non-JSON chunk, skipping: {chunk_str[:100]}")

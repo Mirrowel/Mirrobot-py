@@ -13,8 +13,8 @@ from utils.permissions import has_command_permission, command_category
 from utils.embed_helper import create_embed_response, create_llm_response
 from utils.discord_utils import (
     handle_streaming_text_response,
-    normalize_reasoning_content,
 )
+from utils.llm_stream import parse_chat_completion_stream_chunk
 from utils.json_utils import parse_params_input
 from lib.rotator_library import RotatingClient
 from config.llm_config_manager import (
@@ -807,10 +807,12 @@ class LLMCommands(commands.Cog):
                     data = json.loads(chunk_str)
                     stream_chunks.append(data)
 
-                    if "error" in data:
+                    event = parse_chat_completion_stream_chunk(data)
+
+                    if event.error:
                         error_embed = discord.Embed(
                             title="LLM Error",
-                            description=data.get("error", "Unknown error"),
+                            description=event.error,
                             color=discord.Color.red(),
                         )
                         if messages_to_edit:
@@ -819,17 +821,13 @@ class LLMCommands(commands.Cog):
                             await ctx.send(embed=error_embed)
                         return
 
-                    if "usage" in data:
-                        usage_data = data["usage"]
-                    delta = data.get("choices", [{}])[0].get("delta", {})
-                    if delta.get("content"):
-                        answer_buffer += delta["content"]
-                    if delta.get("reasoning_content"):
-                        reasoning_buffer += normalize_reasoning_content(
-                            delta["reasoning_content"]
-                        )
+                    if event.usage is not None:
+                        usage_data = event.usage
 
-                except (json.JSONDecodeError, IndexError) as e:
+                    answer_buffer += event.content_delta
+                    reasoning_buffer += event.reasoning_delta
+
+                except json.JSONDecodeError as e:
                     logger.warning(
                         f"Skipping invalid stream chunk: {chunk_str[:100]} | Error: {e}"
                     )
@@ -923,8 +921,14 @@ class LLMCommands(commands.Cog):
                 logger.error("Failed to assemble final response from stream chunks.")
                 return
 
-            final_message = assembled_response.get("choices", [{}])[0].get(
-                "message", {}
+            assembled_choices = assembled_response.get("choices") or []
+            final_choice = (
+                assembled_choices[0]
+                if isinstance(assembled_choices, list) and assembled_choices
+                else {}
+            )
+            final_message = (
+                final_choice.get("message", {}) if isinstance(final_choice, dict) else {}
             )
             final_content = final_message.get("content", "")
             final_reasoning = final_message.get("reasoning_content", "")
@@ -1077,7 +1081,6 @@ class LLMCommands(commands.Cog):
                 "choices": [],
                 "usage": None,
             }
-            # ... (rest of the assembly logic is the same)
             for chunk in response_chunks:
                 for key, value in chunk.items():
                     if key not in ["choices", "usage"] and key not in final_response:
@@ -1096,18 +1099,13 @@ class LLMCommands(commands.Cog):
             full_content, full_reasoning_content, final_finish_reason = "", "", None
 
             for chunk in response_chunks:
-                if choice := chunk.get("choices", [{}])[0]:
-                    if delta := choice.get("delta", {}):
-                        if content := delta.get("content"):
-                            full_content += content
-                        if reasoning := delta.get("reasoning_content"):
-                            full_reasoning_content += normalize_reasoning_content(
-                                reasoning
-                            )
-                    if reason := choice.get("finish_reason"):
-                        final_finish_reason = reason
-                if usage := chunk.get("usage"):
-                    final_response["usage"] = usage
+                event = parse_chat_completion_stream_chunk(chunk)
+                full_content += event.content_delta
+                full_reasoning_content += event.reasoning_delta
+                if event.finish_reason:
+                    final_finish_reason = event.finish_reason
+                if event.usage is not None:
+                    final_response["usage"] = event.usage
 
             final_message = {"role": "assistant", "content": full_content}
             if full_reasoning_content:
